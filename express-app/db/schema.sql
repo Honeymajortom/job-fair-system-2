@@ -147,3 +147,82 @@ ALTER TABLE candidate_company_status
 ALTER TABLE candidate_company_status
   ADD CONSTRAINT candidate_company_status_status_check
   CHECK (status IN ('Pending', 'Dispatched', 'Selected', 'Rejected', 'Shortlisted', 'Hold', 'No_Show'));
+
+-- ---------------------------------------------------------------------------
+-- Queue-system Phase 1 (new_architecture.md — count-based virtual queue):
+-- Redis (queue:{companyId} ZSET) is the live dispatch authority; these columns
+-- are Postgres's durable copy of what seeded that ZSET and why its score
+-- moved, so a Redis flush/restart or a report can reconstruct queue state.
+-- serial: booking-order rank within this company (score before any misses).
+-- misses: missed-call count: each miss adds 10 to the ZSET score (rank decay,
+-- new_architecture.md §3.4) without dropping the candidate from the queue.
+-- interview_slots / slot_id are untouched here — still read by the v1 routes
+-- until the Phase 6 cutover retires them.
+-- ---------------------------------------------------------------------------
+ALTER TABLE candidate_company_status
+  ADD COLUMN IF NOT EXISTS serial INTEGER,
+  ADD COLUMN IF NOT EXISTS misses INTEGER NOT NULL DEFAULT 0;
+
+-- ---------------------------------------------------------------------------
+-- Queue-system Phase 2 (booking cap, new_architecture.md §3.1/§4):
+-- capacity_j = seats * (60/interview_minutes) * fair_hours; cap_sold = 0.9 *
+-- capacity_j. seats/interview_minutes are per company (c_j, service rate);
+-- fair_hours is fair-wide (H). Defaults (1 seat, 6-min interviews, 8h fair)
+-- match sim/jobfair_sim.py's defaults so an unconfigured company behaves like
+-- the simulation's baseline rather than an arbitrary guess.
+-- 'Waitlisted' joins the status enum: a pick that loses the capacity gate is
+-- still recorded (Phase 5's standby/fall-through tier needs this as real
+-- inventory, not a silently dropped request) but never reaches the live
+-- Redis queue — no serial, no dispatch.
+-- ---------------------------------------------------------------------------
+ALTER TABLE companies
+  ADD COLUMN IF NOT EXISTS seats INTEGER NOT NULL DEFAULT 1,
+  ADD COLUMN IF NOT EXISTS interview_minutes INTEGER NOT NULL DEFAULT 6;
+
+ALTER TABLE fair_settings
+  ADD COLUMN IF NOT EXISTS fair_hours NUMERIC NOT NULL DEFAULT 8;
+
+ALTER TABLE candidate_company_status
+  DROP CONSTRAINT IF EXISTS candidate_company_status_status_check;
+ALTER TABLE candidate_company_status
+  ADD CONSTRAINT candidate_company_status_status_check
+  CHECK (status IN ('Pending', 'Waitlisted', 'Dispatched', 'Selected', 'Rejected', 'Shortlisted', 'Hold', 'No_Show'));
+
+-- ---------------------------------------------------------------------------
+-- Queue-system Phase 3 (desk tablet + no-show timer, new_architecture.md §3.4/§6.1):
+-- dispatched_at: set the moment dispatch() locks a candidate to a desk. Two
+-- consumers — the no-show timer's location-aware duration is armed relative
+-- to it, and completeInterview()'s drain-rate EMA needs an actual interview
+-- duration (now() - dispatched_at) rather than a guessed constant.
+-- ---------------------------------------------------------------------------
+ALTER TABLE candidate_company_status
+  ADD COLUMN IF NOT EXISTS dispatched_at TIMESTAMPTZ;
+
+-- ---------------------------------------------------------------------------
+-- Queue-system Phase 4 (ping ladder + live position page, new_architecture.md §3.3/§4):
+-- travel_time_minutes: candidate-reported travel time to venue, captured at
+-- registration. Feeds the "come now" threshold (ETA <= travel_time + 15min) —
+-- nullable because existing/unset candidates just skip straight to the "far"
+-- rung instead of ever reaching "warm".
+-- ---------------------------------------------------------------------------
+ALTER TABLE candidates
+  ADD COLUMN IF NOT EXISTS travel_time_minutes SMALLINT;
+
+-- ---------------------------------------------------------------------------
+-- Company Management (new_architecture_uiux_spec.html §07): vacancy tracking.
+-- Migrated from old/SDC_JobFair_Architecture.md's v2.5 company_posts design —
+-- a company can advertise multiple named postings, each with its own vacancy
+-- count and qualification/gender/age filter, rather than one aggregate count.
+-- Informational only: unrelated to the queue-system capacity gate (companies
+-- .seats/.interview_minutes), which stays the sole source of the booking cap.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS company_posts (
+  id             SERIAL PRIMARY KEY,
+  company_id     INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  post_title     VARCHAR NOT NULL,
+  vacancies      INTEGER NOT NULL DEFAULT 1,
+  qualification  VARCHAR,
+  gender         VARCHAR,
+  age_min        INTEGER,
+  age_max        INTEGER
+);

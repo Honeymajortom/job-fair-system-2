@@ -1,3 +1,5 @@
+import { io } from 'socket.io-client';
+
 // All calls go through the Vite dev proxy (or Nginx in prod), so paths are
 // relative and the HttpOnly session cookie rides along automatically.
 async function request(path, options = {}) {
@@ -31,6 +33,10 @@ export const api = {
   getCompany: (id) => request(`/companies/${id}`),
   createCompany: (payload) => request('/companies', { method: 'POST', body: JSON.stringify(payload) }),
   addRatingParameter: (id, payload) => request(`/companies/${id}/rating-parameters`, { method: 'POST', body: JSON.stringify(payload) }),
+  deleteRatingParameter: (id, paramId) => request(`/companies/${id}/rating-parameters/${paramId}`, { method: 'DELETE' }),
+  addCompanyPost: (id, payload) => request(`/companies/${id}/posts`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateCompanyPost: (id, postId, payload) => request(`/companies/${id}/posts/${postId}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteCompanyPost: (id, postId) => request(`/companies/${id}/posts/${postId}`, { method: 'DELETE' }),
   generateSlots: (payload) => request('/slots/generate', { method: 'POST', body: JSON.stringify(payload) }),
   register: (payload) => request('/register', { method: 'POST', body: JSON.stringify(payload) }),
   listCandidates: () => request('/candidates'),
@@ -39,6 +45,9 @@ export const api = {
   getQueue: (companyId) => request(`/queue/${companyId}`),
   submitResult: (payload) => request('/interview-result', { method: 'PUT', body: JSON.stringify(payload) }),
   markNoShow: (payload) => request('/no-show', { method: 'POST', body: JSON.stringify(payload) }),
+  // queue-system Phase 3/4 — desk tablet
+  deskNext: (payload) => request('/queue/desk/next', { method: 'POST', body: JSON.stringify(payload) }),
+  confirmArrival: (payload) => request('/queue/confirm-arrival', { method: 'POST', body: JSON.stringify(payload) }),
   getStats: () => request('/stats'),
   getBatches: () => request('/batches'),
   setBatchStatus: (id, status) => request(`/batch/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
@@ -53,6 +62,7 @@ export const api = {
   // users (admin)
   getUsers: () => request('/users'),
   createUser: (payload) => request('/users', { method: 'POST', body: JSON.stringify(payload) }),
+  updateUser: (id, payload) => request(`/users/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteUser: (id) => request(`/users/${id}`, { method: 'DELETE' }),
 
   // reports (admin, cached 20s server-side)
@@ -63,3 +73,11 @@ export const api = {
   qualDistribution: () => request('/qual-distribution'),
   fieldDistribution: () => request('/field-distribution'),
 };
+
+// Staff-only (lib/io.js rejects anonymous connections) — same-origin via the
+// Vite dev proxy's /socket.io entry, cookie carries the JWT. autoConnect is
+// off so SocketContext controls the connect/disconnect lifecycle around
+// auth state rather than connecting before a user is known.
+export function connectSocket() {
+  return io({ withCredentials: true, autoConnect: false });
+}

@@ -9,6 +9,8 @@ const rateLimit = require('../middleware/rateLimit');
 const redisCache = require('../middleware/redisCache');
 const registerCandidate = require('../lib/registerCandidate');
 const { normalizeMobile } = require('../lib/mobile');
+const store = require('../lib/queueStore');
+const { resolveRung } = require('../lib/pingLadder');
 
 const router = express.Router();
 
@@ -81,7 +83,15 @@ router.get('/qr/companies', readIpLimit, ensureDeviceCookie, redisCache(60), asy
      GROUP BY c.id
      ORDER BY c.company_name`
   );
-  res.json(result.rows);
+  // Queue-system Phase 4: open_slots above is stale for the new capacity-gate
+  // model (it only ever counted interview_slots rows) — left untouched per
+  // handoff.md, but queue_depth gives the tile screen a live, correct "N
+  // people ahead" number to show instead/alongside it.
+  const rows = await Promise.all(result.rows.map(async (row) => ({
+    ...row,
+    queue_depth: await store.queueSize(row.id),
+  })));
+  res.json(rows);
 }));
 
 // Public: self-registration — the morning-spike path. Limiters run first so
@@ -111,7 +121,7 @@ router.post('/qr/register', l1Mobile, l2Device, l3Ip, asyncHandler(async (req, r
 // token IS the capability. Cache TTL 15s; the page polls every 30s.
 router.get('/qr/schedule/:token', readIpLimit, redisCache(15), asyncHandler(async (req, res) => {
   const candRes = await pool.query(
-    `SELECT cd.id, cd.name, cd.token_no, cd.checked_in_at, cd.checkin_sig,
+    `SELECT cd.id, cd.name, cd.token_no, cd.checked_in_at, cd.checkin_sig, cd.travel_time_minutes,
             b.batch_number, b.arrival_time, b.status AS batch_status
      FROM candidates cd
      LEFT JOIN fair_batches b ON b.id = cd.batch_id
@@ -122,7 +132,8 @@ router.get('/qr/schedule/:token', readIpLimit, redisCache(15), asyncHandler(asyn
   const cand = candRes.rows[0];
 
   const slotsRes = await pool.query(
-    `SELECT s.slot_start AS time, c.company_name AS company, c.location, ccs.status
+    `SELECT s.slot_start AS time, c.company_name AS company, c.location, ccs.status,
+            ccs.company_id, ccs.serial, c.seats, c.interview_minutes
      FROM candidate_company_status ccs
      JOIN companies c ON c.id = ccs.company_id
      LEFT JOIN interview_slots s ON s.id = ccs.slot_id
@@ -130,6 +141,23 @@ router.get('/qr/schedule/:token', readIpLimit, redisCache(15), asyncHandler(asyn
      ORDER BY s.slot_start ASC NULLS LAST`,
     [cand.id]
   );
+
+  // Queue-system Phase 4: position/eta_minutes/rung only apply to serial-based
+  // (new-model) bookings — waitlisted entries (serial IS NULL) are left as-is
+  // so the frontend can render a distinct waitlisted card.
+  const slots = await Promise.all(slotsRes.rows.map(async (row) => {
+    const base = { time: row.time, company: row.company, location: row.location, status: row.status };
+    if (row.serial === null) return base;
+    const ladder = await resolveRung({
+      status: row.status,
+      companyId: row.company_id,
+      candidateId: cand.id,
+      travelTimeMinutes: cand.travel_time_minutes,
+      seats: row.seats,
+      interviewMinutes: row.interview_minutes,
+    });
+    return { ...base, ...ladder };
+  }));
 
   res.json({
     name: cand.name,
@@ -143,7 +171,7 @@ router.get('/qr/schedule/:token', readIpLimit, redisCache(15), asyncHandler(asyn
       status: cand.batch_status,
       checked_in: !!cand.checked_in_at,
     },
-    slots: slotsRes.rows,
+    slots,
   });
 }));
 

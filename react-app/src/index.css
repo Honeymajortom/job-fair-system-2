@@ -116,7 +116,8 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
 .s-nav .brand { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; color: var(--ink-60); margin-right: 12px; }
 .s-nav a { font-size: 13px; font-weight: 500; color: var(--ink-60); text-decoration: none; padding: 6px 11px; border-radius: 7px; }
 .s-nav a.active { background: var(--candidate-soft); color: var(--candidate); }
-.s-nav .role-chip { margin-left: auto; font-family: var(--mono); font-size: 10.5px; padding: 4px 10px; border-radius: 5px; }
+.role-chip { display: inline-block; font-family: var(--mono); font-size: 10.5px; padding: 4px 10px; border-radius: 5px; }
+.s-nav .role-chip { margin-left: auto; }
 .role-chip.admin { background: var(--candidate-soft); color: var(--candidate); }
 .role-chip.registration_staff, .role-chip.volunteer { background: var(--live-soft); color: var(--live); }
 .role-chip.company_hr, .role-chip.floor_manager { background: var(--system-soft); color: var(--system); }
@@ -196,3 +197,53 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
 
 h2.screen-title { font-family: var(--disp); font-weight: 800; font-stretch: 85%; font-size: 26px; letter-spacing: -.01em; margin-bottom: 12px; }
 .sec-label { font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em; color: var(--ink-60); text-transform: uppercase; }
+
+/* --- Queue-system Phase 4 (new_architecture_uiux_spec.html) — ping-ladder
+   urgency scale. Additive: reuses every token above, adds only these three. --- */
+:root {
+  --rung-far: #B9BDC9;
+  --rung-warm: #C8860A;
+  --rung-hot: #E4573D;
+}
+
+/* --- live position page --- */
+.ladder { display: flex; flex-direction: column; gap: 12px; }
+.pos-card { border: 1.5px solid var(--line); border-radius: 10px; padding: 14px 16px; background: var(--card); transition: border-color .3s, background-color .3s; }
+.pos-card.warm { border-color: var(--rung-warm); background: #FEF8EC; }
+.pos-card.hot { border-color: var(--rung-hot); background: var(--live-soft); }
+.pos-card.done { border-color: var(--st-selected); background: #F2FBF6; }
+.pos-card .co { font-weight: 600; font-size: 14.5px; }
+.pos-card .row { display: flex; align-items: flex-end; justify-content: space-between; margin-top: 10px; gap: 12px; }
+.pos-card .num { font-family: var(--mono); font-weight: 600; font-size: 34px; line-height: 1; color: var(--ink); }
+.pos-card .num-label { font-family: var(--mono); font-size: 9.5px; color: var(--ink-60); text-transform: uppercase; letter-spacing: .1em; }
+.pos-card .eta { font-family: var(--mono); font-size: 13px; color: var(--ink-60); text-align: right; }
+.pos-track { height: 4px; background: var(--line); border-radius: 2px; margin-top: 10px; overflow: hidden; }
+.pos-track i { display: block; height: 100%; background: var(--system); border-radius: 2px; transition: width .5s cubic-bezier(0.16, 1, 0.3, 1); }
+.pos-card.warm .pos-track i { background: var(--rung-warm); }
+.pos-card.hot .pos-track i { background: var(--rung-hot); }
+.pos-card.done .pos-track i { background: var(--st-selected); }
+
+.rung-badge { display: inline-flex; align-items: center; font-family: var(--mono); font-size: 10px; font-weight: 600; padding: 3px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing: .06em; background: var(--paper); color: var(--ink-60); border: 1px solid var(--line); }
+.rung-badge.warm { background: #FEF3DC; color: var(--rung-warm); border-color: #F0D89A; }
+.rung-badge.hot { background: var(--live-soft); color: var(--rung-hot); border-color: #F3CBC2; }
+.rung-badge.done { background: #E3F7EB; color: var(--st-selected); border-color: #BEE8D0; }
+.rung-badge.waitlisted { background: var(--paper); color: var(--ink-60); }
+
+.footer-note { font-family: var(--mono); font-size: 10.5px; color: var(--ink-60); text-align: center; padding: 12px 18px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
+.qr-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 14px 0; }
+.qr-wrap img { border-radius: 10px; border: 1px solid var(--line); }
+
+/* --- desk tablet --- */
+.tablet-grid { display: grid; grid-template-columns: 1fr 200px; gap: 16px; }
+@media (max-width: 720px) { .tablet-grid { grid-template-columns: 1fr; } }
+.incoming-card { border: 1px solid var(--line); border-radius: 10px; padding: 16px; background: var(--card); }
+.incoming-card .tag { font-family: var(--mono); font-size: 10.5px; color: var(--rung-hot); text-transform: uppercase; letter-spacing: .08em; }
+.incoming-card .tk { font-family: var(--mono); font-weight: 600; font-size: 28px; color: var(--rung-hot); margin-top: 4px; }
+
+.ring-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 10px; padding: 16px; background: var(--card); }
+.ring { position: relative; width: 120px; height: 120px; border-radius: 50%; background: conic-gradient(var(--system) calc(var(--pct, 100) * 1%), var(--line) 0); display: flex; align-items: center; justify-content: center; transition: background .2s linear; }
+.ring.warn { background: conic-gradient(var(--rung-hot) calc(var(--pct, 100) * 1%), var(--line) 0); }
+.ring.done { background: var(--st-selected); }
+.ring .face { width: 96px; height: 96px; border-radius: 50%; background: var(--card); display: flex; align-items: center; justify-content: center; }
+.mm-ss { font-family: var(--mono); font-weight: 600; font-size: 20px; }
+.ring-label { font-family: var(--mono); font-size: 9.5px; color: var(--ink-60); text-transform: uppercase; letter-spacing: .1em; }

@@ -36,6 +36,16 @@ function attach(httpServer) {
     }
   });
 
+  // Queue-system Phase 3: a desk tablet joins its own room so dispatch
+  // events for other companies/desks never reach it. Room name matches
+  // events.emitToRoom's convention: desk:{companyId}:{deskId}.
+  io.on('connection', (socket) => {
+    socket.on('join-desk', ({ companyId, deskId }) => {
+      if (companyId == null || deskId == null) return;
+      socket.join(`desk:${companyId}:${deskId}`);
+    });
+  });
+
   events.setIo(io);
   return io;
 }

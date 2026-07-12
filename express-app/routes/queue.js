@@ -5,6 +5,10 @@ const { authenticateJWT } = require('../middleware/auth');
 const requireRole = require('../middleware/requireRole');
 const redisCache = require('../middleware/redisCache');
 const { emit } = require('../lib/events');
+const { verifyQr } = require('../lib/checkinSig');
+const dispatcher = require('../lib/queueDispatcher');
+const { clearNoShowTimer } = require('../lib/noShowTimer');
+const redis = require('../lib/redisClient');
 
 const router = express.Router();
 
@@ -74,22 +78,24 @@ router.put('/interview-result', authenticateJWT, requireRole('admin', 'company_h
     }
   }
 
-  // CTE captures the pre-update status so the statsDelta knows whether the
-  // candidate was at the desk (Dispatched) or still pending (v3.0 §8).
+  // CTE captures the pre-update status (+ queue-system fields) so the
+  // statsDelta knows whether the candidate was at the desk (Dispatched) or
+  // still pending (v3.0 §8), and so we know whether this booking went
+  // through the new dispatch model at all (serial IS NOT NULL) below.
   const result = await pool.query(
     `WITH old AS (
-       SELECT id, status FROM candidate_company_status
+       SELECT id, status, serial, dispatched_at FROM candidate_company_status
        WHERE candidate_id = $5 AND company_id = $6 AND deleted_at IS NULL
      )
      UPDATE candidate_company_status ccs
      SET status = $1, ratings = $2, feedback_text = $3, feedback_by = $4, processed_at = now()
      FROM old WHERE ccs.id = old.id
-     RETURNING ccs.*, old.status AS old_status`,
+     RETURNING ccs.*, old.status AS old_status, old.serial AS old_serial, old.dispatched_at AS old_dispatched_at`,
     [status, ratings ? JSON.stringify(ratings) : null, feedback_text || null, req.user.id, candidateId, company_id]
   );
 
   if (!result.rows.length) return res.status(404).json({ error: 'No matching assignment for this candidate and company' });
-  const { old_status, ...row } = result.rows[0];
+  const { old_status, old_serial, old_dispatched_at, ...row } = result.rows[0];
 
   const statsDelta = { completed: 1 };
   if (old_status === 'Dispatched') statsDelta.atDesk = -1;
@@ -102,7 +108,61 @@ router.put('/interview-result', authenticateJWT, requireRole('admin', 'company_h
     statsDelta,
   });
 
+  // Queue-system Phase 3: this is the "done tap" — new_architecture_uiux_spec.html's
+  // desk tablet combines recording a result with releasing the desk. Only
+  // fires for bookings that went through the new model (serial IS NOT NULL);
+  // v1-era rows (slot_id, no serial) are untouched. deskId comes from the
+  // Redis lock itself rather than trusting a client-supplied value.
+  if (old_serial != null && old_status === 'Dispatched') {
+    const deskId = await redis.get(`lock:${candidateId}`);
+    if (deskId) {
+      const serviceMinutes = old_dispatched_at
+        ? Math.max(0.5, (Date.now() - new Date(old_dispatched_at).getTime()) / 60000)
+        : 6;
+      await dispatcher.completeInterview({ candidateId, companyId: Number(company_id), deskId, serviceMinutes });
+    }
+  }
+
   res.json(row);
+}));
+
+// Admin / Floor Manager / Company HR: desk tablet asks for its first
+// candidate, or nudges a desk that's sitting on the waiting list — exposes
+// dispatch(companyId, deskId) over HTTP for the first time (Phase 1/2 only
+// exercised it via fixtures). Normal backfill after a result doesn't need
+// this — completeInterview() above already re-dispatches the same desk.
+router.post('/queue/desk/next', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), asyncHandler(async (req, res) => {
+  const { company_id, desk_id } = req.body;
+  if (!company_id || !desk_id) return res.status(400).json({ error: 'company_id and desk_id are required' });
+  const dispatched = await dispatcher.dispatch(Number(company_id), String(desk_id));
+  res.json({ dispatched });
+}));
+
+// Admin / Floor Manager / Company HR: desk QR scan confirms the candidate
+// physically arrived — clears the no-show timer armed at dispatch
+// (new_architecture.md §3.4/§6.1). Reuses the same HMAC QR scheme as the
+// entrance gate's checkin_sig, just verified here instead of at check-in.
+router.post('/queue/confirm-arrival', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), asyncHandler(async (req, res) => {
+  const { qr, token, company_id } = req.body;
+  let tokenNo = token;
+  if (qr) {
+    tokenNo = verifyQr(qr);
+    if (!tokenNo) return res.status(400).json({ error: 'Invalid or forged QR' });
+  }
+  if (!tokenNo || !company_id) return res.status(400).json({ error: 'qr (or token) and company_id are required' });
+
+  const candRes = await pool.query('SELECT id FROM candidates WHERE token_no = $1 AND deleted_at IS NULL', [tokenNo]);
+  if (!candRes.rows.length) return res.status(404).json({ error: 'Candidate not found' });
+  const candidateId = candRes.rows[0].id;
+
+  const ccsRes = await pool.query(
+    `SELECT id FROM candidate_company_status WHERE candidate_id = $1 AND company_id = $2 AND status = 'Dispatched' AND deleted_at IS NULL`,
+    [candidateId, company_id]
+  );
+  if (!ccsRes.rows.length) return res.status(404).json({ error: 'This candidate is not currently dispatched to this company' });
+
+  const cleared = await clearNoShowTimer(candidateId, Number(company_id));
+  res.json({ ok: true, timer_cleared: cleared });
 }));
 
 // Admin / Floor Manager: mark a no-show (flow D) — frees the desk; the slot

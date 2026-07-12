@@ -13,22 +13,37 @@ function setIo(instance) {
   io = instance;
 }
 
+function getEmitter() {
+  if (io) return io;
+  if (!emitter) {
+    const { Emitter } = require('@socket.io/redis-emitter');
+    const IORedis = require('ioredis');
+    const client = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', {
+      maxRetriesPerRequest: 1,
+    });
+    client.on('error', (err) => console.error('[events] Redis error:', err.message));
+    emitter = new Emitter(client);
+  }
+  return emitter;
+}
+
 function emit(event, payload) {
   try {
-    if (io) return void io.emit(event, payload);
-    if (!emitter) {
-      const { Emitter } = require('@socket.io/redis-emitter');
-      const IORedis = require('ioredis');
-      const client = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', {
-        maxRetriesPerRequest: 1,
-      });
-      client.on('error', (err) => console.error('[events] Redis error:', err.message));
-      emitter = new Emitter(client);
-    }
-    emitter.emit(event, payload);
+    getEmitter().emit(event, payload);
   } catch (err) {
     console.warn(`[events] emit ${event} failed:`, err.message);
   }
 }
 
-module.exports = { setIo, emit };
+// Queue-system Phase 3: desk tablets join a room per desk (lib/io.js's
+// 'join-desk' handler) so a dispatch at company A doesn't wake up every
+// staff socket in the building — only the one desk it's actually for.
+function emitToRoom(room, event, payload) {
+  try {
+    getEmitter().to(room).emit(event, payload);
+  } catch (err) {
+    console.warn(`[events] emit ${event} to room ${room} failed:`, err.message);
+  }
+}
+
+module.exports = { setIo, emit, emitToRoom };

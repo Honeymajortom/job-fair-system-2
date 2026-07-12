@@ -42,20 +42,28 @@ router.get('/companies/:id', authenticateJWT, asyncHandler(async (req, res) => {
      FROM interview_slots s WHERE s.company_id = $1 ORDER BY s.slot_start`,
     [req.params.id]
   );
+  const postsRes = await pool.query(
+    'SELECT * FROM company_posts WHERE company_id = $1 ORDER BY id',
+    [req.params.id]
+  );
 
-  res.json({ ...companyRes.rows[0], rating_parameters: paramsRes.rows, slots: slotsRes.rows });
+  res.json({ ...companyRes.rows[0], rating_parameters: paramsRes.rows, slots: slotsRes.rows, posts: postsRes.rows });
 }));
 
-// Admin: create a company
+// Admin: create a company. seats/interview_minutes feed the queue-system
+// booking-cap gate (new_architecture.md §4: capacity_j = seats *
+// (60/interview_minutes) * fair_hours) — default to 1 seat / 6-min
+// interviews (sim's baseline) so an unconfigured company still gets a
+// sane, non-zero cap instead of silently waitlisting everyone.
 router.post('/companies', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
-  const { company_name, description, location, field, job_type, min_qualification, max_qualification, max_queue_limit } = req.body;
+  const { company_name, description, location, field, job_type, min_qualification, max_qualification, max_queue_limit, seats, interview_minutes } = req.body;
   if (!company_name) return res.status(400).json({ error: 'company_name is required' });
 
   try {
     const result = await pool.query(
-      `INSERT INTO companies (company_name, description, location, field, job_type, min_qualification, max_qualification, max_queue_limit)
-       VALUES ($1,$2,$3,$4,$5,$6,$7, COALESCE($8, 7)) RETURNING *`,
-      [company_name, description || null, location || null, field || null, job_type || null, min_qualification || null, max_qualification || null, max_queue_limit || null]
+      `INSERT INTO companies (company_name, description, location, field, job_type, min_qualification, max_qualification, max_queue_limit, seats, interview_minutes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7, COALESCE($8, 7), COALESCE($9, 1), COALESCE($10, 6)) RETURNING *`,
+      [company_name, description || null, location || null, field || null, job_type || null, min_qualification || null, max_qualification || null, max_queue_limit || null, seats || null, interview_minutes || null]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -74,6 +82,59 @@ router.post('/companies/:id/rating-parameters', authenticateJWT, requireRole('ad
     [req.params.id, parameter_name, display_order || 0]
   );
   res.status(201).json(result.rows[0]);
+}));
+
+// Admin: remove a rating parameter
+router.delete('/companies/:id/rating-parameters/:paramId', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
+  const result = await pool.query(
+    'DELETE FROM rating_parameters WHERE id = $1 AND company_id = $2 RETURNING id',
+    [req.params.paramId, req.params.id]
+  );
+  if (!result.rows.length) return res.status(404).json({ error: 'Rating parameter not found' });
+  res.json({ ok: true, id: result.rows[0].id });
+}));
+
+// Admin: add a posting (vacancy tracking — v2.5's company_posts, see schema.sql)
+router.post('/companies/:id/posts', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
+  const { post_title, vacancies, qualification, gender, age_min, age_max } = req.body;
+  if (!post_title) return res.status(400).json({ error: 'post_title is required' });
+
+  const result = await pool.query(
+    `INSERT INTO company_posts (company_id, post_title, vacancies, qualification, gender, age_min, age_max)
+     VALUES ($1,$2, COALESCE($3,1), $4,$5,$6,$7) RETURNING *`,
+    [req.params.id, post_title, vacancies || null, qualification || null, gender || null, age_min || null, age_max || null]
+  );
+  res.status(201).json(result.rows[0]);
+}));
+
+// Admin: edit a posting
+router.put('/companies/:id/posts/:postId', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
+  const { post_title, vacancies, qualification, gender, age_min, age_max } = req.body;
+
+  const result = await pool.query(
+    `UPDATE company_posts
+     SET post_title = COALESCE($1, post_title),
+         vacancies = COALESCE($2, vacancies),
+         qualification = COALESCE($3, qualification),
+         gender = COALESCE($4, gender),
+         age_min = COALESCE($5, age_min),
+         age_max = COALESCE($6, age_max)
+     WHERE id = $7 AND company_id = $8
+     RETURNING *`,
+    [post_title || null, vacancies || null, qualification || null, gender || null, age_min || null, age_max || null, req.params.postId, req.params.id]
+  );
+  if (!result.rows.length) return res.status(404).json({ error: 'Posting not found' });
+  res.json(result.rows[0]);
+}));
+
+// Admin: remove a posting
+router.delete('/companies/:id/posts/:postId', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
+  const result = await pool.query(
+    'DELETE FROM company_posts WHERE id = $1 AND company_id = $2 RETURNING id',
+    [req.params.postId, req.params.id]
+  );
+  if (!result.rows.length) return res.status(404).json({ error: 'Posting not found' });
+  res.json({ ok: true, id: result.rows[0].id });
 }));
 
 // Admin: add a slot

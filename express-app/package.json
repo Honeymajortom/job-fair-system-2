@@ -7,7 +7,8 @@
     "migrate": "node db/migrate.js",
     "seed": "node db/seed.js",
     "dev": "node server.js",
-    "worker": "node workers/slotDispatcher.js"
+    "worker": "node workers/slotDispatcher.js",
+    "worker:noshow": "node workers/noShowWorker.js"
   },
   "dependencies": {
     "@socket.io/redis-adapter": "^8.3.0",
