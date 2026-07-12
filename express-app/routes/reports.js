@@ -4,6 +4,7 @@ const asyncHandler = require('../asyncHandler');
 const { authenticateJWT } = require('../middleware/auth');
 const requireRole = require('../middleware/requireRole');
 const redisCache = require('../middleware/redisCache');
+const { toCsv } = require('../lib/csv');
 
 const router = express.Router();
 
@@ -14,7 +15,7 @@ router.use(['/company-stats', '/qual-distribution', '/field-distribution', '/mas
   authenticateJWT, requireRole('admin'), redisCache(20));
 
 // Per-company funnel — also feeds the FloorMonitor grid header counts.
-router.get('/company-stats', asyncHandler(async (_req, res) => {
+router.get('/company-stats', asyncHandler(async (req, res) => {
   const result = await pool.query(
     `SELECT c.id, c.company_name, c.location,
             COUNT(ccs.id) FILTER (WHERE ccs.deleted_at IS NULL)::int AS assigned,
@@ -28,29 +29,38 @@ router.get('/company-stats', asyncHandler(async (_req, res) => {
      GROUP BY c.id
      ORDER BY c.company_name`
   );
+  if (req.query.format === 'csv') {
+    return res.type('text/csv').attachment('company-stats.csv').send(toCsv(result.rows));
+  }
   res.json(result.rows);
 }));
 
-router.get('/qual-distribution', asyncHandler(async (_req, res) => {
+router.get('/qual-distribution', asyncHandler(async (req, res) => {
   const result = await pool.query(
     `SELECT COALESCE(NULLIF(TRIM(qualification), ''), 'Unknown') AS qualification, COUNT(*)::int AS count
      FROM candidates WHERE deleted_at IS NULL
      GROUP BY 1 ORDER BY count DESC, qualification`
   );
+  if (req.query.format === 'csv') {
+    return res.type('text/csv').attachment('qual-distribution.csv').send(toCsv(result.rows));
+  }
   res.json(result.rows);
 }));
 
-router.get('/field-distribution', asyncHandler(async (_req, res) => {
+router.get('/field-distribution', asyncHandler(async (req, res) => {
   const result = await pool.query(
     `SELECT COALESCE(NULLIF(TRIM(field), ''), 'Unknown') AS field, COUNT(*)::int AS count
      FROM candidates WHERE deleted_at IS NULL
      GROUP BY 1 ORDER BY count DESC, field`
   );
+  if (req.query.format === 'csv') {
+    return res.type('text/csv').attachment('field-distribution.csv').send(toCsv(result.rows));
+  }
   res.json(result.rows);
 }));
 
 // One row per (candidate, company) assignment — the full export.
-router.get('/master-report', asyncHandler(async (_req, res) => {
+router.get('/master-report', asyncHandler(async (req, res) => {
   const result = await pool.query(
     `SELECT cd.token_no, cd.name, cd.mobile, cd.qualification, cd.field, cd.employment_status,
             b.batch_number, cd.checked_in_at IS NOT NULL AS checked_in,
@@ -65,11 +75,14 @@ router.get('/master-report', asyncHandler(async (_req, res) => {
      WHERE ccs.deleted_at IS NULL
      ORDER BY cd.token_no, s.slot_start ASC NULLS LAST`
   );
+  if (req.query.format === 'csv') {
+    return res.type('text/csv').attachment('master-report.csv').send(toCsv(result.rows));
+  }
   res.json(result.rows);
 }));
 
 // One row per candidate — assignment/outcome rollup.
-router.get('/candidate-summary', asyncHandler(async (_req, res) => {
+router.get('/candidate-summary', asyncHandler(async (req, res) => {
   const result = await pool.query(
     `SELECT cd.token_no, cd.name, cd.qualification, cd.field,
             b.batch_number, cd.checked_in_at IS NOT NULL AS checked_in,
@@ -84,11 +97,14 @@ router.get('/candidate-summary', asyncHandler(async (_req, res) => {
      GROUP BY cd.id, b.batch_number
      ORDER BY cd.token_no`
   );
+  if (req.query.format === 'csv') {
+    return res.type('text/csv').attachment('candidate-summary.csv').send(toCsv(result.rows));
+  }
   res.json(result.rows);
 }));
 
 // Average rating per (company, parameter) from the ratings JSONB.
-router.get('/rating-report', asyncHandler(async (_req, res) => {
+router.get('/rating-report', asyncHandler(async (req, res) => {
   const result = await pool.query(
     `SELECT c.company_name, r.key AS parameter,
             ROUND(AVG(r.value::numeric), 2)::float AS avg_rating,
@@ -100,6 +116,9 @@ router.get('/rating-report', asyncHandler(async (_req, res) => {
      GROUP BY c.company_name, r.key
      ORDER BY c.company_name, r.key`
   );
+  if (req.query.format === 'csv') {
+    return res.type('text/csv').attachment('rating-report.csv').send(toCsv(result.rows));
+  }
   res.json(result.rows);
 }));
 
