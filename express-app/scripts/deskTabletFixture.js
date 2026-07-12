@@ -162,9 +162,84 @@ async function partB() {
   await noShowTimer.clearNoShowTimer(c1.id, companyId);
 }
 
+async function partC() {
+  console.log('\n=== Part C: "Interview started" (confirm-arrival) sets interview_started_at, which completeInterview() prefers over dispatched_at ===\n');
+
+  const loginRes = await fetch(`${API}/api/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password: 'admin123' }),
+  });
+  const { token } = await loginRes.json();
+
+  const companyId = await makeCompany('__test_start_co');
+  const c1 = await makeCandidate('__test start c1');
+  const c2 = await makeCandidate('__test start c2');
+  const ccs1 = await bookCandidate(c1.id, companyId, 1);
+  await bookCandidate(c2.id, companyId, 2);
+
+  const d1 = await fetch(`${API}/api/queue/desk/next`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ company_id: companyId, desk_id: 'deskP3-start' }),
+  }).then((r) => r.json());
+  check('c1 dispatched', d1.dispatched && d1.dispatched.candidateId === c1.id, JSON.stringify(d1));
+
+  // Backdate dispatched_at 10 minutes so the two possible anchors (dispatched_at
+  // vs interview_started_at) produce clearly distinguishable drain rates —
+  // otherwise both would floor to the same 0.5min minimum in a fast test.
+  await pool.query(`UPDATE candidate_company_status SET dispatched_at = now() - interval '10 minutes' WHERE id = $1`, [ccs1]);
+
+  const arriveRes = await fetch(`${API}/api/queue/confirm-arrival`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ token: c1.token, company_id: companyId }),
+  }).then((r) => r.json());
+  check('confirm-arrival returns interview_started_at', !!arriveRes.interview_started_at, JSON.stringify(arriveRes));
+  const afterArrive = await ccsRow(ccs1);
+  check('interview_started_at is fresh (not the backdated dispatched_at)', Date.now() - new Date(arriveRes.interview_started_at).getTime() < 5000, arriveRes.interview_started_at);
+
+  await sleep(500);
+
+  const resultRes = await fetch(`${API}/api/interview-result`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ token: c1.token, company_id: companyId, status: 'Selected', ratings: {} }),
+  }).then((r) => r.json());
+  check('interview-result submitted', resultRes.status === 'Selected', JSON.stringify(resultRes));
+
+  await sleep(200);
+  const rate = await store.getDrainRate(companyId);
+  // No prior drain:{companyId} key existed, so updateDrainRate's first sample
+  // is exact (no EMA blending) — 1/serviceMinutes. serviceMinutes floors at
+  // 0.5 (MIN via Math.max), so rate should land at exactly 2.0 if anchored to
+  // interview_started_at (~0.5s elapsed). If it had wrongly used the
+  // backdated dispatched_at (~10min elapsed), rate would be ~0.1 instead.
+  check('drain rate reflects interview_started_at (~2.0/min), not the backdated dispatched_at (~0.1/min)', rate > 1.5, String(rate));
+
+  console.log('\n--- redispatch resets interview_started_at (no leaking a stale value forward) ---');
+  await pool.query(`UPDATE candidate_company_status SET status = 'Dispatched', interview_started_at = now() WHERE candidate_id = $1 AND company_id = $2`, [c2.id, companyId]);
+  await store.acquireLock(c2.id, 'deskP3-stale');
+  // Simulate a miss: revert to Pending like the no-show worker does, but
+  // leave interview_started_at set (exactly what a real no-show would do,
+  // since only dispatch() and completeInterview() touch that column).
+  await pool.query(`UPDATE candidate_company_status SET status = 'Pending', interview_started_at = interview_started_at WHERE candidate_id = $1 AND company_id = $2`, [c2.id, companyId]);
+  await store.releaseLock(c2.id);
+
+  const d2 = await dispatcher.dispatch(companyId, 'deskP3-redispatch');
+  check('c2 redispatched', d2 && d2.candidateId === c2.id, JSON.stringify(d2));
+  const c2Row = await pool.query('SELECT interview_started_at FROM candidate_company_status WHERE candidate_id = $1 AND company_id = $2', [c2.id, companyId]);
+  check('interview_started_at reset to NULL on fresh dispatch', c2Row.rows[0].interview_started_at === null, JSON.stringify(c2Row.rows[0]));
+
+  // cleanup
+  await pool.query('DELETE FROM candidate_company_status WHERE candidate_id = ANY($1::int[])', [[c1.id, c2.id]]);
+  await pool.query('DELETE FROM candidates WHERE id = ANY($1::int[])', [[c1.id, c2.id]]);
+  await pool.query('DELETE FROM companies WHERE id = $1', [companyId]);
+  await redis.del(`queue:${companyId}`, `drain:${companyId}`, `waiting_desks:${companyId}`, `lock:${c1.id}`, `lock:${c2.id}`);
+  await noShowTimer.clearNoShowTimer(c1.id, companyId);
+  await noShowTimer.clearNoShowTimer(c2.id, companyId);
+}
+
 async function main() {
   await partA();
   await partB();
+  await partC();
   console.log(`\n=== ${pass} passed, ${fail} failed ===`);
   await pool.end();
   redis.disconnect();

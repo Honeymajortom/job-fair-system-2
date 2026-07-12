@@ -42,7 +42,10 @@ async function dispatch(companyId, deskId) {
     const locked = await store.acquireLock(candidateId, deskId);
     if (!locked) continue;                            // lost a race to a concurrent dispatch() call
 
-    await pool.query(`UPDATE candidate_company_status SET status = 'Dispatched', dispatched_at = now() WHERE id = $1`, [row.ccs_id]);
+    // interview_started_at reset to NULL here — a stale value from a prior
+    // dispatch cycle (e.g. a missed call that got redispatched) must not leak
+    // into this cycle's "has the interview actually started" state.
+    await pool.query(`UPDATE candidate_company_status SET status = 'Dispatched', dispatched_at = now(), interview_started_at = NULL WHERE id = $1`, [row.ccs_id]);
     await store.clearDeskWaiting(companyId, deskId);
     await armNoShowTimer({ candidateId, companyId, deskId, ccsId: row.ccs_id });
     // armNoShowTimer defaults sameFloor:true (see noShowTimer.js's floor-

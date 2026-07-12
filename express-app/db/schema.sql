@@ -226,6 +226,19 @@ ALTER TABLE candidates
   ADD COLUMN IF NOT EXISTS is_sdc BOOLEAN;
 
 -- ---------------------------------------------------------------------------
+-- Desk tablet: explicit "interview started" step, distinct from dispatched_at
+-- (called to the desk) and processed_at (result recorded). Closes a real gap:
+-- without this, the no-show timer (armed at dispatch, 90s/180s) had no way to
+-- learn a candidate actually arrived except the interview finishing outright
+-- — any interview running longer than the timer would incorrectly no-show a
+-- candidate mid-interview. Also improves completeInterview()'s drain-rate EMA,
+-- which previously measured dispatched_at -> result (walk-over time included)
+-- instead of the real interview duration.
+-- ---------------------------------------------------------------------------
+ALTER TABLE candidate_company_status
+  ADD COLUMN IF NOT EXISTS interview_started_at TIMESTAMPTZ;
+
+-- ---------------------------------------------------------------------------
 -- Company Management (new_architecture_uiux_spec.html §07): vacancy tracking.
 -- Migrated from old/SDC_JobFair_Architecture.md's v2.5 company_posts design —
 -- a company can advertise multiple named postings, each with its own vacancy

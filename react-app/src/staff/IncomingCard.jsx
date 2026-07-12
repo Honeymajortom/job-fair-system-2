@@ -8,11 +8,28 @@ const OUTCOMES = ['Selected', 'Rejected', 'Shortlisted', 'Hold'];
 // surfaces this compact outcome step before actually submitting. Reuses the
 // same segmented-control + stars pattern the old (deleted) CompanyDesk.jsx
 // used, and the .seg/.stars classes already in index.css.
-export default function IncomingCard({ candidate, ratingParameters, onDone }) {
+//
+// Three-step flow: arriving (waiting for onStartInterview) -> interviewing
+// (Done becomes available) -> picking an outcome. The middle step exists
+// because "called to desk" and "interview actually started" are genuinely
+// different moments — an interview can run well past the arrival timer's
+// 90s/180s window, and without an explicit start tap the no-show timer had
+// no way to know the candidate had shown up.
+export default function IncomingCard({ candidate, ratingParameters, interviewStartedAt, onStartInterview, onDone }) {
+  const [starting, setStarting] = useState(false);
   const [pickingOutcome, setPickingOutcome] = useState(false);
   const [status, setStatus] = useState(null);
   const [ratings, setRatings] = useState({});
   const [submitting, setSubmitting] = useState(false);
+
+  async function startInterview() {
+    setStarting(true);
+    try {
+      await onStartInterview();
+    } finally {
+      setStarting(false);
+    }
+  }
 
   function setStar(param, value) {
     setRatings((prev) => ({ ...prev, [param]: value }));
@@ -38,7 +55,7 @@ export default function IncomingCard({ candidate, ratingParameters, onDone }) {
       animate={{ opacity: 1, x: 0 }}
       transition={{ duration: 0.35, ease: [0.25, 1, 0.5, 1] }}
     >
-      <div className="tag">On their way to you</div>
+      <div className="tag">{interviewStartedAt ? 'Interviewing now' : 'On their way to you'}</div>
       <div className="tk">{candidate.token}</div>
       <dl className="cand-card" style={{ border: 'none', padding: 0 }}>
         <dt>Name</dt><dd>{candidate.name}</dd>
@@ -47,9 +64,22 @@ export default function IncomingCard({ candidate, ratingParameters, onDone }) {
         <dt>Coming from</dt><dd>{candidate.comingFrom}</dd>
       </dl>
 
-      <AnimatePresence>
-        {!pickingOutcome && (
+      <AnimatePresence mode="wait">
+        {!interviewStartedAt && (
           <m.button
+            key="start"
+            className="btn ok"
+            style={{ marginTop: 14 }}
+            onClick={startInterview}
+            disabled={starting}
+            exit={{ opacity: 0 }}
+          >
+            {starting ? 'Starting…' : '▶ Interview started'}
+          </m.button>
+        )}
+        {interviewStartedAt && !pickingOutcome && (
+          <m.button
+            key="done"
             className="btn ok"
             style={{ marginTop: 14 }}
             onClick={() => setPickingOutcome(true)}
@@ -60,6 +90,7 @@ export default function IncomingCard({ candidate, ratingParameters, onDone }) {
         )}
         {pickingOutcome && (
           <m.div
+            key="outcome"
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
             transition={{ duration: 0.25 }}

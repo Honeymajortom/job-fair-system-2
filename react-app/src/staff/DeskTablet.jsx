@@ -5,6 +5,7 @@ import { api } from '../api';
 import { useSocket, useSocketEvent } from './SocketContext';
 import IncomingCard from './IncomingCard';
 import CountdownRing from './CountdownRing';
+import InterviewTimer from './InterviewTimer';
 
 // Backend always arms the same-floor timer (90s) — floor tracking doesn't
 // exist yet (lib/noShowTimer.js's own floor-awareness note) — so this is the
@@ -29,7 +30,7 @@ export default function DeskTablet() {
   const { joinDesk } = useSocket();
 
   const [ratingParameters, setRatingParameters] = useState([]);
-  const [incoming, setIncoming] = useState(null); // { candidateId, ccsId, expiresAt, details }
+  const [incoming, setIncoming] = useState(null); // { candidateId, ccsId, expiresAt, interviewStartedAt, details }
   const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(false);
 
@@ -49,9 +50,9 @@ export default function DeskTablet() {
   async function applyIncoming({ candidateId, ccsId, token, expiresAt }) {
     try {
       const details = await fetchCandidateDetails(token, companyId);
-      setIncoming({ candidateId, ccsId, expiresAt, details });
+      setIncoming({ candidateId, ccsId, expiresAt, interviewStartedAt: null, details });
     } catch {
-      setIncoming({ candidateId, ccsId, expiresAt, details: { token, name: token, missedCalls: 0, comingFrom: 'Same floor' } });
+      setIncoming({ candidateId, ccsId, expiresAt, interviewStartedAt: null, details: { token, name: token, missedCalls: 0, comingFrom: 'Same floor' } });
     }
   }
 
@@ -99,6 +100,16 @@ export default function DeskTablet() {
     }
   }
 
+  async function handleStartInterview() {
+    if (!incoming) return;
+    try {
+      const res = await api.confirmArrival({ token: incoming.details.token, company_id: companyId });
+      setIncoming((cur) => (cur && cur.candidateId === incoming.candidateId ? { ...cur, interviewStartedAt: res.interview_started_at } : cur));
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
   async function handleDone({ status, ratings }) {
     if (!incoming) return;
     try {
@@ -117,7 +128,14 @@ export default function DeskTablet() {
       <div className="tablet-grid">
         <AnimatePresence mode="wait">
           {incoming ? (
-            <IncomingCard key={incoming.candidateId} candidate={incoming.details} ratingParameters={ratingParameters} onDone={handleDone} />
+            <IncomingCard
+              key={incoming.candidateId}
+              candidate={incoming.details}
+              ratingParameters={ratingParameters}
+              interviewStartedAt={incoming.interviewStartedAt}
+              onStartInterview={handleStartInterview}
+              onDone={handleDone}
+            />
           ) : (
             <m.div key="idle" className="incoming-card" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               <p className="save-note" style={{ textAlign: 'left' }}>No one at the desk right now.</p>
@@ -127,7 +145,11 @@ export default function DeskTablet() {
             </m.div>
           )}
         </AnimatePresence>
-        <CountdownRing expiresAt={incoming?.expiresAt} totalMs={SAME_FLOOR_MS} />
+        {incoming?.interviewStartedAt ? (
+          <InterviewTimer startedAt={incoming.interviewStartedAt} />
+        ) : (
+          <CountdownRing expiresAt={incoming?.expiresAt} totalMs={SAME_FLOOR_MS} />
+        )}
       </div>
       {toast && <div className={`toast${toast.isErr ? ' err' : ''}`}>{toast.text}</div>}
     </div>

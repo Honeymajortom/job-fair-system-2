@@ -94,18 +94,18 @@ router.put('/interview-result', authenticateJWT, requireRole('admin', 'company_h
   // through the new dispatch model at all (serial IS NOT NULL) below.
   const result = await pool.query(
     `WITH old AS (
-       SELECT id, status, serial, dispatched_at FROM candidate_company_status
+       SELECT id, status, serial, dispatched_at, interview_started_at FROM candidate_company_status
        WHERE candidate_id = $5 AND company_id = $6 AND deleted_at IS NULL
      )
      UPDATE candidate_company_status ccs
      SET status = $1, ratings = $2, feedback_text = $3, feedback_by = $4, processed_at = now()
      FROM old WHERE ccs.id = old.id
-     RETURNING ccs.*, old.status AS old_status, old.serial AS old_serial, old.dispatched_at AS old_dispatched_at`,
+     RETURNING ccs.*, old.status AS old_status, old.serial AS old_serial, old.dispatched_at AS old_dispatched_at, old.interview_started_at AS old_interview_started_at`,
     [status, ratings ? JSON.stringify(ratings) : null, feedback_text || null, req.user.id, candidateId, company_id]
   );
 
   if (!result.rows.length) return res.status(404).json({ error: 'No matching assignment for this candidate and company' });
-  const { old_status, old_serial, old_dispatched_at, ...row } = result.rows[0];
+  const { old_status, old_serial, old_dispatched_at, old_interview_started_at, ...row } = result.rows[0];
 
   const statsDelta = { completed: 1 };
   if (old_status === 'Dispatched') statsDelta.atDesk = -1;
@@ -126,8 +126,15 @@ router.put('/interview-result', authenticateJWT, requireRole('admin', 'company_h
   if (old_serial != null && old_status === 'Dispatched') {
     const deskId = await redis.get(`lock:${candidateId}`);
     if (deskId) {
-      const serviceMinutes = old_dispatched_at
-        ? Math.max(0.5, (Date.now() - new Date(old_dispatched_at).getTime()) / 60000)
+      // Prefer interview_started_at (set by confirm-arrival, the "interview
+      // started" tap) over dispatched_at — dispatched_at -> now() includes
+      // however long the candidate took to walk over, which inflates the
+      // drain-rate EMA below the desk's real throughput. Falls back to
+      // dispatched_at for the rare tap-Done-without-confirming path so the
+      // EMA still gets a real number instead of always the 6min default.
+      const anchor = old_interview_started_at || old_dispatched_at;
+      const serviceMinutes = anchor
+        ? Math.max(0.5, (Date.now() - new Date(anchor).getTime()) / 60000)
         : 6;
       await dispatcher.completeInterview({ candidateId, companyId: Number(company_id), deskId, serviceMinutes });
     }
@@ -148,10 +155,17 @@ router.post('/queue/desk/next', authenticateJWT, requireRole('admin', 'floor_man
   res.json({ dispatched });
 }));
 
-// Admin / Floor Manager / Company HR: desk QR scan confirms the candidate
-// physically arrived — clears the no-show timer armed at dispatch
-// (new_architecture.md §3.4/§6.1). Reuses the same HMAC QR scheme as the
-// entrance gate's checkin_sig, just verified here instead of at check-in.
+// Admin / Floor Manager / Company HR: candidate physically arrived and the
+// interview is starting — either a desk QR scan (HMAC-verified, same scheme
+// as the entrance gate's checkin_sig) or the desk tablet's manual "Interview
+// started" tap (plain token, no scan required — HR is looking right at them).
+// Clears the no-show timer armed at dispatch (new_architecture.md §3.4/§6.1)
+// and stamps interview_started_at, which is what completeInterview()'s
+// drain-rate EMA anchors to instead of dispatched_at (see PUT
+// /interview-result) — without this, a no-show timer had no way to learn a
+// candidate arrived except the interview finishing outright, so any
+// interview running longer than 90s/180s would incorrectly no-show someone
+// mid-interview.
 router.post('/queue/confirm-arrival', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), asyncHandler(async (req, res) => {
   const { qr, token, company_id } = req.body;
   let tokenNo = token;
@@ -166,13 +180,15 @@ router.post('/queue/confirm-arrival', authenticateJWT, requireRole('admin', 'flo
   const candidateId = candRes.rows[0].id;
 
   const ccsRes = await pool.query(
-    `SELECT id FROM candidate_company_status WHERE candidate_id = $1 AND company_id = $2 AND status = 'Dispatched' AND deleted_at IS NULL`,
+    `UPDATE candidate_company_status SET interview_started_at = now()
+      WHERE candidate_id = $1 AND company_id = $2 AND status = 'Dispatched' AND deleted_at IS NULL
+      RETURNING id, interview_started_at`,
     [candidateId, company_id]
   );
   if (!ccsRes.rows.length) return res.status(404).json({ error: 'This candidate is not currently dispatched to this company' });
 
   const cleared = await clearNoShowTimer(candidateId, Number(company_id));
-  res.json({ ok: true, timer_cleared: cleared });
+  res.json({ ok: true, timer_cleared: cleared, interview_started_at: ccsRes.rows[0].interview_started_at });
 }));
 
 // Admin / Floor Manager: mark a no-show (flow D) — frees the desk; the slot
