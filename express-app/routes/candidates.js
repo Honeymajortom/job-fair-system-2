@@ -21,7 +21,7 @@ router.post('/register', authenticateJWT, requireRole('admin', 'registration_sta
 // (grouped client-side by batch_id).
 router.get('/candidates', authenticateJWT, asyncHandler(async (_req, res) => {
   const result = await pool.query(
-    `SELECT id, token_no, name, qualification, checked_in_at, batch_id
+    `SELECT id, token_no, name, qualification, checked_in_at, batch_id, registered_at
      FROM candidates
      WHERE deleted_at IS NULL
      ORDER BY registered_at DESC`

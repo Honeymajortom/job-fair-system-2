@@ -7,12 +7,14 @@ import DeskTablet from './DeskTablet';
 import UserAdmin from './UserAdmin';
 import CompanyManagement from './CompanyManagement';
 import Reports from './Reports';
+import FloorMonitor from './FloorMonitor';
 import { api } from '../api';
 
 // prototype/integrity-test-report.md's NAV_LINKS pattern, carried forward:
 // nav visibility and route access are driven by the same single list instead
 // of two things that can drift apart.
 const NAV_LINKS = [
+  { to: '/staff/floor', label: 'Floor', roles: ['admin', 'floor_manager'] },
   { to: '/staff/desk', label: 'Desk', roles: ['admin', 'floor_manager', 'company_hr'] },
   { to: '/staff/users', label: 'Staff', roles: ['admin'] },
   { to: '/staff/companies', label: 'Companies', roles: ['admin'] },
@@ -95,6 +97,7 @@ function Shell() {
             <div className="s-shell">
               {status === 'ready' && user && <Nav />}
               <Routes>
+                <Route path="floor" element={<Gate roles={['admin', 'floor_manager']}><FloorMonitor /></Gate>} />
                 <Route path="desk" element={<DeskPicker />} />
                 <Route path="desk/:companyId/:deskId" element={<DeskTablet />} />
                 <Route path="users" element={<Gate roles={['admin']}><UserAdmin /></Gate>} />

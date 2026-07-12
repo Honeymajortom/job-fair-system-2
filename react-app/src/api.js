@@ -49,6 +49,7 @@ export const api = {
   deskNext: (payload) => request('/queue/desk/next', { method: 'POST', body: JSON.stringify(payload) }),
   confirmArrival: (payload) => request('/queue/confirm-arrival', { method: 'POST', body: JSON.stringify(payload) }),
   getStats: () => request('/stats'),
+  getFloorStats: () => request('/floor-stats'),
   getBatches: () => request('/batches'),
   setBatchStatus: (id, status) => request(`/batch/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
   checkIn: (batchId, payload) => request(`/batch/${batchId}/check-in`, { method: 'POST', body: JSON.stringify(payload) }),

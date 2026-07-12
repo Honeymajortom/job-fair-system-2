@@ -9,6 +9,7 @@ const { verifyQr } = require('../lib/checkinSig');
 const dispatcher = require('../lib/queueDispatcher');
 const { clearNoShowTimer } = require('../lib/noShowTimer');
 const redis = require('../lib/redisClient');
+const { computeFloorStats } = require('../lib/floorStats');
 
 const router = express.Router();
 
@@ -45,6 +46,15 @@ router.get('/stats', authenticateJWT, requireRole('admin', 'floor_manager'), red
     pending: pending.rows[0].n,
     companies: companies.rows[0].n,
   });
+}));
+
+// Admin / Floor Manager: Phase 5 dashboard payload — stat tiles, per-company
+// buffer target (B_j*, compute+display only this pass, see floorStats.js),
+// now-serving board, starvation alerts. 30s cache — matches §6.3's alert
+// recheck cadence closely enough while keeping the rest of the dashboard
+// reasonably fresh without a bespoke TTL per field.
+router.get('/floor-stats', authenticateJWT, requireRole('admin', 'floor_manager'), redisCache(30), asyncHandler(async (_req, res) => {
+  res.json(await computeFloorStats());
 }));
 
 // Company HR (+ Admin): record interview result + ratings + feedback

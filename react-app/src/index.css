@@ -247,3 +247,25 @@ h2.screen-title { font-family: var(--disp); font-weight: 800; font-stretch: 85%;
 .ring .face { width: 96px; height: 96px; border-radius: 50%; background: var(--card); display: flex; align-items: center; justify-content: center; }
 .mm-ss { font-family: var(--mono); font-weight: 600; font-size: 20px; }
 .ring-label { font-family: var(--mono); font-size: 9.5px; color: var(--ink-60); text-transform: uppercase; letter-spacing: .1em; }
+
+/* --- Phase 5: Floor dashboard (buffer bars, now-serving, starvation alerts).
+   .stats-row/.stat/.live-tag/.pulse-dot above already cover the stat tiles. --- */
+.buffer-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.buf-row { display: grid; grid-template-columns: 140px 1fr 56px; align-items: center; gap: 12px; border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; background: var(--card); }
+.buf-row.low { border-color: var(--rung-hot); background: var(--live-soft); }
+.buf-row .co { font-size: 13.5px; font-weight: 600; }
+.buf-row .co small { display: block; font-family: var(--mono); font-size: 10px; color: var(--ink-60); font-weight: 400; }
+.buf-track { position: relative; height: 8px; background: var(--line); border-radius: 4px; }
+.buf-fill { display: block; height: 100%; background: var(--system); border-radius: 4px; transition: width .5s cubic-bezier(0.16, 1, 0.3, 1); }
+.buf-row.low .buf-fill { background: var(--rung-hot); }
+.buf-target { position: absolute; top: -3px; width: 2px; height: 14px; background: var(--ink); }
+.buf-row .val { font-family: var(--mono); font-size: 12px; text-align: right; }
+
+.now-board { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.now-tok { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 13px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: var(--card); }
+.now-tok b { font-weight: 600; }
+.now-tok span { color: var(--ink-60); }
+
+.alert-list { display: flex; flex-direction: column; gap: 8px; }
+.alert { border: 1px solid #F3CBC2; background: var(--live-soft); border-radius: 9px; padding: 10px 12px; font-size: 13px; }
+.alert b { color: var(--live); }
