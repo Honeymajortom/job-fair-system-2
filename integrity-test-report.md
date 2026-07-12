@@ -119,3 +119,57 @@ Either way, Findings 1–2 mean **even if Redis idles out again, the API and wor
 - `prototype/express-app/workers/slotDispatcher.js` — `.on('error')` handler on the BullMQ connection
 - `prototype/react-app/src/staff/StaffApp.jsx` — `/me` failure handling now distinguishes 401 from transient errors, with backoff retry
 - `prototype/react-app/src/staff/StaffApp.jsx`, `Login.jsx` — role-aware landing page + per-route guards (prior fix, included for context)
+
+---
+
+# Integrity report — 2026-07-12 (Phase 5 / four-tab admin rebuild)
+
+Scope: everything built this session — the Staff, Companies, Reports, and Floor admin tabs, plus the Phase 5 backend (`lib/floorStats.js`, `GET /api/floor-stats`, `GET /api/candidates`'s `registered_at` fix). Method: re-verify from scratch rather than trust the session's own running commentary — reread every claimed file, rerun every fixture (including ones this session didn't touch, to catch regressions), run a real production build, check both git repos and both datastores for drift/leftovers, and cross-check `CLAUDE.md` against the actual route surface.
+
+## Result: no regressions, no data-integrity problems, two real (now-fixed) cleanup gaps, one stale claim in my own handoff notes, one pre-existing documentation gap.
+
+### 1. File/route existence — all claims confirmed correct
+
+Every file claimed built this session exists with the expected content: `lib/floorStats.js`, `lib/csv.js`, `routes/queue.js`'s `GET /floor-stats`, `routes/candidates.js`'s `registered_at` fix, `routes/companies.js`'s posts/rating-parameter routes, `routes/reports.js`'s six `?format=csv` branches, `db/schema.sql`'s `company_posts` table, and all four `.jsx` tabs (`UserAdmin`, `CompanyManagement`, `Reports`, `FloorMonitor`) wired into `StaffApp.jsx`. No missing files, no phantom claims.
+
+**One small drift found in `schema.sql` itself**: its own top-of-file comment still lists `company_posts` under "Still to come" (line 6), even though the table was added further down (line 219) this session. Cosmetic — the table works — but worth a one-line fix next time that file is touched.
+
+### 2. All fixtures rerun — 73/73 assertions pass, zero regressions
+
+Reran every fixture in `scripts/`, not just the new one, specifically to catch anything this session's changes might have broken elsewhere:
+
+| Fixture | Phase | Result |
+|---|---|---|
+| `queueDispatcherFixture.js` | 1 | 14/14 |
+| `registrationCapacityFixture.js` | 2 | 9/9 |
+| `deskTabletFixture.js` | 3 | 16/16 |
+| `phase4PositionFixture.js` | 4 | 23/23 |
+| `floorStatsFixture.js` | 5 (new) | 11/11 |
+
+**One transient failure investigated and resolved as a known non-issue, not a regression**: running `phase4PositionFixture.js` twice back-to-back (as part of this re-verification) produced one failure — `GET /api/qr/companies carries a live queue_depth` — on the second run only. Root cause: that endpoint is deliberately response-cached for 60s (`CLAUDE.md`'s documented behavior), so a second run inside that window sees the first run's stale `queue_depth`. Waited past the cache window and reran: 23/23 clean. This is a pre-existing characteristic of that fixture (unrelated to anything built this session) worth knowing if anyone else hits it, not a code defect.
+
+### 3. Production build — clean
+
+`npm run build` in `react-app`: 500 modules, no errors, no warnings. Staff chunk (lazy) is 32.8KB / 7.3KB gzipped — grown from the ~20KB noted in `CLAUDE.md` as expected, now that it carries four full admin tabs instead of one.
+
+### 4. Orphaned test data — two real leftovers found and removed
+
+Checked Postgres and Redis for anything this session's verification scripts should have cleaned up but didn't:
+
+- **Redis**: clean. No leftover `__test*`/`lock:*` keys; `queue:*`/`drain:*` entries present are real (companies 1 and 4), not test artifacts.
+- **Postgres — two genuine orphans, now deleted**: a Playwright verification script for the Floor tab crashed partway through an earlier debugging iteration (a since-fixed selector bug), which meant its cleanup step never ran for that specific run. Left behind: one candidate row (`A-146`, "Floor Socket Test") and two temporary staff accounts (`pw_floor_…`, `pw_hr_…`, floor_manager/company_hr roles). None of these were real data — deleted directly. (A second, similarly-named candidate from the *successful* rerun, `A-147`, had correctly gone through the app's own soft-delete — confirmed `deleted_at` was set, so it's properly hidden from every real read path; left as-is, that one was never a problem.)
+- Older test-looking candidates (`A-1`, `A-2`, "Test Candidate", "Stage Two Test", etc.) predate this session by over a week — not something introduced now, not touched.
+
+### 5. Git — both repos verified directly, one stale claim in my own reporting caught
+
+- **`prototype/`**: has two commits beyond what I knew about when I wrote my last summary — `1e86d44 "Reports tab updated"` and `2d23152 "Floor tab added"`, both authored by the user. Diffed both against what was actually built: contents match exactly (Reports commit: `lib/csv.js`, `routes/reports.js`, `Reports.jsx`, `StaffApp.jsx` nav wiring; Floor commit: `lib/floorStats.js`, `routes/queue.js`, `routes/candidates.js`, `scripts/floorStatsFixture.js`, `FloorMonitor.jsx`, CSS, nav wiring, plus `commit.bat`). **This means my closing summary in this session ("Nothing committed") was already wrong at the moment I said it** — the user had committed in parallel, in a window I didn't check before reporting. `handoff.md` has been corrected to stop claiming Phase 5 is uncommitted.
+- **root repo**: confirmed still genuinely uncommitted (single initial commit, same as before) — `.gitignore`/`CLAUDE.md`/`handoff.md`/`docs/`/`sim/` are staged but not committed, plus an untracked `commit.bat`. No surprises here.
+- **Secrets**: `express-app/.env` still correctly gitignored. Grepped every new file from this session for hardcoded passwords/secrets — none found.
+
+### 6. `CLAUDE.md`'s "Routes implemented" list — confirmed stale, but not a new problem
+
+Cross-checked `CLAUDE.md`'s route inventory (companies.js/queue.js/reports.js sections) against the actual route files: it only reflects the original six-stage v1/v3.0 build and has never been updated for *any* of the queue-system rollout (Phases 1–5) or the four-tab admin rebuild — not the `/api/queue/desk/next`/`confirm-arrival` routes from Phase 3, not `/api/floor-stats`, not the `company_posts` routes, not `?format=csv`. This predates this session (it's been drifting since Phase 1, 2026-07-11) — today's work adds three more routes to the gap rather than creating it. `handoff.md` has been the accurate source of truth for this work all along; `CLAUDE.md`'s route list can no longer be trusted in isolation for anything past the original six stages.
+
+## Bottom line
+
+Everything built and claimed this session is real, working, and matches what's on disk — verified independently, not just re-read from prior summaries. Two genuine (now-fixed) cleanup gaps in test data, one now-corrected stale claim in `handoff.md` about commit state, and one confirmed-benign flaky-fixture false alarm chased down to its actual cause. No code regressions anywhere in the five-fixture, 73-assertion suite, and the production build is clean.

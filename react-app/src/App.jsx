@@ -4,6 +4,7 @@ import QRLanding from './public/QRLanding.jsx';
 import CompanyTiles from './public/CompanyTiles.jsx';
 import DetailsForm from './public/DetailsForm.jsx';
 import LivePosition from './public/LivePosition.jsx';
+import GateBoard from './public/GateBoard.jsx';
 
 // Public routes load eagerly (the morning-spike path must be instant);
 // the staff chunk only downloads once someone heads to /staff (v3.0 §10).
@@ -23,6 +24,8 @@ export default function App() {
           new_architecture_uiux_spec.html §01 step 4's live position page. */}
       <Route path="/qr/schedule/:token" element={<LivePosition />} />
       <Route path="/schedule/:token" element={<LivePosition />} />
+      {/* new_architecture_uiux_spec.html §03 — the entrance-monitor board, not a candidate's own device. */}
+      <Route path="/gate-board" element={<GateBoard />} />
       <Route
         path="/staff/*"
         element={

@@ -11,6 +11,7 @@ const registerCandidate = require('../lib/registerCandidate');
 const { normalizeMobile } = require('../lib/mobile');
 const store = require('../lib/queueStore');
 const { resolveRung } = require('../lib/pingLadder');
+const { computeGateStatus } = require('../lib/gateStatus');
 
 const router = express.Router();
 
@@ -173,6 +174,15 @@ router.get('/qr/schedule/:token', readIpLimit, redisCache(15), asyncHandler(asyn
     },
     slots,
   });
+}));
+
+// Public: Entrance Gate + Staging board (new_architecture_uiux_spec.html §03)
+// — a monitor at the venue entrance, not a candidate's own device. Short
+// cache TTL (unlike qr/companies' 60s) since the whole point is that it
+// visibly moves; readIpLimit is generous enough for one screen polling
+// continuously plus normal candidate traffic sharing the venue's NAT.
+router.get('/gate-status', readIpLimit, redisCache(10), asyncHandler(async (_req, res) => {
+  res.json(await computeGateStatus());
 }));
 
 module.exports = router;

@@ -11,7 +11,6 @@ const fairRoutes = require('./routes/fair');
 const companiesRoutes = require('./routes/companies');
 const candidatesRoutes = require('./routes/candidates');
 const queueRoutes = require('./routes/queue');
-const slotsRoutes = require('./routes/slots');
 const batchesRoutes = require('./routes/batches');
 const publicRoutes = require('./routes/public');
 const reportsRoutes = require('./routes/reports');
@@ -20,8 +19,8 @@ const reportsRoutes = require('./routes/reports');
 // at construction/reconnect time without awaiting or catching it; if Redis is
 // down at that moment the rejected promise is unhandled, and Node's default
 // for unhandledRejection is to crash the process. Every Redis client in this
-// app is already designed to fail open (see lib/redisClient.js, dispatchQueue.js
-// comments) — a stray unhandled rejection from a vendored dependency should
+// app is already designed to fail open (see lib/redisClient.js's comments)
+// — a stray unhandled rejection from a vendored dependency should
 // not undo that by taking the whole API down.
 process.on('unhandledRejection', (reason) => {
   console.error('[server] Unhandled rejection (contained, not crashing):', reason);
@@ -40,7 +39,6 @@ app.use('/api', fairRoutes);
 app.use('/api', companiesRoutes);
 app.use('/api', candidatesRoutes);
 app.use('/api', queueRoutes);
-app.use('/api', slotsRoutes);
 app.use('/api', batchesRoutes);
 app.use('/api', publicRoutes);
 app.use('/api', reportsRoutes);

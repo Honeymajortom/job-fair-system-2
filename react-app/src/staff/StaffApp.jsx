@@ -8,6 +8,8 @@ import UserAdmin from './UserAdmin';
 import CompanyManagement from './CompanyManagement';
 import Reports from './Reports';
 import FloorMonitor from './FloorMonitor';
+import GateCheckIn from './GateCheckIn';
+import Insights from './Insights';
 import { api } from '../api';
 
 // prototype/integrity-test-report.md's NAV_LINKS pattern, carried forward:
@@ -15,10 +17,12 @@ import { api } from '../api';
 // of two things that can drift apart.
 const NAV_LINKS = [
   { to: '/staff/floor', label: 'Floor', roles: ['admin', 'floor_manager'] },
+  { to: '/staff/gate', label: 'Gate', roles: ['admin', 'registration_staff'] },
   { to: '/staff/desk', label: 'Desk', roles: ['admin', 'floor_manager', 'company_hr'] },
   { to: '/staff/users', label: 'Staff', roles: ['admin'] },
   { to: '/staff/companies', label: 'Companies', roles: ['admin'] },
   { to: '/staff/reports', label: 'Reports', roles: ['admin'] },
+  { to: '/staff/insights', label: 'Insights', roles: ['admin'] },
 ];
 
 function Gate({ roles, children }) {
@@ -98,11 +102,13 @@ function Shell() {
               {status === 'ready' && user && <Nav />}
               <Routes>
                 <Route path="floor" element={<Gate roles={['admin', 'floor_manager']}><FloorMonitor /></Gate>} />
+                <Route path="gate" element={<Gate roles={['admin', 'registration_staff']}><GateCheckIn /></Gate>} />
                 <Route path="desk" element={<DeskPicker />} />
                 <Route path="desk/:companyId/:deskId" element={<DeskTablet />} />
                 <Route path="users" element={<Gate roles={['admin']}><UserAdmin /></Gate>} />
                 <Route path="companies" element={<Gate roles={['admin']}><CompanyManagement /></Gate>} />
                 <Route path="reports" element={<Gate roles={['admin']}><Reports /></Gate>} />
+                <Route path="insights" element={<Gate roles={['admin']}><Insights /></Gate>} />
                 <Route path="*" element={<Navigate to="/staff/desk" replace />} />
               </Routes>
             </div>

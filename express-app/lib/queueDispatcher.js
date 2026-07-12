@@ -9,6 +9,7 @@ const pool = require('../db');
 const store = require('./queueStore');
 const { emit, emitToRoom } = require('./events');
 const { armNoShowTimer, clearNoShowTimer, SAME_FLOOR_MS } = require('./noShowTimer');
+const { retunePingBuffer } = require('./bufferController');
 
 // Company j's desk `deskId` just freed. Scan the queue in rank order, skip
 // anyone not onsite or already locked elsewhere ("skip, don't drop" — §3.2),
@@ -91,6 +92,7 @@ async function completeInterview({ candidateId, companyId, deskId, serviceMinute
   await store.remove(companyId, candidateId);          // done with company j's queue
 
   await dispatch(companyId, deskId);                   // backfill this desk
+  await retunePingBuffer(companyId);                    // §6.2: re-widen/narrow the ping window off the fresh on-hand/drain-rate
 
   const others = await pool.query(
     `SELECT company_id FROM candidate_company_status

@@ -9,6 +9,7 @@ const EMA_ALPHA = 0.2; // matches sim/jobfair_sim.py — same constant, same for
 const queueKey = (companyId) => `queue:${companyId}`;
 const lockKey = (candidateId) => `lock:${candidateId}`;
 const drainKey = (companyId) => `drain:${companyId}`;
+const pingBufferKey = (companyId) => `pingbuf:${companyId}`;
 const waitingDesksKey = (companyId) => `waiting_desks:${companyId}`;
 
 // Add a candidate to company j's queue at their booking-order rank. Score =
@@ -86,6 +87,19 @@ async function getDrainRate(companyId) {
   return v ? parseFloat(v) : null;
 }
 
+// Queue-system Phase 5's closed-loop half (new_architecture.md §6.2) — the ping-window buffer
+// (beta minutes) pingLadder.js's "warm" rung uses, retuned per company by
+// lib/bufferController.js. Absent until the first retune runs for a company
+// (cold start); pingLadder.js falls back to its fixed default until then.
+async function getPingBuffer(companyId) {
+  const v = await redis.get(pingBufferKey(companyId));
+  return v ? parseFloat(v) : null;
+}
+
+async function setPingBuffer(companyId, minutes) {
+  await redis.set(pingBufferKey(companyId), minutes);
+}
+
 // A desk that scanned the queue and found nobody eligible sits here, idle,
 // until either its own company's queue gains an eligible candidate (next
 // dispatch() call for this company will pop it) or a candidate finishing
@@ -106,5 +120,6 @@ module.exports = {
   enqueue, remove, recordMiss, topCandidates, queueSize, getPosition,
   acquireLock, releaseLock, isLocked,
   updateDrainRate, getDrainRate,
+  getPingBuffer, setPingBuffer,
   markDeskWaiting, popWaitingDesk, clearDeskWaiting,
 };

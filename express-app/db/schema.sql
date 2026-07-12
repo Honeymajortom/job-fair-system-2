@@ -89,6 +89,12 @@ CREATE TABLE IF NOT EXISTS fair_settings (
   created_at                   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- At most one active fair at a time — every "current fair" read (registerCandidate.js,
+-- floorStats.js, public.js, slots.js) resolves ties with ORDER BY fair_date DESC LIMIT 1,
+-- which silently picks the wrong row if two are ever active with mismatched fair_batches.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_fair_settings_one_active
+  ON fair_settings (is_active) WHERE is_active = true;
+
 -- Batch schedule (auto-generated from fair_settings before the fair)
 CREATE TABLE IF NOT EXISTS fair_batches (
   id            SERIAL PRIMARY KEY,
@@ -207,6 +213,17 @@ ALTER TABLE candidate_company_status
 -- ---------------------------------------------------------------------------
 ALTER TABLE candidates
   ADD COLUMN IF NOT EXISTS travel_time_minutes SMALLINT;
+
+-- ---------------------------------------------------------------------------
+-- Insights dashboard (new_architecture_uiux_spec.html-adjacent admin tab):
+-- gender and SDC-program membership, captured at registration alongside the
+-- existing demographic fields. Both nullable — candidates registered before
+-- this migration have no way to backfill either, so they report as "Unknown"
+-- rather than a guessed default.
+-- ---------------------------------------------------------------------------
+ALTER TABLE candidates
+  ADD COLUMN IF NOT EXISTS gender VARCHAR CHECK (gender IN ('Male', 'Female', 'Other')),
+  ADD COLUMN IF NOT EXISTS is_sdc BOOLEAN;
 
 -- ---------------------------------------------------------------------------
 -- Company Management (new_architecture_uiux_spec.html §07): vacancy tracking.

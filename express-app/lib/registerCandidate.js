@@ -6,6 +6,7 @@ const { emit } = require('./events');
 
 const MAX_COMPANIES = 3;
 const EMPLOYMENT_STATUSES = ['Studying', 'Working', 'Fresher', 'Other'];
+const GENDERS = ['Male', 'Female', 'Other'];
 
 // Shared registration core — the one atomic transaction behind both the staff
 // path (POST /api/register) and the public QR path (POST /api/qr/register).
@@ -15,7 +16,7 @@ const EMPLOYMENT_STATUSES = ['Studying', 'Working', 'Fresher', 'Other'];
 // insert; successful bookings are pushed onto the live Redis queue only
 // after COMMIT.
 // Returns { status, body } — the caller just forwards it to res.
-async function registerCandidate({ name, mobile, age, qualification, field, employment_status, company_ids, travel_time_minutes }) {
+async function registerCandidate({ name, mobile, age, qualification, field, employment_status, company_ids, travel_time_minutes, gender, is_sdc }) {
   if (!name || !name.trim()) return { status: 400, body: { error: 'name is required' } };
   if (!Array.isArray(company_ids) || company_ids.length === 0) {
     return { status: 400, body: { error: 'Select at least one company' } };
@@ -36,6 +37,10 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
     travelTimeMinutes = Math.round(n);
   }
   const status = employment_status && EMPLOYMENT_STATUSES.includes(employment_status) ? employment_status : 'Fresher';
+  // Both optional (Insights dashboard fields) — an unrecognized/omitted value
+  // just stores NULL ("Unknown") rather than failing the whole registration.
+  const genderValue = GENDERS.includes(gender) ? gender : null;
+  const isSdc = typeof is_sdc === 'boolean' ? is_sdc : null;
   // Store the canonical form so dedup and the partial unique index can't be
   // sidestepped by formatting ("+91 99999 04001" vs "9999904001").
   const normMobile = normalizeMobile(mobile);
@@ -98,9 +103,9 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
     }
 
     const candidateRes = await client.query(
-      `INSERT INTO candidates (token_no, name, mobile, age, qualification, field, employment_status, batch_id, checkin_sig, travel_time_minutes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, token_no`,
-      [tokenNo, name.trim(), normMobile, age || null, qualification || null, field || null, status, batch ? batch.id : null, signToken(tokenNo), travelTimeMinutes]
+      `INSERT INTO candidates (token_no, name, mobile, age, qualification, field, employment_status, batch_id, checkin_sig, travel_time_minutes, gender, is_sdc)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id, token_no`,
+      [tokenNo, name.trim(), normMobile, age || null, qualification || null, field || null, status, batch ? batch.id : null, signToken(tokenNo), travelTimeMinutes, genderValue, isSdc]
     );
     candidateId = candidateRes.rows[0].id;
 

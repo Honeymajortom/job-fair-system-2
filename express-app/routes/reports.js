@@ -5,13 +5,14 @@ const { authenticateJWT } = require('../middleware/auth');
 const requireRole = require('../middleware/requireRole');
 const redisCache = require('../middleware/redisCache');
 const { toCsv } = require('../lib/csv');
+const { computeInsights } = require('../lib/insights');
 
 const router = express.Router();
 
 // Reports are Admin-only (permission matrix) and every GET is served through
 // the 20s Redis cache — v3.0 §0 #4: the read replica is deleted; at 1000 rows
 // the primary + cache covers reporting load with room to spare.
-router.use(['/company-stats', '/qual-distribution', '/field-distribution', '/master-report', '/candidate-summary', '/rating-report'],
+router.use(['/company-stats', '/qual-distribution', '/field-distribution', '/master-report', '/candidate-summary', '/rating-report', '/insights'],
   authenticateJWT, requireRole('admin'), redisCache(20));
 
 // Per-company funnel — also feeds the FloorMonitor grid header counts.
@@ -120,6 +121,18 @@ router.get('/rating-report', asyncHandler(async (req, res) => {
     return res.type('text/csv').attachment('rating-report.csv').send(toCsv(result.rows));
   }
   res.json(result.rows);
+}));
+
+// Insights tab (admin) — per-company vacancy/outcome/demographic breakdown,
+// optionally scoped to one registration day (?date=YYYY-MM-DD). Distinct from
+// the reports above: those are flat CSV-shaped exports, this is a computed
+// summary (totals + per-company rows) meant for the dashboard, not a download.
+router.get('/insights', asyncHandler(async (req, res) => {
+  const { date } = req.query;
+  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  }
+  res.json(await computeInsights({ date }));
 }));
 
 module.exports = router;

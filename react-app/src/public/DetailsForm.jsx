@@ -13,7 +13,7 @@ export default function DetailsForm() {
   const navigate = useNavigate();
   const companyIds = location.state?.company_ids || [];
 
-  const [form, setForm] = useState({ name: '', mobile: '', age: '', qualification: '', travel_time_minutes: '' });
+  const [form, setForm] = useState({ name: '', mobile: '', age: '', qualification: '', travel_time_minutes: '', gender: '', is_sdc: '' });
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -38,6 +38,8 @@ export default function DetailsForm() {
         age: form.age ? Number(form.age) : undefined,
         qualification: form.qualification || undefined,
         travel_time_minutes: form.travel_time_minutes ? Number(form.travel_time_minutes) : undefined,
+        gender: form.gender || undefined,
+        is_sdc: form.is_sdc === '' ? undefined : form.is_sdc === 'yes',
         company_ids: companyIds,
       });
       navigate(`/schedule/${result.token}`);
@@ -70,6 +72,23 @@ export default function DetailsForm() {
         <div className="field">
           <label>Qualification</label>
           <input value={form.qualification} onChange={(e) => set('qualification', e.target.value)} />
+        </div>
+        <div className="field">
+          <label>Gender</label>
+          <select value={form.gender} onChange={(e) => set('gender', e.target.value)}>
+            <option value="">Prefer not to say</option>
+            <option value="Male">Male</option>
+            <option value="Female">Female</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>SDC candidate?</label>
+          <select value={form.is_sdc} onChange={(e) => set('is_sdc', e.target.value)}>
+            <option value="">Not sure</option>
+            <option value="yes">Yes — enrolled in the SDC program</option>
+            <option value="no">No — general candidate</option>
+          </select>
         </div>
         <div className="field">
           <label>Travel time to venue</label>

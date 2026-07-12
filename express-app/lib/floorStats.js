@@ -1,18 +1,15 @@
 // Phase 5 (new_architecture.md §4/§6.3) — buffer target + starvation
-// projection, compute-and-display only this pass (see delegated plan notes:
-// the closed-loop auto-tuning of pingLadder.js's thresholds is a tracked
-// follow-up, not built here). One function, mirroring how routes/reports.js
-// keeps each report self-contained — this just consolidates several queries
-// into one payload since the dashboard needs them together.
+// projection display. lib/bufferController.js closes the loop this module
+// only used to display — same B_j* formula, via lib/travelBuffer.js
+// so the two can't drift onto different numbers. One function, mirroring how
+// routes/reports.js keeps each report self-contained — this just
+// consolidates several queries into one payload since the dashboard needs
+// them together.
 const pool = require('../db');
 const redis = require('./redisClient');
 const store = require('./queueStore');
 const { MIN_DRAIN_RATE } = require('./pingLadder');
-
-// Approximation (documented in the plan): no candidate reports travel time
-// per company, so mean/stddev is fair-wide. Falls back to a fixed estimate
-// when nobody's reported one yet — same "no data yet" shape as pingLadder.js.
-const FALLBACK_TRAVEL_MINUTES = 20;
+const { getTravelBuffer } = require('./travelBuffer');
 
 // Approximation: fair_settings has no start/close timestamp, only a duration
 // (fair_hours). The earliest batch's arrival_time is the practical start.
@@ -29,17 +26,6 @@ async function getClosingTime() {
   const start = batchRes.rows[0].start;
   if (!start) return null;
   return new Date(new Date(start).getTime() + fair_hours * 60 * 60 * 1000);
-}
-
-async function getTravelBuffer() {
-  const r = await pool.query(
-    `SELECT AVG(travel_time_minutes) AS mean, STDDEV(travel_time_minutes) AS sd
-     FROM candidates WHERE travel_time_minutes IS NOT NULL AND deleted_at IS NULL`
-  );
-  const mean = parseFloat(r.rows[0].mean);
-  if (!mean) return FALLBACK_TRAVEL_MINUTES;
-  const sd = parseFloat(r.rows[0].sd) || 0;
-  return mean + sd;
 }
 
 async function computeFloorStats() {

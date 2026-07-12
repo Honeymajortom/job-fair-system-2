@@ -10,6 +10,7 @@ const store = require('./queueStore');
 // the staging one.
 const DONE_STATUSES = ['Selected', 'Rejected', 'Shortlisted', 'Hold', 'No_Show'];
 const MIN_DRAIN_RATE = 0.05; // floor so a cold/misconfigured company can't divide-by-near-zero into an infinite ETA
+const DEFAULT_BETA = 15; // sim/jobfair_sim.py's fixed BETA — used until lib/bufferController.js has retuned this company at least once
 
 async function resolveRung({ status, companyId, candidateId, travelTimeMinutes, seats, interviewMinutes }) {
   if (DONE_STATUSES.includes(status)) return { position: null, eta_minutes: null, rung: 'done' };
@@ -18,16 +19,20 @@ async function resolveRung({ status, companyId, candidateId, travelTimeMinutes, 
   const position = await store.getPosition(companyId, candidateId);
   if (position === null) return { position: null, eta_minutes: null, rung: 'far' };
 
-  const drainRate = await store.getDrainRate(companyId);
+  const [drainRate, pingBuffer] = await Promise.all([
+    store.getDrainRate(companyId),
+    store.getPingBuffer(companyId),
+  ]);
   const rate = Math.max(drainRate || (seats / interviewMinutes), MIN_DRAIN_RATE);
   const eta_minutes = Math.ceil(position / rate);
+  const beta = pingBuffer != null ? pingBuffer : DEFAULT_BETA;
 
   let rung = 'far';
   if (position <= 3) rung = 'staging';
   else if (position <= 5) rung = 'gate';
-  else if (travelTimeMinutes != null && eta_minutes <= travelTimeMinutes + 15) rung = 'warm';
+  else if (travelTimeMinutes != null && eta_minutes <= travelTimeMinutes + beta) rung = 'warm';
 
   return { position, eta_minutes, rung };
 }
 
-module.exports = { resolveRung, DONE_STATUSES, MIN_DRAIN_RATE };
+module.exports = { resolveRung, DONE_STATUSES, MIN_DRAIN_RATE, DEFAULT_BETA };

@@ -223,6 +223,16 @@ h2.screen-title { font-family: var(--disp); font-weight: 800; font-stretch: 85%;
 .pos-card.hot .pos-track i { background: var(--rung-hot); }
 .pos-card.done .pos-track i { background: var(--st-selected); }
 
+/* --- entrance gate + staging board (new_architecture_uiux_spec.html §03) --- */
+.gate-strip { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+@media (max-width: 760px) { .gate-strip { grid-template-columns: 1fr; } }
+.gate-card { border: 1px solid var(--line); border-radius: 10px; padding: 14px; text-align: center; background: var(--card); }
+.gate-card .n { font-family: var(--mono); font-weight: 600; font-size: 26px; }
+.gate-card .l { font-family: var(--mono); font-size: 10px; color: var(--ink-60); text-transform: uppercase; letter-spacing: .08em; margin-top: 2px; }
+.stage-slots { display: flex; gap: 6px; justify-content: center; margin-top: 10px; }
+.stage-slot { width: 34px; height: 34px; border-radius: 7px; border: 1.5px dashed var(--line); display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 10px; color: var(--ink-60); }
+.stage-slot.on { border-style: solid; border-color: var(--live); background: var(--live-soft); color: var(--live); font-weight: 600; }
+
 .rung-badge { display: inline-flex; align-items: center; font-family: var(--mono); font-size: 10px; font-weight: 600; padding: 3px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing: .06em; background: var(--paper); color: var(--ink-60); border: 1px solid var(--line); }
 .rung-badge.warm { background: #FEF3DC; color: var(--rung-warm); border-color: #F0D89A; }
 .rung-badge.hot { background: var(--live-soft); color: var(--rung-hot); border-color: #F3CBC2; }

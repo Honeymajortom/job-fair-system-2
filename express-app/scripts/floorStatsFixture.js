@@ -6,10 +6,12 @@
 // reads "the active fair" (fair_settings WHERE is_active=true ORDER BY
 // fair_date DESC LIMIT 1 — same query registerCandidate.js/phase4Position
 // Fixture.js already use) to derive a closing time for the starvation check.
-// The real dev DB already has real active fair_settings rows, so this fixture
-// seeds its own with a far-future fair_date (2099-01-01) to deterministically
-// win that ORDER BY, becoming "the" active fair for the run — cleaned up in
-// `finally` either way.
+// db/schema.sql's uq_fair_settings_one_active partial unique index now
+// forbids two is_active=true rows at once, so this fixture can no longer
+// just insert a second active row alongside the real one (see handoff.md's
+// fair_settings fix) — it temporarily deactivates whichever real row is
+// active, seeds its own with a far-future fair_date (2099-01-01), and
+// restores the original in `finally` either way.
 require('dotenv').config();
 const pool = require('../db');
 const redis = require('../lib/redisClient');
@@ -57,6 +59,8 @@ async function main() {
   console.log('=== Phase 5 fixture: floor stats (buffer target + starvation) ===\n');
 
   const testFairDate = '2099-01-01';
+  const realActiveRes = await pool.query(`UPDATE fair_settings SET is_active = false WHERE is_active = true RETURNING id`);
+  const realActiveIds = realActiveRes.rows.map((r) => r.id);
   const fairRes = await pool.query(
     `INSERT INTO fair_settings (fair_name, fair_date, fair_hours, is_active)
      VALUES ('__test_floor_fixture', $1, 2, true) RETURNING id`,
@@ -145,6 +149,9 @@ async function main() {
     await pool.query('DELETE FROM companies WHERE id = ANY($1::int[])', [[companyA, companyB]]);
     await pool.query('DELETE FROM fair_batches WHERE id = $1', [fairBatchId]);
     await pool.query('DELETE FROM fair_settings WHERE id = $1', [fairSettingsId]);
+    if (realActiveIds.length) {
+      await pool.query('UPDATE fair_settings SET is_active = true WHERE id = ANY($1::int[])', [realActiveIds]);
+    }
     for (const cid of [companyA, companyB]) {
       await redis.del('queue:' + cid, 'drain:' + cid, 'waiting_desks:' + cid);
     }

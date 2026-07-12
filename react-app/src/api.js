@@ -22,6 +22,7 @@ export const api = {
   qrCompanies: () => request('/qr/companies'),
   qrRegister: (payload) => request('/qr/register', { method: 'POST', body: JSON.stringify(payload) }),
   qrSchedule: (token) => request(`/qr/schedule/${token}`),
+  getGateStatus: () => request('/gate-status'),
 
   // auth
   login: (username, password) => request('/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
@@ -37,7 +38,6 @@ export const api = {
   addCompanyPost: (id, payload) => request(`/companies/${id}/posts`, { method: 'POST', body: JSON.stringify(payload) }),
   updateCompanyPost: (id, postId, payload) => request(`/companies/${id}/posts/${postId}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteCompanyPost: (id, postId) => request(`/companies/${id}/posts/${postId}`, { method: 'DELETE' }),
-  generateSlots: (payload) => request('/slots/generate', { method: 'POST', body: JSON.stringify(payload) }),
   register: (payload) => request('/register', { method: 'POST', body: JSON.stringify(payload) }),
   listCandidates: () => request('/candidates'),
   getCandidate: (token) => request(`/candidates/${token}`),
@@ -73,6 +73,7 @@ export const api = {
   ratingReport: () => request('/rating-report'),
   qualDistribution: () => request('/qual-distribution'),
   fieldDistribution: () => request('/field-distribution'),
+  getInsights: (date) => request(`/insights${date ? `?date=${date}` : ''}`),
 };
 
 // Staff-only (lib/io.js rejects anonymous connections) — same-origin via the

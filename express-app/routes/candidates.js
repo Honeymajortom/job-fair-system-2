@@ -4,7 +4,6 @@ const asyncHandler = require('../asyncHandler');
 const { authenticateJWT } = require('../middleware/auth');
 const requireRole = require('../middleware/requireRole');
 const registerCandidate = require('../lib/registerCandidate');
-const { enqueueDispatch } = require('../lib/dispatchQueue');
 
 const router = express.Router();
 
@@ -54,13 +53,16 @@ router.get('/candidates/:token', authenticateJWT, asyncHandler(async (req, res) 
   res.json({ ...candidate, companies: statusRes.rows });
 }));
 
-// Admin / Floor Manager: emergency batch reschedule (Waiting Room drag-and-drop).
-// Re-runs the same per-company slot pick as registerCandidate.js (earliest slot
-// at/after the new batch's arrival time) — nobody already booked gets bumped,
-// the moved candidate just lands on whatever's next open. A checked-in
-// candidate can't move (would desync fair_batches.checked_in from the
-// dispatcher's checked-in guard). Finished results (Selected/Rejected/
-// Shortlisted/Hold) are left alone, same exclusion PUT /slots/:id/reassign uses.
+// Admin / Floor Manager: emergency batch reschedule (Waiting Room drag-and-drop)
+// — moves which arrival wave a candidate belongs to. Queue-system Phase 6
+// cutover: this used to also re-pick an interview_slots row per company and
+// enqueue a v1 dispatch job (PUT /slots/:id/reassign's sibling) — that logic
+// silently did nothing for anyone booked under the new count-based queue
+// model, since a candidate's queue position (serial) is fixed at registration
+// and has never depended on batch_id; removed rather than fixed forward, per
+// handoff.md's own flag that this needed resolving before it was relied on.
+// A checked-in candidate can't move (would desync fair_batches.checked_in
+// from the dispatcher's checked-in guard).
 router.put('/candidates/:id/batch', authenticateJWT, requireRole('admin', 'floor_manager'), asyncHandler(async (req, res) => {
   const { batch_id } = req.body;
   if (!batch_id) return res.status(400).json({ error: 'batch_id is required' });
@@ -96,7 +98,7 @@ router.put('/candidates/:id/batch', authenticateJWT, requireRole('admin', 'floor
 
     if (candidate.batch_id === batch.id) {
       await client.query('ROLLBACK');
-      return res.json({ ok: true, candidate_id: candidate.id, token_no: candidate.token_no, batch_id: batch.id, moved: [], unassigned: [] });
+      return res.json({ ok: true, candidate_id: candidate.id, token_no: candidate.token_no, batch_id: batch.id });
     }
 
     const occRes = await client.query(
@@ -109,67 +111,9 @@ router.put('/candidates/:id/batch', authenticateJWT, requireRole('admin', 'floor
     }
 
     await client.query('UPDATE candidates SET batch_id = $1 WHERE id = $2', [batch.id, candidate.id]);
-
-    const ccsRes = await client.query(
-      `SELECT ccs.id, ccs.company_id, c.company_name
-       FROM candidate_company_status ccs
-       JOIN companies c ON c.id = ccs.company_id
-       WHERE ccs.candidate_id = $1 AND ccs.deleted_at IS NULL
-         AND ccs.status IN ('Pending', 'Dispatched', 'No_Show')`,
-      [candidate.id]
-    );
-
-    const moved = [];
-    const unassigned = [];
-    for (const row of ccsRes.rows) {
-      const slotsRes = await client.query(
-        `SELECT id, slot_start, capacity FROM interview_slots
-         WHERE company_id = $1 AND slot_start >= $2
-         ORDER BY slot_start ASC FOR UPDATE`,
-        [row.company_id, batch.arrival_time]
-      );
-
-      let chosenSlot = null;
-      for (const slot of slotsRes.rows) {
-        const takenRes = await client.query(
-          'SELECT COUNT(*)::int AS taken FROM candidate_company_status WHERE slot_id = $1 AND deleted_at IS NULL',
-          [slot.id]
-        );
-        if (takenRes.rows[0].taken < slot.capacity) {
-          chosenSlot = slot;
-          break;
-        }
-      }
-
-      if (chosenSlot) {
-        await client.query(
-          `UPDATE candidate_company_status SET slot_id = $1, status = 'Pending', processed_at = NULL WHERE id = $2`,
-          [chosenSlot.id, row.id]
-        );
-        moved.push({ ccs_id: row.id, company_id: row.company_id, company_name: row.company_name, slot_id: chosenSlot.id, slot_start: chosenSlot.slot_start });
-      } else {
-        await client.query(
-          `UPDATE candidate_company_status SET slot_id = NULL, status = 'Pending', processed_at = NULL WHERE id = $1`,
-          [row.id]
-        );
-        unassigned.push({ company_id: row.company_id, company_name: row.company_name });
-      }
-    }
-
     await client.query('COMMIT');
 
-    for (const m of moved) {
-      await enqueueDispatch({ ccsId: m.ccs_id, candidateId: candidate.id, companyId: m.company_id, slotId: m.slot_id, slotStart: m.slot_start });
-    }
-
-    res.json({
-      ok: true,
-      candidate_id: candidate.id,
-      token_no: candidate.token_no,
-      batch_id: batch.id,
-      moved: moved.map(({ ccs_id, ...rest }) => rest),
-      unassigned,
-    });
+    res.json({ ok: true, candidate_id: candidate.id, token_no: candidate.token_no, batch_id: batch.id });
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
