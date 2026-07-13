@@ -127,6 +127,18 @@ ALTER TABLE candidates
   ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ DEFAULT NULL,
   ADD COLUMN IF NOT EXISTS batch_id INTEGER REFERENCES fair_batches(id) ON DELETE RESTRICT;
 
+-- Red-team finding H2: JWTs were otherwise non-revocable for their full 8h
+-- life. Bumped on logout and on any admin password reset (routes/auth.js,
+-- routes/users.js); authenticateJWT rejects any token whose embedded `tv`
+-- no longer matches.
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0;
+
+-- Red-team finding H3: company_hr accounts had no company boundary — any HR
+-- credential could act on any company's queue. NULL for non-company_hr roles.
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS company_id INTEGER REFERENCES companies(id);
+
 ALTER TABLE candidate_company_status
   ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ DEFAULT NULL,
   ADD COLUMN IF NOT EXISTS feedback_by INTEGER REFERENCES users(id);

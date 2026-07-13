@@ -3,6 +3,7 @@ const pool = require('../db');
 const asyncHandler = require('../asyncHandler');
 const { authenticateJWT } = require('../middleware/auth');
 const requireRole = require('../middleware/requireRole');
+const requireCompanyScope = require('../middleware/requireCompanyScope');
 const redisCache = require('../middleware/redisCache');
 const { emit } = require('../lib/events');
 const { verifyQr } = require('../lib/checkinSig');
@@ -16,7 +17,7 @@ const router = express.Router();
 const VALID_STATUSES = ['Selected', 'Rejected', 'Shortlisted', 'Hold', 'No_Show'];
 
 // Company HR (+ Admin / Floor Manager oversight): pending queue for a desk, earliest slot first
-router.get('/queue/:companyId', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), asyncHandler(async (req, res) => {
+router.get('/queue/:companyId', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), requireCompanyScope((req) => req.params.companyId), asyncHandler(async (req, res) => {
   const result = await pool.query(
     `SELECT ccs.id AS ccs_id, ccs.status, s.slot_start,
             cd.id AS candidate_id, cd.token_no, cd.name, cd.qualification, cd.field, cd.employment_status
@@ -58,7 +59,7 @@ router.get('/floor-stats', authenticateJWT, requireRole('admin', 'floor_manager'
 }));
 
 // Company HR (+ Admin): record interview result + ratings + feedback
-router.put('/interview-result', authenticateJWT, requireRole('admin', 'company_hr'), asyncHandler(async (req, res) => {
+router.put('/interview-result', authenticateJWT, requireRole('admin', 'company_hr'), requireCompanyScope((req) => req.body.company_id), asyncHandler(async (req, res) => {
   const { token, company_id, status, ratings, feedback_text } = req.body;
 
   if (!token || !company_id || !status) {
@@ -149,7 +150,7 @@ router.put('/interview-result', authenticateJWT, requireRole('admin', 'company_h
 // an empty "Call first candidate" state (the other half of the desk-
 // occupancy bug; POST /queue/desk/next below is the half that guards against
 // a double-tap actually double-dispatching).
-router.get('/queue/desk/:companyId/:deskId', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), asyncHandler(async (req, res) => {
+router.get('/queue/desk/:companyId/:deskId', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), requireCompanyScope((req) => req.params.companyId), asyncHandler(async (req, res) => {
   const occupant = await dispatcher.getDeskOccupant(Number(req.params.companyId), req.params.deskId);
   res.json({ occupant });
 }));
@@ -162,7 +163,7 @@ router.get('/queue/desk/:companyId/:deskId', authenticateJWT, requireRole('admin
 // Idempotent: dispatch() itself now checks desk occupancy first, so a page
 // reload or a stray double-tap here returns the same occupant instead of
 // dispatching a second candidate onto a desk that's still serving someone.
-router.post('/queue/desk/next', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), asyncHandler(async (req, res) => {
+router.post('/queue/desk/next', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), requireCompanyScope((req) => req.body.company_id), asyncHandler(async (req, res) => {
   const { company_id, desk_id } = req.body;
   if (!company_id || !desk_id) return res.status(400).json({ error: 'company_id and desk_id are required' });
   const dispatched = await dispatcher.dispatch(Number(company_id), String(desk_id));
@@ -180,7 +181,7 @@ router.post('/queue/desk/next', authenticateJWT, requireRole('admin', 'floor_man
 // candidate arrived except the interview finishing outright, so any
 // interview running longer than 90s/180s would incorrectly no-show someone
 // mid-interview.
-router.post('/queue/confirm-arrival', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), asyncHandler(async (req, res) => {
+router.post('/queue/confirm-arrival', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), requireCompanyScope((req) => req.body.company_id), asyncHandler(async (req, res) => {
   const { qr, token, company_id } = req.body;
   let tokenNo = token;
   if (qr) {

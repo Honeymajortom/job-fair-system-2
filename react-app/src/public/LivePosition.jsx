@@ -101,11 +101,16 @@ export default function LivePosition() {
   }, [token]);
 
   useEffect(() => {
-    if (!data || !data.qr) { setQrDataUrl(null); return; }
+    // The check-in QR payload is never sent by the server on this poll route
+    // (red-team finding C1 — token_no is a guessable sequential id, so this
+    // endpoint won't echo the HMAC). It's captured once client-side at
+    // registration instead (DetailsForm.jsx -> localStorage).
+    const qr = data && localStorage.getItem(`checkin_qr_${token}`);
+    if (!qr) { setQrDataUrl(null); return; }
     const anyEligible = data.slots.some((s) => QR_ELIGIBLE_RUNGS.includes(s.rung));
     if (!anyEligible) { setQrDataUrl(null); return; }
-    QRCode.toDataURL(data.qr, { margin: 1, width: 168 }).then(setQrDataUrl).catch(() => setQrDataUrl(null));
-  }, [data]);
+    QRCode.toDataURL(qr, { margin: 1, width: 168 }).then(setQrDataUrl).catch(() => setQrDataUrl(null));
+  }, [data, token]);
 
   if (error) return <div className="m-shell"><div className="m-body"><div className="error-note">{error}</div></div></div>;
   if (!data) return <div className="m-shell"><div className="m-body"><div className="save-note">Loading your position…</div></div></div>;

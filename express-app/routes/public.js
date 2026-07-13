@@ -134,7 +134,7 @@ router.post('/qr/register', l1Mobile, l2Device, l3Ip, asyncHandler(async (req, r
 // see readTokenLimit/scheduleIpLimit above.
 router.get('/qr/schedule/:token', readTokenLimit, scheduleIpLimit, redisCache(15), asyncHandler(async (req, res) => {
   const candRes = await pool.query(
-    `SELECT cd.id, cd.name, cd.token_no, cd.checked_in_at, cd.checkin_sig, cd.travel_time_minutes,
+    `SELECT cd.id, cd.name, cd.token_no, cd.checked_in_at, cd.travel_time_minutes,
             b.batch_number, b.arrival_time, b.status AS batch_status
      FROM candidates cd
      LEFT JOIN fair_batches b ON b.id = cd.batch_id
@@ -175,9 +175,13 @@ router.get('/qr/schedule/:token', readTokenLimit, scheduleIpLimit, redisCache(15
   res.json({
     name: cand.name,
     token: cand.token_no,
-    // The schedule card re-renders its check-in QR on reopen (flow F) — the
-    // token in the URL is already the capability, the sig only proves mint.
-    qr: cand.checkin_sig ? `${cand.token_no}.${cand.checkin_sig}` : null,
+    // checkin_sig is deliberately NOT returned here (red-team finding C1):
+    // token_no is a guessable/enumerable sequential id, so echoing the HMAC
+    // on every poll would hand an attacker the gate check-in bypass for any
+    // candidate they can guess. The QR is captured once client-side at
+    // registration (DetailsForm.jsx -> localStorage) and rendered from there
+    // by LivePosition.jsx; staff have a manual candidate_token fallback for
+    // the lost-device case (routes/batches.js check-in).
     batch: cand.batch_number === null ? null : {
       number: cand.batch_number,
       arrival_time: cand.arrival_time,

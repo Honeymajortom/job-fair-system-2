@@ -1,8 +1,11 @@
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const pool = require('../db');
 
-// Seed admin so login is testable out of the box — change the password before any real fair.
-const ADMIN = { username: 'admin', password: 'admin123', role: 'admin' };
+// Red-team finding H1/L2: a static 'admin123' seeded password is a guessable
+// default, especially with no login lockout. Generate a random one instead —
+// printed once below — and rotate it via PUT /api/users/:id before the fair.
+const ADMIN = { username: 'admin', password: crypto.randomBytes(9).toString('base64url'), role: 'admin' };
 
 const COMPANIES = [
   {
@@ -63,6 +66,7 @@ async function seed() {
         [ADMIN.username, bcrypt.hashSync(ADMIN.password, 10), ADMIN.role]
       );
       console.log(`Seeded admin user (id ${adminRes.rows[0].id}) — username '${ADMIN.username}', password '${ADMIN.password}'.`);
+      console.log('Save that password now — it is only ever printed here. Rotate it via the Users screen (or PUT /api/users/:id) before any real fair.');
     }
 
     // Fair settings for today, is_active = true so the soft-delete guard is live

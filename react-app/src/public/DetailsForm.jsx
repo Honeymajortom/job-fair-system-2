@@ -42,6 +42,11 @@ export default function DetailsForm() {
         is_sdc: form.is_sdc === '' ? undefined : form.is_sdc === 'yes',
         company_ids: companyIds,
       });
+      // The check-in QR is only ever handed out here, at registration — the
+      // live schedule endpoint deliberately won't echo it back (red-team
+      // finding C1: token_no is guessable, so resending the HMAC on every
+      // poll would leak the gate check-in bypass to anyone who guesses it).
+      if (result.qr) localStorage.setItem(`checkin_qr_${result.token}`, result.qr);
       navigate(`/schedule/${result.token}`);
     } catch (err) {
       setError(err.message);
