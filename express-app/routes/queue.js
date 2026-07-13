@@ -143,11 +143,25 @@ router.put('/interview-result', authenticateJWT, requireRole('admin', 'company_h
   res.json(row);
 }));
 
+// Admin / Floor Manager / Company HR: "who's currently at this desk", if
+// anyone — read-only, no dispatch side effect. The desk tablet calls this on
+// mount so a reload reattaches to whoever's mid-interview instead of showing
+// an empty "Call first candidate" state (the other half of the desk-
+// occupancy bug; POST /queue/desk/next below is the half that guards against
+// a double-tap actually double-dispatching).
+router.get('/queue/desk/:companyId/:deskId', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), asyncHandler(async (req, res) => {
+  const occupant = await dispatcher.getDeskOccupant(Number(req.params.companyId), req.params.deskId);
+  res.json({ occupant });
+}));
+
 // Admin / Floor Manager / Company HR: desk tablet asks for its first
 // candidate, or nudges a desk that's sitting on the waiting list — exposes
 // dispatch(companyId, deskId) over HTTP for the first time (Phase 1/2 only
 // exercised it via fixtures). Normal backfill after a result doesn't need
 // this — completeInterview() above already re-dispatches the same desk.
+// Idempotent: dispatch() itself now checks desk occupancy first, so a page
+// reload or a stray double-tap here returns the same occupant instead of
+// dispatching a second candidate onto a desk that's still serving someone.
 router.post('/queue/desk/next', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), asyncHandler(async (req, res) => {
   const { company_id, desk_id } = req.body;
   if (!company_id || !desk_id) return res.status(400).json({ error: 'company_id and desk_id are required' });

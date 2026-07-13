@@ -70,6 +70,13 @@ async function isLocked(candidateId) {
   return (await redis.exists(lockKey(candidateId))) === 1;
 }
 
+// The desk id a candidate's lock currently points to, or null if unlocked.
+// Reverse-lookup helper for "who's at desk X" — there's no desk-keyed index,
+// only this candidate-keyed one, so callers scan candidates and check this.
+async function getLockDesk(candidateId) {
+  return redis.get(lockKey(candidateId));
+}
+
 // EMA over observed interview durations, converted to a per-minute drain
 // rate — new_architecture.md §4: mu_hat <- alpha*(1/s_last) + (1-alpha)*mu_hat.
 // Stored directly as the rate (not the raw EMA term) so readers don't need to
@@ -118,7 +125,7 @@ async function clearDeskWaiting(companyId, deskId) {
 
 module.exports = {
   enqueue, remove, recordMiss, topCandidates, queueSize, getPosition,
-  acquireLock, releaseLock, isLocked,
+  acquireLock, releaseLock, isLocked, getLockDesk,
   updateDrainRate, getDrainRate,
   getPingBuffer, setPingBuffer,
   markDeskWaiting, popWaitingDesk, clearDeskWaiting,

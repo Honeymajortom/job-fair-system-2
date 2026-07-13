@@ -236,10 +236,58 @@ async function partC() {
   await noShowTimer.clearNoShowTimer(c2.id, companyId);
 }
 
+async function partD() {
+  console.log('\n=== Part D: desk-occupancy guard (the reload / double-tap bug) ===\n');
+
+  const companyId = await makeCompany('__test_occ_co');
+  const c1 = await makeCandidate('__test occ c1');
+  const c2 = await makeCandidate('__test occ c2');
+  const ccs1 = await bookCandidate(c1.id, companyId, 1);
+  const ccs2 = await bookCandidate(c2.id, companyId, 2);
+
+  console.log('--- a fresh dispatch, then a stray double-tap of the same desk ---');
+  const first = await dispatcher.dispatch(companyId, 'deskP3-occ');
+  check('first dispatch() call lands c1 on the desk', first && first.candidateId === c1.id && !first.alreadyDispatched, JSON.stringify(first));
+
+  const second = await dispatcher.dispatch(companyId, 'deskP3-occ');
+  check('a second dispatch() call on the same desk returns c1 again, not c2', second && second.candidateId === c1.id, JSON.stringify(second));
+  check('the second call is flagged alreadyDispatched, not a fresh dispatch', second && second.alreadyDispatched === true, JSON.stringify(second));
+  const c2StillPending = await ccsRow(ccs2);
+  check('c2 was never touched — still Pending, not stolen onto the occupied desk', c2StillPending.status === 'Pending', c2StillPending.status);
+
+  console.log('\n--- GET /queue/desk/:companyId/:deskId (the mount-time "who\'s here" check) sees the same occupant, read-only ---');
+  const loginRes = await fetch(`${API}/api/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password: 'admin123' }),
+  });
+  const { token } = await loginRes.json();
+  const occRes = await fetch(`${API}/api/queue/desk/${companyId}/deskP3-occ`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
+  check('GET desk-occupant returns c1', occRes.occupant && occRes.occupant.candidateId === c1.id, JSON.stringify(occRes));
+  const c1StillDispatchedAfterGet = await ccsRow(ccs1);
+  check('GET is read-only — c1 still Dispatched (no side effect from the check itself)', c1StillDispatchedAfterGet.status === 'Dispatched');
+
+  const emptyRes = await fetch(`${API}/api/queue/desk/${companyId}/deskP3-never-used`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
+  check('GET on a desk nobody was ever dispatched to returns occupant: null', emptyRes.occupant === null, JSON.stringify(emptyRes));
+
+  console.log('\n--- once the desk is actually freed, dispatch() proceeds normally onto the next candidate ---');
+  await dispatcher.completeInterview({ candidateId: c1.id, companyId, deskId: 'deskP3-occ', serviceMinutes: 1 });
+  const c2AfterFree = await ccsRow(ccs2);
+  check('completeInterview() backfilled the now-free desk with c2', c2AfterFree.status === 'Dispatched', c2AfterFree.status);
+
+  // cleanup
+  await pool.query('DELETE FROM candidate_company_status WHERE candidate_id = ANY($1::int[])', [[c1.id, c2.id]]);
+  await pool.query('DELETE FROM candidates WHERE id = ANY($1::int[])', [[c1.id, c2.id]]);
+  await pool.query('DELETE FROM companies WHERE id = $1', [companyId]);
+  await redis.del(`queue:${companyId}`, `drain:${companyId}`, `waiting_desks:${companyId}`, `lock:${c1.id}`, `lock:${c2.id}`);
+  await noShowTimer.clearNoShowTimer(c1.id, companyId);
+  await noShowTimer.clearNoShowTimer(c2.id, companyId);
+}
+
 async function main() {
   await partA();
   await partB();
   await partC();
+  await partD();
   console.log(`\n=== ${pass} passed, ${fail} failed ===`);
   await pool.end();
   redis.disconnect();

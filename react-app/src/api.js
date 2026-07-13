@@ -46,6 +46,7 @@ export const api = {
   submitResult: (payload) => request('/interview-result', { method: 'PUT', body: JSON.stringify(payload) }),
   markNoShow: (payload) => request('/no-show', { method: 'POST', body: JSON.stringify(payload) }),
   // queue-system Phase 3/4 — desk tablet
+  getDeskOccupant: (companyId, deskId) => request(`/queue/desk/${companyId}/${deskId}`),
   deskNext: (payload) => request('/queue/desk/next', { method: 'POST', body: JSON.stringify(payload) }),
   confirmArrival: (payload) => request('/queue/confirm-arrival', { method: 'POST', body: JSON.stringify(payload) }),
   getStats: () => request('/stats'),

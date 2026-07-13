@@ -11,12 +11,63 @@ const { emit, emitToRoom } = require('./events');
 const { armNoShowTimer, clearNoShowTimer, SAME_FLOOR_MS } = require('./noShowTimer');
 const { retunePingBuffer } = require('./bufferController');
 
+// Desk-level occupancy has no dedicated index — only the candidate-keyed
+// lock (lock:{candidateId} -> deskId) exists. Find whoever's currently
+// Dispatched at this company whose lock points at this desk, if anyone.
+// Guards dispatch() below against double-dispatching a second candidate onto
+// a desk that's still serving someone: the desk tablet has no "who's already
+// here" state of its own, so a page reload or a stray double-tap of "Call
+// first candidate" would otherwise call POST /queue/desk/next again while
+// the first candidate's lock (and interview) is still live.
+async function findDeskOccupant(companyId, deskId) {
+  const dispatchedRes = await pool.query(
+    `SELECT ccs.id AS ccs_id, ccs.candidate_id, ccs.dispatched_at, ccs.interview_started_at, cd.token_no
+       FROM candidate_company_status ccs
+       JOIN candidates cd ON cd.id = ccs.candidate_id
+      WHERE ccs.company_id = $1 AND ccs.status = 'Dispatched' AND ccs.deleted_at IS NULL AND cd.deleted_at IS NULL`,
+    [companyId]
+  );
+  if (!dispatchedRes.rows.length) return null;
+  const desks = await Promise.all(dispatchedRes.rows.map((r) => store.getLockDesk(r.candidate_id)));
+  const idx = desks.findIndex((d) => d === String(deskId));
+  return idx === -1 ? null : dispatchedRes.rows[idx];
+}
+
+function occupantPayload(companyId, deskId, occupant) {
+  return {
+    candidateId: occupant.candidate_id,
+    ccsId: occupant.ccs_id,
+    companyId,
+    deskId,
+    token: occupant.token_no,
+    expiresAt: new Date(new Date(occupant.dispatched_at).getTime() + SAME_FLOOR_MS).toISOString(),
+    interviewStartedAt: occupant.interview_started_at,
+  };
+}
+
+// Read-only "who's here" check — safe to call on every desk-tablet page load
+// (or reload) with no dispatch side effect, unlike dispatch() below. This is
+// what actually closes the "reload loses the incoming card" half of the
+// double-dispatch bug: a mount-time call has to be side-effect-free, or
+// simply opening the tablet would summon a real candidate before staff ever
+// tap anything.
+async function getDeskOccupant(companyId, deskId) {
+  const occupant = await findDeskOccupant(companyId, deskId);
+  return occupant ? occupantPayload(companyId, deskId, occupant) : null;
+}
+
 // Company j's desk `deskId` just freed. Scan the queue in rank order, skip
 // anyone not onsite or already locked elsewhere ("skip, don't drop" — §3.2),
 // lock + dispatch the first eligible candidate. If nobody's eligible right
 // now, the desk goes on the waiting list — completeInterview() elsewhere can
 // still fill it later (§7.2 "race their other queues").
 async function dispatch(companyId, deskId) {
+  const occupant = await findDeskOccupant(companyId, deskId);
+  if (occupant) {
+    console.log(`[queue-dispatcher] desk ${deskId} at company ${companyId} already serving ${occupant.token_no} — returning existing occupant instead of double-dispatching`);
+    return { ...occupantPayload(companyId, deskId, occupant), alreadyDispatched: true };
+  }
+
   const candidateIds = await store.topCandidates(companyId, 20);
   if (!candidateIds.length) {
     await store.markDeskWaiting(companyId, deskId);
@@ -73,7 +124,7 @@ async function dispatch(companyId, deskId) {
       expiresAt,
     });
     console.log(`[queue-dispatcher] dispatched ${row.token_no} -> company ${companyId} desk ${deskId}`);
-    return { candidateId, ccsId: row.ccs_id, companyId, deskId, token: row.token_no, expiresAt };
+    return { candidateId, ccsId: row.ccs_id, companyId, deskId, token: row.token_no, expiresAt, interviewStartedAt: null };
   }
 
   await store.markDeskWaiting(companyId, deskId);
@@ -108,4 +159,4 @@ async function completeInterview({ candidateId, companyId, deskId, serviceMinute
   }
 }
 
-module.exports = { dispatch, completeInterview };
+module.exports = { dispatch, completeInterview, getDeskOccupant };

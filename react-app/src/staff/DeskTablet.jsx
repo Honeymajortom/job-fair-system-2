@@ -47,12 +47,12 @@ export default function DeskTablet() {
     setTimeout(() => setToast(null), 2500);
   }
 
-  async function applyIncoming({ candidateId, ccsId, token, expiresAt }) {
+  async function applyIncoming({ candidateId, ccsId, token, expiresAt, interviewStartedAt = null }) {
     try {
       const details = await fetchCandidateDetails(token, companyId);
-      setIncoming({ candidateId, ccsId, expiresAt, interviewStartedAt: null, details });
+      setIncoming({ candidateId, ccsId, expiresAt, interviewStartedAt, details });
     } catch {
-      setIncoming({ candidateId, ccsId, expiresAt, interviewStartedAt: null, details: { token, name: token, missedCalls: 0, comingFrom: 'Same floor' } });
+      setIncoming({ candidateId, ccsId, expiresAt, interviewStartedAt, details: { token, name: token, missedCalls: 0, comingFrom: 'Same floor' } });
     }
   }
 
@@ -100,6 +100,22 @@ export default function DeskTablet() {
     }
   }
 
+  // Desk occupancy on mount: read-only (GET /queue/desk/:companyId/:deskId,
+  // no dispatch side effect), so a page reload while someone's mid-interview
+  // reattaches to them instead of leaving the tablet showing an empty "Call
+  // first candidate" state — that emptiness was the other half of what made
+  // a stray double-tap dispatch a second candidate onto an occupied desk.
+  // dispatch() itself (called from callNext() above) now also refuses to
+  // double-dispatch, independent of this check.
+  useEffect(() => {
+    let cancelled = false;
+    api.getDeskOccupant(companyId, deskId).then((res) => {
+      if (!cancelled && res.occupant) applyIncoming(res.occupant);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyId, deskId]);
+
   async function handleStartInterview() {
     if (!incoming) return;
     try {
@@ -139,7 +155,7 @@ export default function DeskTablet() {
           ) : (
             <m.div key="idle" className="incoming-card" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               <p className="save-note" style={{ textAlign: 'left' }}>No one at the desk right now.</p>
-              <button className="btn" style={{ marginTop: 14 }} disabled={loading} onClick={callNext}>
+              <button className="btn" style={{ marginTop: 14 }} disabled={loading} onClick={() => callNext()}>
                 {loading ? 'Calling…' : 'Call first candidate'}
               </button>
             </m.div>

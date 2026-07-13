@@ -34,6 +34,16 @@ const l2Device = rateLimit({ prefix: 'device', windowSec: 600, max: 10, key: dev
 const l3Ip = rateLimit({ prefix: 'ip', windowSec: 60, max: 300, key: (req) => req.ip });
 const readIpLimit = rateLimit({ prefix: 'read-ip', windowSec: 60, max: 600, key: (req) => req.ip });
 
+// Schedule-specific limiters: LivePosition.jsx polls its own token every 5s
+// (~12/min), and a venue full of candidates shares one NAT IP — readIpLimit's
+// 600/min budget would 429 real candidates within seconds of the fair
+// opening. Per-token is the real gate (isolates one candidate's polling from
+// everyone else's); the IP limit stays underneath it as a coarser bot
+// backstop, sized for the whole hall's aggregate legitimate polling rather
+// than a single client's.
+const readTokenLimit = rateLimit({ prefix: 'read-token', windowSec: 60, max: 20, key: (req) => req.params.token });
+const scheduleIpLimit = rateLimit({ prefix: 'schedule-ip', windowSec: 60, max: 15000, key: (req) => req.ip });
+
 // L2's cookie is minted on the first public read (v3.0 §5: "set as httpOnly
 // cookie on first GET /qr").
 function ensureDeviceCookie(req, res, next) {
@@ -119,8 +129,10 @@ router.post('/qr/register', l1Mobile, l2Device, l3Ip, asyncHandler(async (req, r
 }));
 
 // Public: live schedule page data (v3.0 flow F) — bookmarkable, no auth, the
-// token IS the capability. Cache TTL 15s; the page polls every 30s.
-router.get('/qr/schedule/:token', readIpLimit, redisCache(15), asyncHandler(async (req, res) => {
+// token IS the capability. Cache TTL 15s; LivePosition.jsx polls every 5s, so
+// per-token limiting (not just per-IP) is what actually needs to hold here —
+// see readTokenLimit/scheduleIpLimit above.
+router.get('/qr/schedule/:token', readTokenLimit, scheduleIpLimit, redisCache(15), asyncHandler(async (req, res) => {
   const candRes = await pool.query(
     `SELECT cd.id, cd.name, cd.token_no, cd.checked_in_at, cd.checkin_sig, cd.travel_time_minutes,
             b.batch_number, b.arrival_time, b.status AS batch_status
