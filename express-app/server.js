@@ -4,6 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const { attach } = require('./lib/io');
+const { corsOptions } = require('./lib/corsConfig');
 
 const authRoutes = require('./routes/auth');
 const usersRoutes = require('./routes/users');
@@ -28,8 +29,12 @@ process.on('unhandledRejection', (reason) => {
 
 const app = express();
 
-// credentials: true so the HttpOnly session cookie survives cross-origin dev (Vite on :5173)
-app.use(cors({ origin: true, credentials: true }));
+// Red-team M3: `origin: true` reflected *any* Origin header back with
+// credentials: true, which is a CSRF-adjacent misconfiguration (sameSite:lax
+// on the session cookie already blocks most of the practical exploit, but
+// the CORS layer shouldn't rely on that alone). Allow-list instead, shared
+// with lib/io.js's Socket.IO server so the two can't drift.
+app.use(cors(corsOptions));
 app.use(cookieParser());
 app.use(express.json());
 

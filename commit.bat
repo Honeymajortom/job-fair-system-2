@@ -40,4 +40,14 @@ if "%MSG%"=="" (
 git commit -m "%MSG%"
 echo.
 git log --oneline -1
+
+echo.
+git rev-parse --abbrev-ref --symbolic-full-name @{u} >nul 2>&1
+if errorlevel 1 (
+    echo No upstream remote configured for this branch - skipping push.
+) else (
+    echo Pushing to remote...
+    git push
+)
+
 pause

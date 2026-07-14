@@ -58,6 +58,14 @@ router.get('/companies/:id', authenticateJWT, asyncHandler(async (req, res) => {
 router.post('/companies', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
   const { company_name, description, location, field, job_type, min_qualification, max_qualification, max_queue_limit, seats, interview_minutes } = req.body;
   if (!company_name) return res.status(400).json({ error: 'company_name is required' });
+  // Red-team L3: interview_minutes feeds `60 / interview_minutes` in the
+  // booking-cap math (registerCandidate.js) — 0 or negative breaks that
+  // divisor (Infinity/NaN, or a negative cap that silently waitlists
+  // everyone). The DB CHECK constraint is the hard backstop; this just gives
+  // a clean 400 instead of a raw constraint-violation error.
+  if (interview_minutes != null && !(Number.isInteger(interview_minutes) && interview_minutes > 0)) {
+    return res.status(400).json({ error: 'interview_minutes must be a positive integer' });
+  }
 
   try {
     const result = await pool.query(
@@ -68,6 +76,7 @@ router.post('/companies', authenticateJWT, requireRole('admin'), asyncHandler(as
     res.status(201).json(result.rows[0]);
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'A company with that name already exists' });
+    if (err.code === '23514') return res.status(400).json({ error: 'interview_minutes must be a positive integer' });
     throw err;
   }
 }));

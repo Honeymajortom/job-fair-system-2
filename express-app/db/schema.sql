@@ -197,6 +197,14 @@ ALTER TABLE companies
   ADD COLUMN IF NOT EXISTS seats INTEGER NOT NULL DEFAULT 1,
   ADD COLUMN IF NOT EXISTS interview_minutes INTEGER NOT NULL DEFAULT 6;
 
+-- Red-team L3: an admin-supplied interview_minutes of 0 fed
+-- registerCandidate.js's `60 / interview_minutes` booking-cap divisor
+-- (Infinity/NaN), silently disabling the per-company capacity gate.
+ALTER TABLE companies
+  DROP CONSTRAINT IF EXISTS companies_interview_minutes_positive;
+ALTER TABLE companies
+  ADD CONSTRAINT companies_interview_minutes_positive CHECK (interview_minutes > 0);
+
 ALTER TABLE fair_settings
   ADD COLUMN IF NOT EXISTS fair_hours NUMERIC NOT NULL DEFAULT 8;
 

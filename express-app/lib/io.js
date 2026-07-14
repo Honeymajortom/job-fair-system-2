@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 const { JWT_SECRET } = require('../middleware/auth');
 const pool = require('../db');
 const events = require('./events');
+const { corsOptions } = require('./corsConfig');
 
 // Staff-only WebSocket (v3.0 §2: "WebSocket (staff only)" — candidates poll,
 // they never get a socket). Auth accepts the session JWT either from the
@@ -16,8 +17,10 @@ function attach(httpServer) {
   pub.on('error', (err) => console.error('[io] Redis pub error:', err.message));
   sub.on('error', (err) => console.error('[io] Redis sub error:', err.message));
 
+  // Red-team M3: shares server.js's allow-list instead of its own
+  // origin:true reflect-anything config.
   const io = new Server(httpServer, {
-    cors: { origin: true, credentials: true },
+    cors: corsOptions,
   });
   io.adapter(createAdapter(pub, sub));
 

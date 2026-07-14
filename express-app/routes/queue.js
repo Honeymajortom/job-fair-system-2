@@ -9,6 +9,7 @@ const { emit } = require('../lib/events');
 const { verifyQr } = require('../lib/checkinSig');
 const dispatcher = require('../lib/queueDispatcher');
 const { clearNoShowTimer } = require('../lib/noShowTimer');
+const store = require('../lib/queueStore');
 const redis = require('../lib/redisClient');
 const { computeFloorStats } = require('../lib/floorStats');
 
@@ -214,7 +215,7 @@ router.post('/no-show', authenticateJWT, requireRole('admin', 'floor_manager'), 
 
   const result = await pool.query(
     `WITH old AS (
-       SELECT ccs.id, ccs.status, ccs.slot_id FROM candidate_company_status ccs
+       SELECT ccs.id, ccs.status, ccs.slot_id, ccs.candidate_id FROM candidate_company_status ccs
        JOIN candidates cd ON cd.id = ccs.candidate_id AND cd.deleted_at IS NULL
        WHERE cd.token_no = $1 AND ccs.company_id = $2 AND ccs.deleted_at IS NULL
          AND ccs.status IN ('Pending', 'Dispatched')
@@ -222,7 +223,7 @@ router.post('/no-show', authenticateJWT, requireRole('admin', 'floor_manager'), 
      UPDATE candidate_company_status ccs
      SET status = 'No_Show', processed_at = now()
      FROM old WHERE ccs.id = old.id
-     RETURNING ccs.id, ccs.slot_id, old.status AS old_status`,
+     RETURNING ccs.id, ccs.slot_id, old.status AS old_status, old.candidate_id AS candidate_id`,
     [token, company_id]
   );
   if (!result.rows.length) {
@@ -230,10 +231,23 @@ router.post('/no-show', authenticateJWT, requireRole('admin', 'floor_manager'), 
   }
   const row = result.rows[0];
 
+  // Red-team M1: this used to only flip the DB status, leaving the Redis
+  // lock/queue-membership/no-show timer untouched — a manually-marked
+  // no-show candidate stayed locked out of their other companies for up to
+  // 15min, lingered in this company's live queue inflating everyone else's
+  // position, and (if they were Dispatched) never freed the desk. Mirror
+  // what workers/noShowWorker.js and completeInterview() do.
+  const deskId = row.old_status === 'Dispatched' ? await store.getLockDesk(row.candidate_id) : null;
+  await store.releaseLock(row.candidate_id);
+  await store.remove(Number(company_id), row.candidate_id);
+  await clearNoShowTimer(row.candidate_id, Number(company_id));
+
   const statsDelta = { noShows: 1 };
   if (row.old_status === 'Dispatched') statsDelta.atDesk = -1;
   else statsDelta.pending = -1;
   emit('no_show_marked', { token, company_id: Number(company_id), slot_id: row.slot_id, statsDelta });
+
+  if (deskId) await dispatcher.dispatch(Number(company_id), deskId); // don't leave the desk idle
 
   res.json({ ok: true, ccs_id: row.id, slot_id: row.slot_id });
 }));

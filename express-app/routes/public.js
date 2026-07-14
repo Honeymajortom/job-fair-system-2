@@ -51,6 +51,7 @@ function ensureDeviceCookie(req, res, next) {
     res.cookie('qr_device', crypto.randomBytes(8).toString('hex'), {
       httpOnly: true,
       sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production', // red-team M3
       maxAge: 24 * 60 * 60 * 1000,
     });
   }
@@ -66,14 +67,21 @@ function ensureDeviceCookie(req, res, next) {
 // (integrity fix #6: fake QR registrations).
 router.get('/qr/token', authenticateJWT, requireRole('admin'), asyncHandler(async (_req, res) => {
   const fair = await pool.query(
-    'SELECT fair_name, fair_date FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1'
+    'SELECT fair_name, fair_date, fair_hours FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1'
   );
   if (!fair.rows.length) return res.status(404).json({ error: 'No active fair configured' });
+
+  // Red-team M4: a flat 24h TTL meant a photographed entrance QR stayed a
+  // live registration bearer token for a full extra day past the event.
+  // Bound it to the fair's own duration instead (+1h grace for late walk-ins
+  // and the lag between minting and actually printing the poster).
+  const fairHours = Number(fair.rows[0].fair_hours) || 8;
+  const ttlHours = Math.min(fairHours + 1, 16);
 
   const qrToken = jwt.sign(
     { purpose: 'qr_registration', fair_date: fair.rows[0].fair_date },
     JWT_SECRET,
-    { expiresIn: '24h' }
+    { expiresIn: `${ttlHours}h` }
   );
   res.json({ fair_name: fair.rows[0].fair_name, qr_token: qrToken, register_url: `/qr?token=${qrToken}` });
 }));

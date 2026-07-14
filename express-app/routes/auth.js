@@ -42,9 +42,13 @@ router.post('/login', loginUserLimit, loginIpLimit, asyncHandler(async (req, res
     JWT_SECRET,
     { expiresIn: `${SESSION_HOURS}h` }
   );
+  // Red-team M3: secure:true whenever this is actually served over TLS
+  // (NODE_ENV=production, set in ecosystem.config.js) — left false in dev
+  // since the Vite/API dev servers run over plain http.
   res.cookie('token', token, {
     httpOnly: true,
     sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
     maxAge: SESSION_HOURS * 60 * 60 * 1000,
   });
   res.json({ id: user.id, username: user.username, role: user.role, company_id: user.company_id, token });
