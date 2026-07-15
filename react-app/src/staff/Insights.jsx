@@ -7,8 +7,105 @@ import { api } from '../api';
 // cache TTL (routes/reports.js's GET /insights).
 const POLL_MS = 20000;
 
+// Outcome segments for the per-company stacked bar — same 5 buckets and
+// colors as the existing detail table's cells (status is a fixed, reserved
+// palette app-wide, not a re-picked categorical one). "Other" folds in
+// Dispatched/Waitlisted/No_Show so segment widths always sum to `assigned`
+// exactly — bar length stays a truthful headcount, not a lie.
+const OUTCOME_SEGMENTS = [
+  { key: 'selected', label: 'Selected', color: 'var(--st-selected)' },
+  { key: 'shortlisted', label: 'Shortlisted', color: 'var(--st-short)' },
+  { key: 'hold', label: 'Hold', color: 'var(--st-hold)' },
+  { key: 'rejected', label: 'Rejected', color: 'var(--st-rejected)' },
+  { key: 'pending', label: 'Pending', color: 'var(--st-pending)' },
+  { key: 'other', label: 'In queue / no-show', color: 'var(--ink-30)' },
+];
+
+// Chart-only categorical trio (candidate purple / live coral / a chroma-
+// boosted teal — #0E8F8C's own chroma sits just under the CVD floor) for the
+// two demographic donuts. Validated: node scripts/validate_palette.js
+// "#5B4BC4,#E4573D,#029C97" --mode light — all six checks pass.
+const GENDER_SEGMENTS = (t) => [
+  { key: 'male', label: 'Male', value: t.male, color: '#5B4BC4' },
+  { key: 'female', label: 'Female', value: t.female, color: '#E4573D' },
+  { key: 'other', label: 'Other', value: t.other_gender, color: '#029C97' },
+  { key: 'unknown', label: 'Unknown', value: t.gender_unknown, color: 'var(--ink-30)' },
+].filter((s) => s.value > 0);
+
+const SDC_SEGMENTS = (t) => [
+  { key: 'sdc', label: 'SDC', value: t.sdc, color: '#029C97' },
+  { key: 'non_sdc', label: 'Non-SDC', value: t.non_sdc, color: '#5B4BC4' },
+  { key: 'unknown', label: 'Unknown', value: t.sdc_unknown, color: 'var(--ink-30)' },
+].filter((s) => s.value > 0);
+
 function fmtDate(iso) {
   return new Date(`${iso}T00:00:00`).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+function HBar({ label, pct, displayValue, color }) {
+  return (
+    <div className="ins-hbar">
+      <div className="ins-hbar-label" title={label}>{label}</div>
+      <div className="ins-hbar-track">
+        <div className="ins-hbar-fill" style={{ width: `${pct}%`, background: color }} />
+      </div>
+      <div className="ins-hbar-value">{displayValue}</div>
+    </div>
+  );
+}
+
+function StackedBar({ label, total, segments, widthPct }) {
+  return (
+    <div className="ins-stack-row">
+      <div className="ins-stack-label" title={label}>
+        <span className="t">{label}</span>
+        <span className="n">{total}</span>
+      </div>
+      <div className="ins-stack-track" style={{ width: `${widthPct}%` }}>
+        {segments.filter((s) => s.value > 0).map((s) => (
+          <div key={s.key} className="ins-stack-seg" style={{ flexGrow: s.value, background: s.color }} title={`${s.label}: ${s.value}`} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Donut({ segments, size = 128 }) {
+  const total = segments.reduce((a, s) => a + s.value, 0) || 1;
+  let acc = 0;
+  const stops = segments.map((s) => {
+    const start = (acc / total) * 100;
+    acc += s.value;
+    const end = (acc / total) * 100;
+    return `${s.color} ${start}% ${end}%`;
+  }).join(', ');
+  return (
+    <div className="ins-donut" style={{ width: size, height: size, background: `conic-gradient(${stops})` }}>
+      <div className="ins-donut-hole">
+        <b>{total}</b>
+        <span>total</span>
+      </div>
+    </div>
+  );
+}
+
+function DonutBlock({ title, segments }) {
+  const total = segments.reduce((a, s) => a + s.value, 0) || 1;
+  return (
+    <div className="ins-donut-block">
+      <Donut segments={segments} />
+      <div className="ins-donut-legend">
+        <div className="sec-label" style={{ marginBottom: 2 }}>{title}</div>
+        {segments.map((s) => (
+          <div key={s.key} className="row">
+            <i style={{ background: s.color }} />
+            {s.label}
+            <b>{s.value} · {Math.round((s.value / total) * 100)}%</b>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 export default function Insights() {
@@ -26,6 +123,9 @@ export default function Insights() {
   }, [date]);
 
   const t = data?.totals;
+  const companies = data?.companies || [];
+  const rateRows = [...companies].filter((c) => c.fill_rate !== null).sort((a, b) => b.fill_rate - a.fill_rate);
+  const maxAssigned = Math.max(1, ...companies.map((c) => c.assigned));
 
   return (
     <div className="s-body">
@@ -49,11 +149,39 @@ export default function Insights() {
             <div className="stat hot"><div className="n">{t.fill_rate === null ? '—' : `${t.fill_rate}%`}</div><div className="l">Fill rate</div></div>
           </div>
 
-          <div className="stats-row" style={{ gridTemplateColumns: 'repeat(4, 1fr)', marginTop: 10 }}>
-            <div className="stat"><div className="n">{t.male}</div><div className="l">Male</div></div>
-            <div className="stat"><div className="n">{t.female}</div><div className="l">Female</div></div>
-            <div className="stat"><div className="n">{t.sdc}</div><div className="l">SDC candidates</div></div>
-            <div className="stat"><div className="n">{t.non_sdc}</div><div className="l">Non-SDC candidates</div></div>
+          <div className="sec-label" style={{ margin: '22px 0 10px' }}>Fill rate by company</div>
+          <div className="ins-chart-card">
+            {rateRows.length ? rateRows.map((c) => (
+              <HBar key={c.id} label={c.company_name} pct={Math.min(100, c.fill_rate)} displayValue={`${c.fill_rate}%`} color="var(--system)" />
+            )) : <p className="save-note">No vacancy data yet.</p>}
+          </div>
+
+          <div className="sec-label" style={{ margin: '22px 0 10px' }}>Outcomes by company</div>
+          <div className="ins-chart-card">
+            <div className="ins-legend">
+              {OUTCOME_SEGMENTS.map((s) => (
+                <span key={s.key} className="ins-legend-item"><i style={{ background: s.color }} />{s.label}</span>
+              ))}
+            </div>
+            {companies.length ? companies.map((c) => {
+              const other = c.dispatched + c.waitlisted + c.no_show;
+              const segments = OUTCOME_SEGMENTS.map((s) => ({ ...s, value: s.key === 'other' ? other : c[s.key] }));
+              return (
+                <StackedBar
+                  key={c.id}
+                  label={c.company_name}
+                  total={c.assigned}
+                  segments={segments}
+                  widthPct={c.assigned > 0 ? Math.max(3, (c.assigned / maxAssigned) * 100) : 0}
+                />
+              );
+            }) : <p className="save-note">No companies yet.</p>}
+          </div>
+
+          <div className="sec-label" style={{ margin: '22px 0 10px' }}>Candidate demographics</div>
+          <div className="ins-chart-card ins-donut-row">
+            <DonutBlock title="Gender" segments={GENDER_SEGMENTS(t)} />
+            <DonutBlock title="SDC status" segments={SDC_SEGMENTS(t)} />
           </div>
         </>
       )}

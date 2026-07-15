@@ -86,6 +86,16 @@ export default function LivePosition() {
   const [qrDataUrl, setQrDataUrl] = useState(null);
 
   useEffect(() => {
+    // Once a candidate lands here, back must not be able to reopen the
+    // registration form (they've already joined the queue). Refresh is the
+    // only way to re-sync; back is trapped in place instead of navigated away.
+    window.history.pushState(null, '', window.location.href);
+    const onPopState = () => window.history.pushState(null, '', window.location.href);
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     async function poll() {
       try {

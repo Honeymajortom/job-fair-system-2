@@ -21,6 +21,9 @@ async function fetchCandidateDetails(token, companyId) {
     qualification: full.qualification,
     missedCalls: co ? co.misses : 0,
     comingFrom: 'Same floor',
+    // GET /api/candidates/:token already SELECT *s the candidates row, so
+    // this needs zero backend changes beyond the resume_uploaded_at column.
+    hasResume: !!full.resume_uploaded_at,
   };
 }
 
@@ -147,6 +150,7 @@ export default function DeskTablet() {
             <IncomingCard
               key={incoming.candidateId}
               candidate={incoming.details}
+              companyId={companyId}
               ratingParameters={ratingParameters}
               interviewStartedAt={incoming.interviewStartedAt}
               onStartInterview={handleStartInterview}

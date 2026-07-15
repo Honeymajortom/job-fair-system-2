@@ -259,6 +259,16 @@ ALTER TABLE candidate_company_status
   ADD COLUMN IF NOT EXISTS interview_started_at TIMESTAMPTZ;
 
 -- ---------------------------------------------------------------------------
+-- Resume PDF upload (handoff.md's build-ready design, picked up 2026-07-15).
+-- One nullable timestamp, not a separate boolean — doubles as an existence
+-- flag (IS NOT NULL) and metadata, same idiom as checked_in_at/dispatched_at.
+-- No path column: the file lives at uploads/resumes/{token_no}.pdf, derived
+-- from the candidate's own server-generated, already-unique token.
+-- ---------------------------------------------------------------------------
+ALTER TABLE candidates
+  ADD COLUMN IF NOT EXISTS resume_uploaded_at TIMESTAMPTZ;
+
+-- ---------------------------------------------------------------------------
 -- Company Management (new_architecture_uiux_spec.html §07): vacancy tracking.
 -- Migrated from old/SDC_JobFair_Architecture.md's v2.5 company_posts design —
 -- a company can advertise multiple named postings, each with its own vacancy

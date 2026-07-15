@@ -4,7 +4,7 @@ Target instance, as discovered on 2026-07-14:
 
 | | |
 |---|---|
-| EC2 instance | `job-fair-server`, `t3.micro`, `ap-south-1a` (Mumbai), public IP `15.206.27.140` |
+| EC2 instance | `job-fair-server`, `t3.micro`, `ap-south-1a` (Mumbai), public IP `3.108.124.88` |
 | OS | Ubuntu 24.04.4 LTS |
 | RAM | 911Mi total — **very tight**, no swap configured |
 | Disk | 6.8GB total, 3.9GB free |
@@ -38,11 +38,11 @@ The app's auth cookie is `sameSite: 'lax', secure: NODE_ENV==='production'` (a d
 
 You don't have a domain, so use **sslip.io** — a free wildcard DNS service that resolves `<any-ip-with-dashes>.sslip.io` to that IP automatically, with no registration. That gives Let's Encrypt (via certbot) a real hostname to issue a cert for.
 
-First, make the IP permanent — if `15.206.27.140` is just the default public IP (not an Elastic IP), it changes on stop/start and breaks the cert:
+First, make the IP permanent — if `3.108.124.88` is just the default public IP (not an Elastic IP), it changes on stop/start and breaks the cert:
 
 - AWS Console → EC2 → Elastic IPs → Allocate → Associate with `job-fair-server`. (Free while attached to a running instance; this may already be the case — check first under EC2 → Instances → job-fair-server → Elastic IP.)
 
-Your hostname is then: **`15-206-27-140.sslip.io`** (replace dashes if your IP differs after allocating the EIP — recheck it after associating).
+Your hostname is then: **`3-108-124-88.sslip.io`** (replace dashes if your IP differs after allocating the EIP — recheck it after associating).
 
 ---
 
@@ -101,7 +101,7 @@ ssh-keygen -t ed25519 -f ~/.ssh/jobfair_deploy -N "" -C "job-fair-server deploy 
 cat ~/.ssh/jobfair_deploy.pub
 ```
 
-Copy that public key to GitHub → your repo → Settings → Deploy keys → Add deploy key (read-only is enough — this box only ever pulls).
+Copy that public key to GitHub → `Honeymajortom/job-fair-system-2` (the current project's own repo — separate from the old `job-fair-system` repo the box was originally cloned from) → Settings → Deploy keys → Add deploy key (read-only is enough — this box only ever pulls).
 
 ```bash
 cat >> ~/.ssh/config <<'EOF'
@@ -112,22 +112,22 @@ Host github.com
   IdentitiesOnly yes
 EOF
 chmod 600 ~/.ssh/config
-ssh -T git@github.com   # expect "Hi Honeymajortom/job-fair-system! You've successfully authenticated"
+ssh -T git@github.com   # expect "Hi Honeymajortom/job-fair-system-2! You've successfully authenticated"
 ```
 
-From your **Windows machine**, push the current project to that repo on its own branch first (keeps `master` — and the fallback — untouched until you've verified the new deploy):
+From your **Windows machine**, push the current project (note: the actual git repo root is `prototype/`, not the outer `SDC Career Path/` folder — that outer folder is a separate, unrelated repo with no remote):
 
 ```powershell
-cd "C:\Users\honey\Desktop\SDC Career Path"
-git remote -v                                   # confirm/add the job-fair-system remote if it isn't already there
-git push origin main:deploy-live                # push current main to a new branch
+cd "C:\Users\honey\Desktop\SDC Career Path\prototype"
+git remote -v
+git push origin main
 ```
 
 Back on the EC2 box:
 
 ```bash
-git clone --branch deploy-live git@github.com:Honeymajortom/job-fair-system.git ~/sdc-job-fair
-cd ~/sdc-job-fair/prototype/express-app
+git clone git@github.com:Honeymajortom/job-fair-system-2.git ~/sdc-job-fair
+cd ~/sdc-job-fair/express-app
 npm install --omit=dev
 ```
 
@@ -136,7 +136,7 @@ npm install --omit=dev
 ## Step 6 — Configure `.env`
 
 ```bash
-cd ~/sdc-job-fair/prototype/express-app
+cd ~/sdc-job-fair/express-app
 cp .env.example .env
 nano .env
 ```
@@ -149,7 +149,7 @@ PORT=3000
 JWT_SECRET=<openssl rand -hex 32>
 SERVER_SECRET=<a different openssl rand -hex 32>
 REDIS_URL=redis://localhost:6379
-CORS_ORIGIN=https://15-206-27-140.sslip.io
+CORS_ORIGIN=https://3-108-124-88.sslip.io
 ```
 
 Generate the two secrets:
@@ -171,7 +171,7 @@ psql "host=jobfair-db.c988ugwcogm9.ap-south-1.rds.amazonaws.com port=5432 user=p
 ## Step 7 — Migrate, seed, verify DB
 
 ```bash
-cd ~/sdc-job-fair/prototype/express-app
+cd ~/sdc-job-fair/express-app
 npm run migrate
 npm run seed
 ```
@@ -188,7 +188,7 @@ Rollup/esbuild's minify pass can transiently spike memory well past what this bo
 cd "C:\Users\honey\Desktop\SDC Career Path\prototype\react-app"
 npm install
 npm run build
-scp -i "C:\Users\honey\Desktop\job_fair_system\job-fair-key.pem" -r dist ubuntu@15.206.27.140:~/sdc-job-fair/prototype/react-app/dist
+scp -i "C:\Users\honey\Desktop\job_fair_system\job-fair-key.pem" -r dist ubuntu@3.108.124.88:~/sdc-job-fair/react-app/dist
 ```
 
 (If you'd rather build on-server for future redeploys now that swap exists, `npm install && npm run build` in `prototype/react-app` works too — just expect it to be slow.)
@@ -200,7 +200,7 @@ scp -i "C:\Users\honey\Desktop\job_fair_system\job-fair-key.pem" -r dist ubuntu@
 The repo already ships `ecosystem.config.js` covering both long-running processes:
 
 ```bash
-cd ~/sdc-job-fair/prototype/express-app
+cd ~/sdc-job-fair/express-app
 npx pm2 start ecosystem.config.js
 npx pm2 save
 pm2 startup systemd -u ubuntu --hp /home/ubuntu   # run the sudo command it prints, once
@@ -219,9 +219,9 @@ sudo rm /etc/nginx/sites-enabled/default
 sudo tee /etc/nginx/sites-available/sdc-job-fair > /dev/null <<'EOF'
 server {
     listen 80;
-    server_name 15-206-27-140.sslip.io;
+    server_name 3-108-124-88.sslip.io;
 
-    root /home/ubuntu/sdc-job-fair/prototype/react-app/dist;
+    root /home/ubuntu/sdc-job-fair/react-app/dist;
     index index.html;
 
     location / {
@@ -252,7 +252,7 @@ Get a real cert (certbot edits the block above to add the 443 server + HTTP→HT
 
 ```bash
 sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d 15-206-27-140.sslip.io
+sudo certbot --nginx -d 3-108-124-88.sslip.io
 ```
 
 ---
@@ -270,12 +270,12 @@ AWS Console → EC2 → Security Groups → the one attached to `job-fair-server
 ## Step 12 — Smoke test
 
 ```bash
-curl -sk https://15-206-27-140.sslip.io/api/health          # expect {"ok":true}
+curl -sk https://3-108-124-88.sslip.io/api/health          # expect {"ok":true}
 pm2 status                                                    # both processes "online"
 redis-cli ping                                                # PONG
 ```
 
-Then in a browser: `https://15-206-27-140.sslip.io` → register a test candidate through the public flow, log in as `admin` with the password `seed.js` printed, confirm the Floor Monitor and a live position page both load and the Socket.IO connection in devtools' Network tab shows `101 Switching Protocols` (not falling back to polling, and not erroring).
+Then in a browser: `https://3-108-124-88.sslip.io` → register a test candidate through the public flow, log in as `admin` with the password `seed.js` printed, confirm the Floor Monitor and a live position page both load and the Socket.IO connection in devtools' Network tab shows `101 Switching Protocols` (not falling back to polling, and not erroring).
 
 ---
 
@@ -285,10 +285,10 @@ Then in a browser: `https://15-206-27-140.sslip.io` → register a test candidat
 # local: build + upload
 cd "C:\Users\honey\Desktop\SDC Career Path\prototype\react-app"
 npm run build
-scp -i ...\job-fair-key.pem -r dist ubuntu@15.206.27.140:~/sdc-job-fair/prototype/react-app/dist
+scp -i ...\job-fair-key.pem -r dist ubuntu@3.108.124.88:~/sdc-job-fair/react-app/dist
 
 # server: pull + restart
-ssh -i job-fair-key.pem ubuntu@15.206.27.140
+ssh -i job-fair-key.pem ubuntu@3.108.124.88
 cd ~/sdc-job-fair && git pull
 cd prototype/express-app && npm install --omit=dev
 npm run migrate                 # only if schema.sql changed

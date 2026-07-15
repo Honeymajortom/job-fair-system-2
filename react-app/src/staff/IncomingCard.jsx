@@ -15,7 +15,7 @@ const OUTCOMES = ['Selected', 'Rejected', 'Shortlisted', 'Hold'];
 // different moments — an interview can run well past the arrival timer's
 // 90s/180s window, and without an explicit start tap the no-show timer had
 // no way to know the candidate had shown up.
-export default function IncomingCard({ candidate, ratingParameters, interviewStartedAt, onStartInterview, onDone }) {
+export default function IncomingCard({ candidate, companyId, ratingParameters, interviewStartedAt, onStartInterview, onDone }) {
   const [starting, setStarting] = useState(false);
   const [pickingOutcome, setPickingOutcome] = useState(false);
   const [status, setStatus] = useState(null);
@@ -78,15 +78,21 @@ export default function IncomingCard({ candidate, ratingParameters, interviewSta
           </m.button>
         )}
         {interviewStartedAt && !pickingOutcome && (
-          <m.button
-            key="done"
-            className="btn ok"
-            style={{ marginTop: 14 }}
-            onClick={() => setPickingOutcome(true)}
-            exit={{ opacity: 0 }}
-          >
-            ✓ Done — call next
-          </m.button>
+          <m.div key="done" style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 8 }} exit={{ opacity: 0 }}>
+            {candidate.hasResume && (
+              <a
+                className="btn ghost"
+                href={`/api/candidates/${candidate.token}/resume?company_id=${companyId}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                📄 View resume
+              </a>
+            )}
+            <button className="btn ok" onClick={() => setPickingOutcome(true)}>
+              ✓ Done — call next
+            </button>
+          </m.div>
         )}
         {pickingOutcome && (
           <m.div

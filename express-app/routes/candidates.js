@@ -1,9 +1,15 @@
 const express = require('express');
+const path = require('path');
 const pool = require('../db');
 const asyncHandler = require('../asyncHandler');
 const { authenticateJWT } = require('../middleware/auth');
 const requireRole = require('../middleware/requireRole');
+const requireCompanyScope = require('../middleware/requireCompanyScope');
 const registerCandidate = require('../lib/registerCandidate');
+const { verifyQr } = require('../lib/checkinSig');
+const queueStore = require('../lib/queueStore');
+const { emit } = require('../lib/events');
+const { RESUME_DIR } = require('../lib/resumeStorage');
 
 const router = express.Router();
 
@@ -51,6 +57,38 @@ router.get('/candidates/:token', authenticateJWT, asyncHandler(async (req, res) 
   );
 
   res.json({ ...candidate, companies: statusRes.rows });
+}));
+
+// Admin / Floor Manager / Company HR: serve an uploaded resume — inline, not
+// as a forced download, since HR needs to read it during the interview.
+// Gated server-side, not just hidden in the UI: everyone (admin and
+// floor_manager included, no fair-wide bypass) only sees it once this
+// candidate's interview at this specific company has actually started, so
+// nobody can pre-judge a candidate before meeting them. requireCompanyScope
+// additionally confines a company_hr account to its own company_id.
+router.get('/candidates/:token/resume', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), requireCompanyScope((req) => req.query.company_id), asyncHandler(async (req, res) => {
+  const companyId = Number(req.query.company_id);
+  if (!companyId) return res.status(400).json({ error: 'company_id is required' });
+
+  const candRes = await pool.query(
+    'SELECT id, resume_uploaded_at FROM candidates WHERE token_no = $1 AND deleted_at IS NULL',
+    [req.params.token]
+  );
+  if (!candRes.rows.length) return res.status(404).json({ error: 'Candidate not found' });
+  const candidate = candRes.rows[0];
+  if (!candidate.resume_uploaded_at) return res.status(404).json({ error: 'No resume on file' });
+
+  const ccsRes = await pool.query(
+    `SELECT status, interview_started_at FROM candidate_company_status
+      WHERE candidate_id = $1 AND company_id = $2 AND deleted_at IS NULL`,
+    [candidate.id, companyId]
+  );
+  const ccs = ccsRes.rows[0];
+  if (!ccs || ccs.status !== 'Dispatched' || !ccs.interview_started_at) {
+    return res.status(403).json({ error: 'Resume is only viewable after the interview has started' });
+  }
+
+  res.sendFile(path.join(RESUME_DIR, `${req.params.token}.pdf`));
 }));
 
 // Admin / Floor Manager: emergency batch reschedule (Waiting Room drag-and-drop)
@@ -120,6 +158,87 @@ router.put('/candidates/:id/batch', authenticateJWT, requireRole('admin', 'floor
   } finally {
     client.release();
   }
+}));
+
+// Admin / Registration Staff: gate exit-scan — candidate hands back their
+// token on the way out (done with all interviews, or leaving early/voluntarily).
+// Same QR the schedule page shows for entrance check-in (checkinSig.verifyQr),
+// scanned in "Exit" mode on the same GateCheckIn screen. Unlike check-in this
+// isn't batch-scoped — it ends the candidate's whole session: soft-deleted
+// (same convention as DELETE /candidates/:id, so every deleted_at IS NULL read —
+// GET /qr/schedule/:token, check-in, candidate lookup — treats the token as
+// dead from this point on) and pulled off any company queues they were still
+// waiting in, so a photographed/reused QR can't jump a queue after the
+// candidate has physically left.
+router.post('/candidates/exit', authenticateJWT, requireRole('admin', 'registration_staff'), asyncHandler(async (req, res) => {
+  const { qr, candidate_token } = req.body;
+
+  let tokenNo;
+  if (qr !== undefined) {
+    tokenNo = verifyQr(qr);
+    if (!tokenNo) return res.status(400).json({ error: 'Invalid or forged check-in QR' });
+  } else if (candidate_token) {
+    tokenNo = candidate_token;
+  } else {
+    return res.status(400).json({ error: 'qr or candidate_token is required' });
+  }
+
+  const client = await pool.connect();
+  let candidate;
+  let companyIds;
+  try {
+    await client.query('BEGIN');
+
+    const candRes = await client.query(
+      'SELECT id, token_no, name FROM candidates WHERE token_no = $1 AND deleted_at IS NULL FOR UPDATE',
+      [tokenNo]
+    );
+    if (!candRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Candidate not found or already exited' });
+    }
+    candidate = candRes.rows[0];
+
+    const ccsRes = await client.query(
+      'SELECT company_id FROM candidate_company_status WHERE candidate_id = $1 AND deleted_at IS NULL',
+      [candidate.id]
+    );
+    companyIds = ccsRes.rows.map((r) => r.company_id);
+
+    await client.query('UPDATE candidates SET deleted_at = now() WHERE id = $1', [candidate.id]);
+    await client.query(
+      'UPDATE candidate_company_status SET deleted_at = now() WHERE candidate_id = $1 AND deleted_at IS NULL',
+      [candidate.id]
+    );
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  // Redis cleanup after commit — same reasoning as registerCandidate.js's
+  // post-commit enqueue: a Redis outage must never undo an already-committed
+  // exit. Release the desk lock too, in case they're mid-interview and
+  // choose to leave early.
+  for (const companyId of companyIds) {
+    try {
+      await queueStore.remove(companyId, candidate.id);
+    } catch (err) {
+      console.error(`[candidates/exit] queue remove failed for candidate ${candidate.id} company ${companyId}:`, err.message);
+    }
+  }
+  try {
+    await queueStore.releaseLock(candidate.id);
+  } catch (err) {
+    console.error(`[candidates/exit] lock release failed for candidate ${candidate.id}:`, err.message);
+  }
+
+  emit('candidate_exited', { token: candidate.token_no, name: candidate.name, statsDelta: { exited: 1 } });
+
+  res.json({ ok: true, token: candidate.token_no, name: candidate.name });
 }));
 
 // Admin / Reg Staff: delete a candidate — integrity fix #10: while a fair is

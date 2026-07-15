@@ -68,7 +68,11 @@ router.post('/batch/:id/check-in', authenticateJWT, requireRole('admin', 'regist
       return res.status(404).json({ error: 'Candidate not found' });
     }
     const candidate = candRes.rows[0];
-    if (candidate.batch_id !== batch.id) {
+    // NULL batch_id means they registered before any batch existed yet
+    // (e.g. via the gate's own "Generate batch" button, run after
+    // registrations were already taken) — assign them into whichever batch
+    // they're checked in at, rather than rejecting them as a mismatch.
+    if (candidate.batch_id !== null && candidate.batch_id !== batch.id) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: `Candidate ${candidate.token_no} belongs to a different batch` });
     }
@@ -77,7 +81,7 @@ router.post('/batch/:id/check-in', authenticateJWT, requireRole('admin', 'regist
       return res.status(409).json({ error: `Candidate ${candidate.token_no} is already checked in` });
     }
 
-    await client.query('UPDATE candidates SET checked_in_at = now() WHERE id = $1', [candidate.id]);
+    await client.query('UPDATE candidates SET checked_in_at = now(), batch_id = $2 WHERE id = $1', [candidate.id, batch.id]);
     const updated = await client.query(
       'UPDATE fair_batches SET checked_in = checked_in + 1 WHERE id = $1 RETURNING checked_in, capacity',
       [batch.id]

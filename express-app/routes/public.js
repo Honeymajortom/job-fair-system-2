@@ -1,6 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
 const pool = require('../db');
 const asyncHandler = require('../asyncHandler');
 const { authenticateJWT, JWT_SECRET } = require('../middleware/auth');
@@ -12,6 +13,7 @@ const { normalizeMobile } = require('../lib/mobile');
 const store = require('../lib/queueStore');
 const { resolveRung } = require('../lib/pingLadder');
 const { computeGateStatus } = require('../lib/gateStatus');
+const { RESUME_DIR } = require('../lib/resumeStorage');
 
 const router = express.Router();
 
@@ -43,6 +45,33 @@ const readIpLimit = rateLimit({ prefix: 'read-ip', windowSec: 60, max: 600, key:
 // than a single client's.
 const readTokenLimit = rateLimit({ prefix: 'read-token', windowSec: 60, max: 20, key: (req) => req.params.token });
 const scheduleIpLimit = rateLimit({ prefix: 'schedule-ip', windowSec: 60, max: 15000, key: (req) => req.ip });
+
+// Resume upload: 5 attempts / 10min per token — a candidate re-uploading a
+// couple of times (wrong file, retry after a flaky connection) is normal;
+// anything past that is someone hammering one token's slot.
+const resumeUploadLimit = rateLimit({ prefix: 'resume-upload', windowSec: 600, max: 5, key: (req) => req.params.token });
+
+// PDF-only (mimetype + extension check, no magic-byte sniffing — matches
+// this project's minimal-dependency style), 5MB cap. Filename is always
+// `${token}.pdf` regardless of the uploaded name — token_no is server-
+// generated, so this can never path-traverse, and a re-upload just overwrites.
+const resumeUpload = multer({
+  storage: multer.diskStorage({
+    destination: RESUME_DIR,
+    filename: (req, _file, cb) => cb(null, `${req.params.token}.pdf`),
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const isPdf = file.mimetype === 'application/pdf' && file.originalname.toLowerCase().endsWith('.pdf');
+    cb(isPdf ? null : new Error('Only PDF files are allowed'), isPdf);
+  },
+});
+
+function runResumeUpload(req, res) {
+  return new Promise((resolve, reject) => {
+    resumeUpload.single('resume')(req, res, (err) => (err ? reject(err) : resolve()));
+  });
+}
 
 // L2's cookie is minted on the first public read (v3.0 §5: "set as httpOnly
 // cookie on first GET /qr").
@@ -134,6 +163,27 @@ router.post('/qr/register', l1Mobile, l2Device, l3Ip, asyncHandler(async (req, r
 
   const result = await registerCandidate(req.body);
   res.status(result.status).json(result.body);
+}));
+
+// Public: optional resume attach, called right after POST /qr/register
+// succeeds (same "the token IS the capability" model as /qr/schedule/:token —
+// no staff auth). Deliberately a separate endpoint rather than making
+// /qr/register multipart: registerCandidate() is a single shared, heavily-
+// tested transaction consumed by both the staff and public paths; touching it
+// risks that whole path for an optional, orthogonal feature.
+router.post('/qr/resume/:token', resumeUploadLimit, asyncHandler(async (req, res) => {
+  const candRes = await pool.query('SELECT id FROM candidates WHERE token_no = $1 AND deleted_at IS NULL', [req.params.token]);
+  if (!candRes.rows.length) return res.status(404).json({ error: 'Candidate not found' });
+
+  try {
+    await runResumeUpload(req, res);
+  } catch (err) {
+    return res.status(400).json({ error: err.message || 'Upload failed' });
+  }
+  if (!req.file) return res.status(400).json({ error: 'resume file is required' });
+
+  await pool.query('UPDATE candidates SET resume_uploaded_at = now() WHERE token_no = $1', [req.params.token]);
+  res.json({ ok: true });
 }));
 
 // Public: live schedule page data (v3.0 flow F) — bookmarkable, no auth, the

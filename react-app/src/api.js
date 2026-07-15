@@ -17,10 +17,30 @@ async function request(path, options = {}) {
   return data;
 }
 
+// FormData needs the browser to set its own boundary-bearing Content-Type —
+// request()'s hardcoded 'application/json' header would break the multipart
+// body, so this is a standalone fetch matching request()'s credentials +
+// error shape rather than a request() variant.
+async function uploadFile(path, formData) {
+  const res = await fetch(`/api${path}`, { method: 'POST', credentials: 'include', body: formData });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || `Request failed (${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
 export const api = {
   // public candidate path
   qrCompanies: () => request('/qr/companies'),
   qrRegister: (payload) => request('/qr/register', { method: 'POST', body: JSON.stringify(payload) }),
+  uploadResume: (token, file) => {
+    const formData = new FormData();
+    formData.append('resume', file);
+    return uploadFile(`/qr/resume/${token}`, formData);
+  },
   qrSchedule: (token) => request(`/qr/schedule/${token}`),
   getGateStatus: () => request('/gate-status'),
 
@@ -54,6 +74,7 @@ export const api = {
   getBatches: () => request('/batches'),
   setBatchStatus: (id, status) => request(`/batch/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
   checkIn: (batchId, payload) => request(`/batch/${batchId}/check-in`, { method: 'POST', body: JSON.stringify(payload) }),
+  exitCandidate: (payload) => request('/candidates/exit', { method: 'POST', body: JSON.stringify(payload) }),
   qrToken: () => request('/qr/token'),
 
   // fair config (admin)

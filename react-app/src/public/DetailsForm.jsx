@@ -14,6 +14,7 @@ export default function DetailsForm() {
   const companyIds = location.state?.company_ids || [];
 
   const [form, setForm] = useState({ name: '', mobile: '', age: '', qualification: '', travel_time_minutes: '', gender: '', is_sdc: '' });
+  const [resumeFile, setResumeFile] = useState(null);
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -47,7 +48,17 @@ export default function DetailsForm() {
       // finding C1: token_no is guessable, so resending the HMAC on every
       // poll would leak the gate check-in bypass to anyone who guesses it).
       if (result.qr) localStorage.setItem(`checkin_qr_${result.token}`, result.qr);
-      navigate(`/schedule/${result.token}`);
+      // Resume is optional and orthogonal to registration — a failed upload
+      // should never block a candidate who's already registered, so this is
+      // fire-and-forget: no re-throw, just move on to the schedule page.
+      if (resumeFile) {
+        try {
+          await api.uploadResume(result.token, resumeFile);
+        } catch { /* candidate is already registered; they can't retry from here anyway */ }
+      }
+      // replace, not push: once registered, back must not return to this form
+      // (LivePosition.jsx also traps back navigation once the candidate lands there)
+      navigate(`/schedule/${result.token}`, { replace: true });
     } catch (err) {
       setError(err.message);
     } finally {
@@ -102,6 +113,15 @@ export default function DetailsForm() {
             {TRAVEL_PRESETS.map((m) => <option key={m} value={m}>~{m} min</option>)}
           </select>
         </div>
+        <div className="field">
+          <label>Resume (PDF, optional)</label>
+          <input
+            type="file"
+            accept="application/pdf"
+            onChange={(e) => setResumeFile(e.target.files[0] || null)}
+          />
+        </div>
+        {resumeFile && <p className="save-note" style={{ textAlign: 'left' }}>{resumeFile.name}</p>}
         {error && <div className="error-note">{error}</div>}
         <div className="sticky-cta" style={{ padding: 0, border: 'none', marginTop: 8 }}>
           <button className="btn" type="submit" disabled={submitting}>
