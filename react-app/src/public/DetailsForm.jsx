@@ -1,8 +1,13 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api';
 
 const TRAVEL_PRESETS = [10, 25, 45, 60];
+const RESUME_MAX_BYTES = 5 * 1024 * 1024; // matches the server's multer limit — catch it client-side first
+
+function formatBytes(n) {
+  return n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 // new_architecture_uiux_spec.html §01 step 3. travel_time_minutes is the one
 // field this form has that v1's DetailsForm didn't — it's what lets the ping
@@ -15,11 +20,37 @@ export default function DetailsForm() {
 
   const [form, setForm] = useState({ name: '', mobile: '', age: '', qualification: '', travel_time_minutes: '', gender: '', is_sdc: '' });
   const [resumeFile, setResumeFile] = useState(null);
+  const [resumeError, setResumeError] = useState(null);
+  const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const fileInputRef = useRef(null);
 
   function set(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  // Client-side mirror of the server's own checks (PDF-only, 5MB cap) — same
+  // reasoning as elsewhere in this app: catch it before a wasted round trip,
+  // not instead of the server check (the server never trusts this).
+  function handleResumeFile(file) {
+    if (!file) return;
+    if (file.type !== 'application/pdf' || !file.name.toLowerCase().endsWith('.pdf')) {
+      setResumeError('Only PDF files are accepted.');
+      return;
+    }
+    if (file.size > RESUME_MAX_BYTES) {
+      setResumeError(`That file is ${formatBytes(file.size)} — the limit is 5 MB.`);
+      return;
+    }
+    setResumeError(null);
+    setResumeFile(file);
+  }
+
+  function clearResume() {
+    setResumeFile(null);
+    setResumeError(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   }
 
   async function submit(e) {
@@ -51,9 +82,9 @@ export default function DetailsForm() {
       // Resume is optional and orthogonal to registration — a failed upload
       // should never block a candidate who's already registered, so this is
       // fire-and-forget: no re-throw, just move on to the schedule page.
-      if (resumeFile) {
+      if (resumeFile && result.qr) {
         try {
-          await api.uploadResume(result.token, resumeFile);
+          await api.uploadResume(result.qr, resumeFile);
         } catch { /* candidate is already registered; they can't retry from here anyway */ }
       }
       // replace, not push: once registered, back must not return to this form
@@ -113,15 +144,46 @@ export default function DetailsForm() {
             {TRAVEL_PRESETS.map((m) => <option key={m} value={m}>~{m} min</option>)}
           </select>
         </div>
-        <div className="field">
-          <label>Resume (PDF, optional)</label>
+        <div className="field resume-field">
+          <label>Resume — optional, skip if you don't have one handy</label>
+          {!resumeFile ? (
+            <div
+              className={`resume-drop${dragOver ? ' over' : ''}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => fileInputRef.current?.click()}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click(); }}
+              onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+                handleResumeFile(e.dataTransfer.files[0]);
+              }}
+            >
+              <span className="ic">📄</span>
+              <span className="txt">Tap to choose a PDF, or drag one here</span>
+              <span className="hint">Optional — you can skip this and still register</span>
+            </div>
+          ) : (
+            <div className="resume-chip">
+              <span className="ic">📄</span>
+              <div className="meta">
+                <span className="name">{resumeFile.name}</span>
+                <span className="size">{formatBytes(resumeFile.size)}</span>
+              </div>
+              <button type="button" className="rm" onClick={clearResume} aria-label="Remove resume">✕</button>
+            </div>
+          )}
           <input
+            ref={fileInputRef}
             type="file"
             accept="application/pdf"
-            onChange={(e) => setResumeFile(e.target.files[0] || null)}
+            style={{ display: 'none' }}
+            onChange={(e) => handleResumeFile(e.target.files[0])}
           />
         </div>
-        {resumeFile && <p className="save-note" style={{ textAlign: 'left' }}>{resumeFile.name}</p>}
+        {resumeError && <div className="error-note">{resumeError}</div>}
         {error && <div className="error-note">{error}</div>}
         <div className="sticky-cta" style={{ padding: 0, border: 'none', marginTop: 8 }}>
           <button className="btn" type="submit" disabled={submitting}>

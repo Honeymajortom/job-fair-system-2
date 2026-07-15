@@ -17,8 +17,8 @@ export default function QRLanding() {
   return (
     <div className="m-shell">
       <div className="app-head">
-        <div className="fair">SDC Job Fair 2026</div>
-        <div className="sub">PUNE · 25 COMPANIES · TODAY</div>
+        <div className="fair">QueueOps</div>
+        <div className="sub">Smart Job Fair Crowd & Interview Management System</div>
       </div>
       <m.div
         className="m-body"

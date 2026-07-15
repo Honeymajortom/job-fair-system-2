@@ -81,6 +81,29 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
 .error-note { color: var(--st-rejected); font-size: 12.5px; margin-top: 8px; }
 .mono { font-family: var(--mono); }
 
+/* --- resume upload (DetailsForm.jsx) — deliberately lighter-weight than the
+   required fields around it: dashed border, no red-asterisk styling, an
+   explicit "optional" hint, so it never reads as a blocking step. --- */
+.field.resume-field { border: none; padding: 0; background: none; }
+.resume-drop {
+  border: 1.5px dashed var(--ink-30); border-radius: 9px; padding: 16px 14px;
+  display: flex; flex-direction: column; align-items: center; text-align: center; gap: 3px;
+  cursor: pointer; background: #FBFBFD; transition: border-color .15s, background-color .15s;
+}
+.resume-drop:hover, .resume-drop:focus-visible { border-color: var(--candidate); background: var(--candidate-soft); }
+.resume-drop.over { border-color: var(--candidate); background: var(--candidate-soft); border-style: solid; }
+.resume-drop .ic { font-size: 22px; }
+.resume-drop .txt { font-size: 13px; font-weight: 500; }
+.resume-drop .hint { font-family: var(--mono); font-size: 10px; color: var(--ink-60); text-transform: uppercase; letter-spacing: .05em; }
+.resume-chip { display: flex; align-items: center; gap: 10px; border: 1.5px solid var(--line); border-radius: 9px; padding: 10px 12px; background: var(--card); }
+.resume-chip .ic { font-size: 20px; flex-shrink: 0; }
+.resume-chip .meta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.resume-chip .name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.resume-chip .size { font-family: var(--mono); font-size: 10.5px; color: var(--ink-60); }
+.resume-chip .rm { background: none; border: none; color: var(--ink-60); font-size: 15px; padding: 4px 6px; line-height: 1; flex-shrink: 0; }
+.resume-chip .rm:hover { color: var(--st-rejected); }
+@media (prefers-reduced-motion: reduce) { .resume-drop { transition: none; } }
+
 /* --- candidate mobile shell: one column, CTA pinned bottom --- */
 .m-shell { max-width: 440px; margin: 0 auto; min-height: 100dvh; display: flex; flex-direction: column; background: var(--card); }
 .app-head { padding: 14px 18px; border-bottom: 1px solid var(--line); }

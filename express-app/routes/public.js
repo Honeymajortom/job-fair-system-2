@@ -14,6 +14,7 @@ const store = require('../lib/queueStore');
 const { resolveRung } = require('../lib/pingLadder');
 const { computeGateStatus } = require('../lib/gateStatus');
 const { RESUME_DIR } = require('../lib/resumeStorage');
+const { verifyQr } = require('../lib/checkinSig');
 
 const router = express.Router();
 
@@ -48,17 +49,25 @@ const scheduleIpLimit = rateLimit({ prefix: 'schedule-ip', windowSec: 60, max: 1
 
 // Resume upload: 5 attempts / 10min per token — a candidate re-uploading a
 // couple of times (wrong file, retry after a flaky connection) is normal;
-// anything past that is someone hammering one token's slot.
-const resumeUploadLimit = rateLimit({ prefix: 'resume-upload', windowSec: 600, max: 5, key: (req) => req.params.token });
+// anything past that is someone hammering one token's slot. Keyed on the
+// *verified* token_no (post-signature-check), not the raw :qr param, so the
+// counter is meaningful even across the rare legitimate case of a client
+// somehow sending a stale-but-still-valid qr string in a slightly different
+// form.
+const resumeUploadLimit = rateLimit({ prefix: 'resume-upload', windowSec: 600, max: 5, key: (req) => verifyQr(req.params.qr) });
 
 // PDF-only (mimetype + extension check, no magic-byte sniffing — matches
 // this project's minimal-dependency style), 5MB cap. Filename is always
-// `${token}.pdf` regardless of the uploaded name — token_no is server-
-// generated, so this can never path-traverse, and a re-upload just overwrites.
+// `${req.verifiedToken}.pdf` — set by the route handler below only *after*
+// verifyQr() has confirmed the signature, never taken from the URL directly
+// (red-team finding, 2026-07-15: token_no is sequential/guessable, so trusting
+// it bare here would let anyone overwrite any candidate's resume by just
+// enumerating A-1, A-2, A-3…, same class of bug the check-in QR's HMAC
+// already exists to prevent — this route just hadn't reused that precedent).
 const resumeUpload = multer({
   storage: multer.diskStorage({
     destination: RESUME_DIR,
-    filename: (req, _file, cb) => cb(null, `${req.params.token}.pdf`),
+    filename: (req, _file, cb) => cb(null, `${req.verifiedToken}.pdf`),
   }),
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
@@ -166,15 +175,26 @@ router.post('/qr/register', l1Mobile, l2Device, l3Ip, asyncHandler(async (req, r
 }));
 
 // Public: optional resume attach, called right after POST /qr/register
-// succeeds (same "the token IS the capability" model as /qr/schedule/:token —
-// no staff auth). Deliberately a separate endpoint rather than making
-// /qr/register multipart: registerCandidate() is a single shared, heavily-
-// tested transaction consumed by both the staff and public paths; touching it
-// risks that whole path for an optional, orthogonal feature.
-router.post('/qr/resume/:token', resumeUploadLimit, asyncHandler(async (req, res) => {
-  const candRes = await pool.query('SELECT id FROM candidates WHERE token_no = $1 AND deleted_at IS NULL', [req.params.token]);
+// succeeds. Deliberately a separate endpoint rather than making /qr/register
+// multipart: registerCandidate() is a single shared, heavily-tested
+// transaction consumed by both the staff and public paths; touching it risks
+// that whole path for an optional, orthogonal feature.
+//
+// :qr is the same signed "{token_no}.{HMAC}" string the check-in QR uses
+// (lib/checkinSig.js) — NOT the bare token_no. token_no is sequential and
+// trivially guessable (A-1, A-2, A-3…), so this is a write endpoint; unlike
+// the read-only /qr/schedule/:token, "the token IS the capability" is the
+// wrong model here — bare token_no would let anyone overwrite any
+// candidate's resume by enumeration. Reuses the exact scheme check-in
+// already relies on for the same reason, rather than inventing a new one.
+router.post('/qr/resume/:qr', resumeUploadLimit, asyncHandler(async (req, res) => {
+  const tokenNo = verifyQr(req.params.qr);
+  if (!tokenNo) return res.status(401).json({ error: 'Invalid or forged resume-upload link' });
+
+  const candRes = await pool.query('SELECT id FROM candidates WHERE token_no = $1 AND deleted_at IS NULL', [tokenNo]);
   if (!candRes.rows.length) return res.status(404).json({ error: 'Candidate not found' });
 
+  req.verifiedToken = tokenNo; // consumed by resumeUpload's diskStorage filename callback above
   try {
     await runResumeUpload(req, res);
   } catch (err) {
@@ -182,7 +202,7 @@ router.post('/qr/resume/:token', resumeUploadLimit, asyncHandler(async (req, res
   }
   if (!req.file) return res.status(400).json({ error: 'resume file is required' });
 
-  await pool.query('UPDATE candidates SET resume_uploaded_at = now() WHERE token_no = $1', [req.params.token]);
+  await pool.query('UPDATE candidates SET resume_uploaded_at = now() WHERE token_no = $1', [tokenNo]);
   res.json({ ok: true });
 }));
 

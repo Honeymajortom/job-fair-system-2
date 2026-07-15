@@ -36,10 +36,13 @@ export const api = {
   // public candidate path
   qrCompanies: () => request('/qr/companies'),
   qrRegister: (payload) => request('/qr/register', { method: 'POST', body: JSON.stringify(payload) }),
-  uploadResume: (token, file) => {
+  // qr here is the signed "{token_no}.{HMAC}" string (registerCandidate's
+  // `result.qr`), not the bare token — the server verifies the signature
+  // before accepting the upload, since bare token_no is guessable.
+  uploadResume: (qr, file) => {
     const formData = new FormData();
     formData.append('resume', file);
-    return uploadFile(`/qr/resume/${token}`, formData);
+    return uploadFile(`/qr/resume/${encodeURIComponent(qr)}`, formData);
   },
   qrSchedule: (token) => request(`/qr/schedule/${token}`),
   getGateStatus: () => request('/gate-status'),
