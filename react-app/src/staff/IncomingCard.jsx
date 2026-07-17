@@ -79,16 +79,18 @@ export default function IncomingCard({ candidate, companyId, ratingParameters, i
         )}
         {interviewStartedAt && !pickingOutcome && (
           <m.div key="done" style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 8 }} exit={{ opacity: 0 }}>
-            {candidate.hasResume && (
-              <a
-                className="btn ghost"
-                href={`/api/candidates/${candidate.token}/resume?company_id=${companyId}`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                📄 View resume
-              </a>
-            )}
+            <div className="resume-box">
+              <div className="resume-box-head">📄 Resume</div>
+              {candidate.hasResume ? (
+                <iframe
+                  title={`${candidate.token} resume`}
+                  className="resume-frame"
+                  src={`/api/candidates/${candidate.token}/resume?company_id=${companyId}`}
+                />
+              ) : (
+                <p className="save-note" style={{ textAlign: 'left', padding: '14px 12px' }}>No resume</p>
+              )}
+            </div>
             <button className="btn ok" onClick={() => setPickingOutcome(true)}>
               ✓ Done — call next
             </button>
