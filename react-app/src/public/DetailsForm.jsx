@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api';
 
 const TRAVEL_PRESETS = [10, 25, 45, 60];
@@ -25,6 +25,15 @@ export default function DetailsForm() {
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const fileInputRef = useRef(null);
+
+  // LivePosition's history-trap only buffers one back-press at a time — a
+  // fast burst (mobile hardware/gesture back is the common case) can outrun
+  // the popstate handler and land here anyway. This is the second line of
+  // defense: if this session already registered, bounce forward immediately
+  // instead of letting a slipped-through back-press re-open the form. Checked
+  // after all hooks are declared so hook order stays unconditional.
+  const registeredToken = sessionStorage.getItem('registered_token');
+  if (registeredToken) return <Navigate to={`/schedule/${registeredToken}`} replace />;
 
   function set(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -79,6 +88,9 @@ export default function DetailsForm() {
       // finding C1: token_no is guessable, so resending the HMAC on every
       // poll would leak the gate check-in bypass to anyone who guesses it).
       if (result.qr) localStorage.setItem(`checkin_qr_${result.token}`, result.qr);
+      // Second line of defense alongside LivePosition's history trap — see
+      // the guard near the top of this component and CompanyTiles.jsx.
+      sessionStorage.setItem('registered_token', result.token);
       // Resume is optional and orthogonal to registration — a failed upload
       // should never block a candidate who's already registered, so this is
       // fire-and-forget: no re-throw, just move on to the schedule page.
@@ -100,8 +112,8 @@ export default function DetailsForm() {
   return (
     <div className="m-shell">
       <div className="app-head">
-        <div className="fair">Your details</div>
-        <div className="sub">ONE FORM · NO PASSWORD</div>
+        <div className="fair">Candidate Registration</div>
+        <div className="sub">Please fill in your information to get started</div>
       </div>
       <form className="m-body" onSubmit={submit}>
         <div className="field">

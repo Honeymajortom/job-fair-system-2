@@ -37,6 +37,16 @@ const l2Device = rateLimit({ prefix: 'device', windowSec: 600, max: 10, key: dev
 const l3Ip = rateLimit({ prefix: 'ip', windowSec: 60, max: 300, key: (req) => req.ip });
 const readIpLimit = rateLimit({ prefix: 'read-ip', windowSec: 60, max: 600, key: (req) => req.ip });
 
+// Recovery-specific limiters, separate budgets from l1Mobile/l3Ip above: this
+// endpoint returns a candidate's name + live token given only a mobile
+// number, so the mobile-keyed limit is the real gate against someone
+// enumerating numbers to fish for who's registered — kept tight (5/10min).
+// The IP backstop is generous for the same NAT-sharing reason l3Ip is (a
+// whole venue behind one public IP), it only catches a bot hammering many
+// numbers from one connection.
+const recoverMobile = rateLimit({ prefix: 'recover-mobile', windowSec: 600, max: 5, key: (req) => normalizeMobile(req.body && req.body.mobile) });
+const recoverIp = rateLimit({ prefix: 'recover-ip', windowSec: 600, max: 30, key: (req) => req.ip });
+
 // Schedule-specific limiters: LivePosition.jsx polls its own token every 5s
 // (~12/min), and a venue full of candidates shares one NAT IP — readIpLimit's
 // 600/min budget would 429 real candidates within seconds of the fair
@@ -204,6 +214,38 @@ router.post('/qr/resume/:qr', resumeUploadLimit, asyncHandler(async (req, res) =
 
   await pool.query('UPDATE candidates SET resume_uploaded_at = now() WHERE token_no = $1', [tokenNo]);
   res.json({ ok: true });
+}));
+
+// Public: recover a lost token page by mobile number (candidate closed the
+// tab / lost the device and has no bookmark). Requires the same fair-QR JWT
+// registration requires — proves the requester actually rescanned the
+// entrance code, not just guessed a number cold — plus a mobile match.
+// Deliberately returns only token_no + name, never checkin_sig: same reason
+// GET /qr/schedule/:token withholds it (red-team finding C1) — a mobile
+// number is far easier to guess/target than a signed token, so handing back
+// the gate check-in bypass here would be strictly worse.
+router.post('/qr/recover', recoverMobile, recoverIp, asyncHandler(async (req, res) => {
+  const { qr_token, mobile } = req.body;
+
+  try {
+    const payload = jwt.verify(qr_token, JWT_SECRET);
+    if (payload.purpose !== 'qr_registration') throw new Error('wrong purpose');
+  } catch (_err) {
+    return res.status(401).json({ error: 'Invalid or expired fair QR — please rescan the code at the entrance' });
+  }
+
+  const normMobile = normalizeMobile(mobile);
+  if (!normMobile) return res.status(400).json({ error: 'A valid mobile number is required' });
+
+  const result = await pool.query(
+    'SELECT token_no, name FROM candidates WHERE mobile = $1 AND deleted_at IS NULL',
+    [normMobile]
+  );
+  if (!result.rows.length) {
+    return res.status(404).json({ error: "We couldn't find a registration for that number" });
+  }
+
+  res.json({ token: result.rows[0].token_no, name: result.rows[0].name });
 }));
 
 // Public: live schedule page data (v3.0 flow F) — bookmarkable, no auth, the

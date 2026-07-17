@@ -39,6 +39,9 @@ export default function QRLanding() {
       </m.div>
       <div className="sticky-cta">
         <Link className="btn" to="/register">Start registration</Link>
+        <p className="save-note" style={{ marginTop: 10, textAlign: 'center' }}>
+          Already registered? <Link to="/recover">Find my queue</Link>
+        </p>
       </div>
     </div>
   );

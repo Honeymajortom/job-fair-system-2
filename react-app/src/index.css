@@ -118,10 +118,11 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
 .tile .loc { font-family: var(--mono); font-size: 10.5px; color: var(--ink-60); }
 .tile .posts { display: flex; gap: 5px; margin-top: 7px; flex-wrap: wrap; }
 .tile .posts span { font-family: var(--mono); font-size: 10px; background: var(--paper); border: 1px solid var(--line); border-radius: 4px; padding: 2px 7px; }
-.tile .slots { position: absolute; top: 11px; right: 12px; font-family: var(--mono); font-size: 10px; color: var(--system); }
+.tile .slots { position: absolute; top: 11px; right: 38px; font-family: var(--mono); font-size: 10px; color: var(--system); }
 .tile .tick { position: absolute; top: 10px; right: 11px; width: 19px; height: 19px; border-radius: 50%; background: var(--candidate); color: #fff; font-size: 11px; display: flex; align-items: center; justify-content: center; }
 
 .token-big { font-family: var(--mono); font-weight: 600; font-size: 44px; letter-spacing: .02em; text-align: center; color: var(--candidate); line-height: 1.1; }
+.token-hero { font-family: var(--mono); font-weight: 700; font-size: 34px; letter-spacing: .03em; color: var(--candidate); background: var(--candidate-soft); border-radius: 8px; padding: 3px 14px; display: inline-block; margin-top: 6px; }
 .token-label { font-family: var(--mono); font-size: 10px; color: var(--ink-60); text-transform: uppercase; letter-spacing: .14em; text-align: center; }
 .batch-card { background: var(--live-soft); border: 1px solid #F3CBC2; border-radius: 9px; padding: 10px 12px; text-align: center; }
 .batch-card b { color: var(--live); font-family: var(--mono); font-size: 14px; }
@@ -245,6 +246,14 @@ h2.screen-title { font-family: var(--disp); font-weight: 800; font-stretch: 85%;
 .pos-card.warm .pos-track i { background: var(--rung-warm); }
 .pos-card.hot .pos-track i { background: var(--rung-hot); }
 .pos-card.done .pos-track i { background: var(--st-selected); }
+.desk-call-note { font-family: var(--mono); font-weight: 600; font-size: 15px; color: var(--rung-hot); text-align: left; margin-top: 10px; }
+@media (prefers-reduced-motion: no-preference) {
+  .pos-card.desk-call { animation: deskCallBlink 1s ease-in-out infinite; }
+}
+@keyframes deskCallBlink {
+  0%, 100% { background: var(--live-soft); box-shadow: 0 0 0 0 rgba(228, 87, 61, 0); }
+  50% { background: #FBDCD4; box-shadow: 0 0 0 6px rgba(228, 87, 61, .18); }
+}
 
 /* --- entrance gate + staging board (new_architecture_uiux_spec.html §03) --- */
 .gate-strip { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }

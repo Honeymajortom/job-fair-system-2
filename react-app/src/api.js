@@ -45,6 +45,7 @@ export const api = {
     return uploadFile(`/qr/resume/${encodeURIComponent(qr)}`, formData);
   },
   qrSchedule: (token) => request(`/qr/schedule/${token}`),
+  recoverToken: (payload) => request('/qr/recover', { method: 'POST', body: JSON.stringify(payload) }),
   getGateStatus: () => request('/gate-status'),
 
   // auth

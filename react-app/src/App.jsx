@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import QRLanding from './public/QRLanding.jsx';
 import CompanyTiles from './public/CompanyTiles.jsx';
 import DetailsForm from './public/DetailsForm.jsx';
+import RecoverToken from './public/RecoverToken.jsx';
 import LivePosition from './public/LivePosition.jsx';
 import GateBoard from './public/GateBoard.jsx';
 
@@ -20,6 +21,7 @@ export default function App() {
       <Route path="/qr" element={<QRLanding />} />
       <Route path="/register" element={<CompanyTiles />} />
       <Route path="/register/details" element={<DetailsForm />} />
+      <Route path="/recover" element={<RecoverToken />} />
       {/* LivePosition replaces the old ScheduleCard/LiveSchedule — same URLs,
           new_architecture_uiux_spec.html §01 step 4's live position page. */}
       <Route path="/qr/schedule/:token" element={<LivePosition />} />

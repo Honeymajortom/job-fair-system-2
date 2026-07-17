@@ -20,6 +20,7 @@ function trackWidth(position) {
 function PosCard({ slot }) {
   const isWaitlisted = slot.rung === undefined;
   const rung = isWaitlisted ? 'waitlisted' : slot.rung;
+  const isCalled = rung === 'desk_call';
   const modifier = isWaitlisted ? '' : cardModifier(rung);
   const prevRung = useRef(rung);
   const [pulsing, setPulsing] = useState(false);
@@ -35,7 +36,7 @@ function PosCard({ slot }) {
 
   return (
     <m.div
-      className={`pos-card${modifier ? ` ${modifier}` : ''}`}
+      className={`pos-card${modifier ? ` ${modifier}` : ''}${isCalled ? ' desk-call' : ''}`}
       animate={pulsing ? { scale: [1, 1.02, 1] } : { scale: 1 }}
       transition={{ duration: 0.4 }}
     >
@@ -47,6 +48,12 @@ function PosCard({ slot }) {
         <p className="save-note" style={{ textAlign: 'left', marginTop: 10 }}>
           You're on the waitlist — you'll move up if a spot opens.
         </p>
+      ) : isCalled ? (
+        // Dispatched (position 0 / eta 0) means the desk is asking for this
+        // candidate right now — a bare "0" position number reads as noise at
+        // exactly the moment it matters most, so this replaces the numeric
+        // display with an explicit call to action instead.
+        <p className="desk-call-note">🔔 Your turn — go to the desk now</p>
       ) : (
         <>
           <div className="row">
@@ -110,6 +117,35 @@ export default function LivePosition() {
     return () => { cancelled = true; clearInterval(id); };
   }, [token]);
 
+  // Blink the tab title + vibrate (mobile) the moment a desk actually calls
+  // this candidate — the in-card blink (index.css .desk-call) only helps if
+  // they're already looking at the tab; this is for the case where they've
+  // switched apps or the phone is face-down. wasCalledRef gates the vibrate
+  // to fire once per call (not every 5s poll while still desk_call).
+  const wasCalledRef = useRef(false);
+  useEffect(() => {
+    const originalTitle = document.title;
+    return () => { document.title = originalTitle; };
+  }, []);
+  useEffect(() => {
+    if (!data) return undefined;
+    const isCalled = data.slots.some((s) => s.rung === 'desk_call');
+    if (isCalled && !wasCalledRef.current && navigator.vibrate) {
+      navigator.vibrate([200, 100, 200, 100, 200]);
+    }
+    wasCalledRef.current = isCalled;
+    if (!isCalled) return undefined;
+
+    const originalTitle = document.title;
+    let on = false;
+    document.title = '🔔 GO TO THE DESK NOW';
+    const id = setInterval(() => {
+      on = !on;
+      document.title = on ? originalTitle : '🔔 GO TO THE DESK NOW';
+    }, 1000);
+    return () => { clearInterval(id); document.title = originalTitle; };
+  }, [data]);
+
   useEffect(() => {
     // The check-in QR payload is never sent by the server on this poll route
     // (red-team finding C1 — token_no is a guessable sequential id, so this
@@ -129,8 +165,9 @@ export default function LivePosition() {
     <div className="m-shell">
       <div className="app-head">
         <div className="fair">{data.name}'s queues</div>
-        <div className="sub">
-          <span className="live-tag"><span className="pulse-dot live" />{data.token} · UPDATES EVERY FEW SECONDS</span>
+        <div className="token-hero">{data.token}</div>
+        <div className="sub" style={{ marginTop: 6 }}>
+          <span className="live-tag"><span className="pulse-dot live" />UPDATES EVERY FEW SECONDS</span>
         </div>
       </div>
       <div className="m-body">

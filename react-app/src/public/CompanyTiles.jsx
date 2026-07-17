@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Navigate, useNavigate } from 'react-router-dom';
 import { api } from '../api';
 
 const MAX_COMPANIES = 3;
@@ -16,6 +16,15 @@ export default function CompanyTiles() {
   useEffect(() => {
     api.qrCompanies().then(setCompanies).catch((err) => setError(err.message));
   }, []);
+
+  // LivePosition's history-trap only buffers one back-press at a time — a
+  // fast burst (mobile hardware/gesture back is the common case) can outrun
+  // the popstate handler and land here anyway. This is the second line of
+  // defense: if this session already registered, bounce forward immediately
+  // instead of letting a slipped-through back-press re-open the form. Checked
+  // after all hooks are declared so hook order stays unconditional.
+  const registeredToken = sessionStorage.getItem('registered_token');
+  if (registeredToken) return <Navigate to={`/schedule/${registeredToken}`} replace />;
 
   function toggle(id) {
     setSelected((prev) => {
