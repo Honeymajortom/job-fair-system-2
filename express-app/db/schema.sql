@@ -286,3 +286,30 @@ CREATE TABLE IF NOT EXISTS company_posts (
   age_min        INTEGER,
   age_max        INTEGER
 );
+
+-- ---------------------------------------------------------------------------
+-- Post-fair candidate feedback: star ratings on the venue experience + SDC
+-- program interest, shown on LivePosition once every one of a candidate's
+-- bookings has settled (Selected/Rejected/Shortlisted/Hold/No_Show).
+-- candidate_id is ON DELETE SET NULL (not CASCADE) so a submitted row
+-- outlives the post-fair hard-delete cleanup (routes/candidates.js DELETE) —
+-- mobile is kept alongside for that same reason. UNIQUE(candidate_id) makes
+-- submission an upsert (ON CONFLICT), so correcting a misclick doesn't need
+-- staff help; Postgres allows unlimited NULLs under a UNIQUE constraint, so
+-- hard-deleted rows don't collide with each other.
+-- NOTE: candidates aren't fair-scoped yet (this file's own header has flagged
+-- "fair_date scoping columns (fix #8)" as not-yet-built since stage 2), so
+-- registerCandidate.js's duplicate-mobile check below can only see as far
+-- back as the last hard-delete cleanup, not a true cross-fair history.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS candidate_feedback (
+  id                 SERIAL PRIMARY KEY,
+  candidate_id       INTEGER UNIQUE REFERENCES candidates(id) ON DELETE SET NULL,
+  mobile             VARCHAR NOT NULL,
+  venue_rating       SMALLINT NOT NULL CHECK (venue_rating BETWEEN 1 AND 5),
+  process_rating     SMALLINT NOT NULL CHECK (process_rating BETWEEN 1 AND 5),
+  staff_rating       SMALLINT NOT NULL CHECK (staff_rating BETWEEN 1 AND 5),
+  overall_rating     SMALLINT NOT NULL CHECK (overall_rating BETWEEN 1 AND 5),
+  interested_in_sdc  BOOLEAN NOT NULL,
+  submitted_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);

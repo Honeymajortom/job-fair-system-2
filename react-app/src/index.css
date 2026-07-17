@@ -151,6 +151,10 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
 .checkin-status { display: inline-flex; align-items: center; font-family: var(--mono); font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 999px; margin-top: 8px; text-transform: uppercase; letter-spacing: .05em; }
 .checkin-status.in { background: #E3F7EB; color: var(--st-selected); border: 1px solid #BEE8D0; }
 .checkin-status.out { background: var(--live-soft); color: var(--rung-hot); border: 1px solid #F3CBC2; }
+.thank-you { text-align: center; padding: 6px 4px 4px; }
+.thank-you-emoji { font-size: 40px; line-height: 1; }
+.thank-you-title { font-family: var(--disp); font-weight: 800; font-stretch: 85%; font-size: 19px; margin-top: 8px; }
+.feedback-box { border: 1px solid var(--line); border-radius: 8px; background: var(--card); margin-top: 18px; text-align: left; overflow: hidden; }
 .pulse-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-selected); display: inline-block; }
 @media (prefers-reduced-motion: no-preference) {
   .pulse-dot.live { animation: pulse 1.6s ease-in-out infinite alternate; }

@@ -4,6 +4,7 @@ import { AnimatePresence, m } from 'framer-motion';
 import QRCode from 'qrcode';
 import { api } from '../api';
 import RungBadge, { cardModifier } from './RungBadge';
+import FeedbackForm from './FeedbackForm';
 
 const POLL_MS = 5000; // server caches the route for 15s, so most polls are cache hits
 const QR_ELIGIBLE_RUNGS = ['gate', 'staging', 'desk_call'];
@@ -218,6 +219,12 @@ export default function LivePosition() {
   if (error) return <div className="m-shell"><div className="m-body"><div className="error-note">{error}</div></div></div>;
   if (!data) return <div className="m-shell"><div className="m-body"><div className="save-note">Loading your position…</div></div></div>;
 
+  // Waitlisted bookings (rung undefined — never entered the live queue) never
+  // had an interview to settle, so they're excluded here rather than
+  // blocking the thank-you screen on a pick that was never actually live.
+  const realSlots = data.slots.filter((s) => s.rung !== undefined);
+  const allSettled = realSlots.length > 0 && realSlots.every((s) => s.rung === 'done');
+
   return (
     <div className="m-shell">
       <div className="app-head">
@@ -248,6 +255,22 @@ export default function LivePosition() {
               </div>
             )}
           </>
+        ) : allSettled ? (
+          // Every booking has a final result — this is the last screen a
+          // candidate needs, so it replaces the ladder rather than sitting
+          // alongside it.
+          <div className="thank-you">
+            <div className="thank-you-emoji">🎉</div>
+            <div className="thank-you-title">Thank you for your participation!</div>
+            <p className="save-note" style={{ marginTop: 6 }}>
+              We hope today went well. One last thing before you go:
+            </p>
+            {data.feedback_submitted ? (
+              <p className="desk-call-note calm" style={{ marginTop: 16 }}>✅ Feedback received — thank you!</p>
+            ) : (
+              <FeedbackForm token={token} onSubmitted={() => setData((d) => ({ ...d, feedback_submitted: true }))} />
+            )}
+          </div>
         ) : (
           <>
             <div className="ladder">

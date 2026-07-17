@@ -66,6 +66,10 @@ const scheduleIpLimit = rateLimit({ prefix: 'schedule-ip', windowSec: 60, max: 1
 // form.
 const resumeUploadLimit = rateLimit({ prefix: 'resume-upload', windowSec: 600, max: 5, key: (req) => verifyQr(req.params.qr) });
 
+// Feedback: same 5/10min-per-verified-token budget as resume upload — a
+// couple of resubmits (fixed a misclick) is normal, more than that is noise.
+const feedbackLimit = rateLimit({ prefix: 'feedback', windowSec: 600, max: 5, key: (req) => verifyQr(req.params.qr) });
+
 // PDF-only (mimetype + extension check, no magic-byte sniffing — matches
 // this project's minimal-dependency style), 5MB cap. Filename is always
 // `${req.verifiedToken}.pdf` — set by the route handler below only *after*
@@ -216,6 +220,45 @@ router.post('/qr/resume/:qr', resumeUploadLimit, asyncHandler(async (req, res) =
   res.json({ ok: true });
 }));
 
+const FEEDBACK_RATING_FIELDS = ['venue_rating', 'process_rating', 'staff_rating', 'overall_rating'];
+
+// Public: post-fair feedback (star ratings + SDC interest) — LivePosition
+// shows this once every one of a candidate's bookings has settled. Required
+// before a repeat mobile can register again (registerCandidate.js's
+// duplicate check looks for a matching row here). Same signed-qr write
+// pattern as /qr/resume/:qr above and for the same reason — bare token_no is
+// guessable, so this can't be a "the token IS the capability" route.
+// Idempotent (ON CONFLICT upsert): resubmitting corrects a misclick without
+// needing staff help.
+router.post('/qr/feedback/:qr', feedbackLimit, asyncHandler(async (req, res) => {
+  const tokenNo = verifyQr(req.params.qr);
+  if (!tokenNo) return res.status(401).json({ error: 'Invalid or forged feedback link' });
+
+  const ratings = FEEDBACK_RATING_FIELDS.map((f) => Number(req.body[f]));
+  if (ratings.some((r) => !Number.isInteger(r) || r < 1 || r > 5)) {
+    return res.status(400).json({ error: 'All four ratings are required (1-5 stars)' });
+  }
+  if (typeof req.body.interested_in_sdc !== 'boolean') {
+    return res.status(400).json({ error: 'Please answer the SDC interest question' });
+  }
+
+  const candRes = await pool.query('SELECT id, mobile FROM candidates WHERE token_no = $1 AND deleted_at IS NULL', [tokenNo]);
+  if (!candRes.rows.length) return res.status(404).json({ error: 'Candidate not found' });
+  const cand = candRes.rows[0];
+
+  await pool.query(
+    `INSERT INTO candidate_feedback (candidate_id, mobile, venue_rating, process_rating, staff_rating, overall_rating, interested_in_sdc)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (candidate_id) DO UPDATE SET
+       venue_rating = EXCLUDED.venue_rating, process_rating = EXCLUDED.process_rating,
+       staff_rating = EXCLUDED.staff_rating, overall_rating = EXCLUDED.overall_rating,
+       interested_in_sdc = EXCLUDED.interested_in_sdc, submitted_at = now()`,
+    [cand.id, cand.mobile, ...ratings, req.body.interested_in_sdc]
+  );
+
+  res.json({ ok: true });
+}));
+
 // Public: recover a lost token page by mobile number (candidate closed the
 // tab / lost the device and has no bookmark). Requires the same fair-QR JWT
 // registration requires — proves the requester actually rescanned the
@@ -293,6 +336,8 @@ router.get('/qr/schedule/:token', readTokenLimit, scheduleIpLimit, redisCache(15
     return { ...base, ...ladder };
   }));
 
+  const feedbackRes = await pool.query('SELECT 1 FROM candidate_feedback WHERE candidate_id = $1', [cand.id]);
+
   res.json({
     name: cand.name,
     token: cand.token_no,
@@ -316,6 +361,7 @@ router.get('/qr/schedule/:token', readTokenLimit, scheduleIpLimit, redisCache(15
       checked_in: !!cand.checked_in_at,
     },
     slots,
+    feedback_submitted: feedbackRes.rows.length > 0,
   });
 }));
 

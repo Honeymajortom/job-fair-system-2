@@ -46,6 +46,9 @@ export const api = {
   },
   qrSchedule: (token) => request(`/qr/schedule/${token}`),
   recoverToken: (payload) => request('/qr/recover', { method: 'POST', body: JSON.stringify(payload) }),
+  // qr here is the same signed "{token_no}.{HMAC}" string uploadResume uses,
+  // not the bare token — see routes/public.js POST /qr/feedback/:qr.
+  submitFeedback: (qr, payload) => request(`/qr/feedback/${encodeURIComponent(qr)}`, { method: 'POST', body: JSON.stringify(payload) }),
   getGateStatus: () => request('/gate-status'),
 
   // auth

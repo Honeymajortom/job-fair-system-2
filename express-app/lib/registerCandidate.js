@@ -3,6 +3,7 @@ const { signToken } = require('./checkinSig');
 const queueStore = require('./queueStore');
 const { normalizeMobile } = require('./mobile');
 const { emit } = require('./events');
+const { DONE_STATUSES } = require('./pingLadder');
 
 const MAX_COMPANIES = 3;
 const EMPLOYMENT_STATUSES = ['Studying', 'Working', 'Fresher', 'Other'];
@@ -55,9 +56,25 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
     await client.query('BEGIN');
 
     if (normMobile) {
-      const dup = await client.query('SELECT 1 FROM candidates WHERE mobile = $1', [normMobile]);
+      const dup = await client.query('SELECT id FROM candidates WHERE mobile = $1', [normMobile]);
       if (dup.rows.length) {
         await client.query('ROLLBACK');
+        // A repeat mobile is always blocked (idx_candidates_mobile), but the
+        // message should actually tell them what to do: if their prior visit
+        // fully wrapped up (every booking settled) and they never submitted
+        // feedback, that's the real reason, not "already registered".
+        const existingId = dup.rows[0].id;
+        const feedbackRes = await client.query('SELECT 1 FROM candidate_feedback WHERE candidate_id = $1', [existingId]);
+        if (!feedbackRes.rows.length) {
+          const openRes = await client.query(
+            `SELECT 1 FROM candidate_company_status WHERE candidate_id = $1 AND deleted_at IS NULL
+               AND status != ALL($2::varchar[]) LIMIT 1`,
+            [existingId, DONE_STATUSES]
+          );
+          if (!openRes.rows.length) {
+            return { status: 409, body: { error: 'Please submit your feedback from your last visit before registering again — open your previous token page to do that.' } };
+          }
+        }
         return { status: 409, body: { error: 'This mobile number is already registered' } };
       }
     }
