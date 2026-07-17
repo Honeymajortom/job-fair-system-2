@@ -236,7 +236,9 @@ h2.screen-title { font-family: var(--disp); font-weight: 800; font-stretch: 85%;
 .pos-card.warm { border-color: var(--rung-warm); background: #FEF8EC; }
 .pos-card.hot { border-color: var(--rung-hot); background: var(--live-soft); }
 .pos-card.done { border-color: var(--st-selected); background: #F2FBF6; }
+.pos-card.rejected { border-color: var(--line); background: var(--paper); }
 .pos-card .co { font-weight: 600; font-size: 14.5px; }
+.pos-card .loc-note { font-family: var(--mono); font-size: 10.5px; color: var(--ink-60); margin-top: 2px; }
 .pos-card .row { display: flex; align-items: flex-end; justify-content: space-between; margin-top: 10px; gap: 12px; }
 .pos-card .num { font-family: var(--mono); font-weight: 600; font-size: 34px; line-height: 1; color: var(--ink); }
 .pos-card .num-label { font-family: var(--mono); font-size: 9.5px; color: var(--ink-60); text-transform: uppercase; letter-spacing: .1em; }
@@ -247,6 +249,7 @@ h2.screen-title { font-family: var(--disp); font-weight: 800; font-stretch: 85%;
 .pos-card.hot .pos-track i { background: var(--rung-hot); }
 .pos-card.done .pos-track i { background: var(--st-selected); }
 .desk-call-note { font-family: var(--mono); font-weight: 600; font-size: 15px; color: var(--rung-hot); text-align: left; margin-top: 10px; }
+.desk-call-note.calm { color: var(--ink); }
 @media (prefers-reduced-motion: no-preference) {
   .pos-card.desk-call { animation: deskCallBlink 1s ease-in-out infinite; }
 }

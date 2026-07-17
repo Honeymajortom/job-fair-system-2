@@ -266,7 +266,7 @@ router.get('/qr/schedule/:token', readTokenLimit, scheduleIpLimit, redisCache(15
 
   const slotsRes = await pool.query(
     `SELECT s.slot_start AS time, c.company_name AS company, c.location, ccs.status,
-            ccs.company_id, ccs.serial, c.seats, c.interview_minutes
+            ccs.company_id, ccs.serial, c.seats, c.interview_minutes, ccs.interview_started_at
      FROM candidate_company_status ccs
      JOIN companies c ON c.id = ccs.company_id
      LEFT JOIN interview_slots s ON s.id = ccs.slot_id
@@ -288,6 +288,7 @@ router.get('/qr/schedule/:token', readTokenLimit, scheduleIpLimit, redisCache(15
       travelTimeMinutes: cand.travel_time_minutes,
       seats: row.seats,
       interviewMinutes: row.interview_minutes,
+      interviewStartedAt: row.interview_started_at,
     });
     return { ...base, ...ladder };
   }));

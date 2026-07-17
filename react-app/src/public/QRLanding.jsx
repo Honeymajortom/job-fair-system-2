@@ -37,11 +37,9 @@ export default function QRLanding() {
         </ol>
         <p className="save-note" style={{ marginTop: 16 }}>No fixed time · come when we call you</p>
       </m.div>
-      <div className="sticky-cta">
+      <div className="sticky-cta" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <Link className="btn" to="/register">Start registration</Link>
-        <p className="save-note" style={{ marginTop: 10, textAlign: 'center' }}>
-          Already registered? <Link to="/recover">Find my queue</Link>
-        </p>
+        <Link className="btn ghost" to="/recover">Already registered? Find my queue</Link>
       </div>
     </div>
   );

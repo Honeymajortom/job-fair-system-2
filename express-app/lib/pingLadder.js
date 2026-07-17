@@ -12,9 +12,15 @@ const DONE_STATUSES = ['Selected', 'Rejected', 'Shortlisted', 'Hold', 'No_Show']
 const MIN_DRAIN_RATE = 0.05; // floor so a cold/misconfigured company can't divide-by-near-zero into an infinite ETA
 const DEFAULT_BETA = 15; // sim/jobfair_sim.py's fixed BETA — used until lib/bufferController.js has retuned this company at least once
 
-async function resolveRung({ status, companyId, candidateId, travelTimeMinutes, seats, interviewMinutes }) {
+async function resolveRung({ status, companyId, candidateId, travelTimeMinutes, seats, interviewMinutes, interviewStartedAt }) {
   if (DONE_STATUSES.includes(status)) return { position: null, eta_minutes: null, rung: 'done' };
-  if (status === 'Dispatched') return { position: 0, eta_minutes: 0, rung: 'desk_call' };
+  // interviewStartedAt is stamped by confirm-arrival while status is still
+  // 'Dispatched' (it only changes to a DONE_STATUSES value once the result is
+  // submitted) — without this split, a candidate already sitting in the
+  // interview would keep seeing the "come to the desk" call. Optional: only
+  // gateStatus.js's aggregate view doesn't pass it, and not passing it just
+  // preserves the old desk_call-for-the-whole-visit behavior there.
+  if (status === 'Dispatched') return { position: 0, eta_minutes: 0, rung: interviewStartedAt ? 'in_interview' : 'desk_call' };
 
   const position = await store.getPosition(companyId, candidateId);
   if (position === null) return { position: null, eta_minutes: null, rung: 'far' };

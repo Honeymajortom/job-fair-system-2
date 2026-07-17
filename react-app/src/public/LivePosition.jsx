@@ -7,6 +7,17 @@ import RungBadge, { cardModifier } from './RungBadge';
 
 const POLL_MS = 5000; // server caches the route for 15s, so most polls are cache hits
 const QR_ELIGIBLE_RUNGS = ['gate', 'staging', 'desk_call'];
+const DONE_STATUSES = ['Selected', 'Rejected', 'Shortlisted', 'Hold', 'No_Show']; // mirrors express-app/lib/pingLadder.js
+
+// Card-body copy for a settled outcome (rung 'done') — a bare "position 0"
+// or generic "DONE" doesn't tell the candidate whether that was good news.
+const OUTCOME_NOTES = {
+  Selected: "🎉 Congratulations — you've been selected!",
+  Shortlisted: "You've been shortlisted — you'll hear back soon.",
+  Hold: 'Your result is on hold — check back later or ask at the desk.',
+  Rejected: 'Not selected this time. Thanks for interviewing with us!',
+  No_Show: "You were marked as a no-show for this company's interview.",
+};
 // Demo values in new_architecture_uiux_spec.html (§01 ping-ladder replay: pos
 // 47->w64%, 24->w33%, 13->w18%, 5->w7%, 0->w0) imply track width ~= position
 // * 1.38, capped at 100 — there's no "total queue length" the API exposes to
@@ -21,7 +32,9 @@ function PosCard({ slot }) {
   const isWaitlisted = slot.rung === undefined;
   const rung = isWaitlisted ? 'waitlisted' : slot.rung;
   const isCalled = rung === 'desk_call';
-  const modifier = isWaitlisted ? '' : cardModifier(rung);
+  const isInInterview = rung === 'in_interview';
+  const isDone = rung === 'done';
+  const modifier = isWaitlisted ? '' : cardModifier(rung, slot.status);
   const prevRung = useRef(rung);
   const [pulsing, setPulsing] = useState(false);
 
@@ -41,8 +54,14 @@ function PosCard({ slot }) {
       transition={{ duration: 0.4 }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div className="co">{slot.company}</div>
-        <RungBadge rung={rung} />
+        <div>
+          <div className="co">{slot.company}</div>
+          {/* Every tile shows where that company is set up, not just the
+              moment they're called — a candidate picking up interviews for
+              multiple companies needs this ahead of time too. */}
+          {slot.location && <div className="loc-note">📍 {slot.location}</div>}
+        </div>
+        <RungBadge rung={rung} status={slot.status} />
       </div>
       {isWaitlisted ? (
         <p className="save-note" style={{ textAlign: 'left', marginTop: 10 }}>
@@ -53,7 +72,14 @@ function PosCard({ slot }) {
         // candidate right now — a bare "0" position number reads as noise at
         // exactly the moment it matters most, so this replaces the numeric
         // display with an explicit call to action instead.
-        <p className="desk-call-note">🔔 Your turn — go to the desk now</p>
+        <p className="desk-call-note">🔔 Your turn — go to {slot.location || 'the desk'} now</p>
+      ) : isInInterview ? (
+        // interview_started_at is set (confirm-arrival) but status is still
+        // 'Dispatched' — the candidate is already at the desk, so the blinking
+        // "come now" call would be actively wrong here.
+        <p className="desk-call-note calm">🎤 Interview in progress at {slot.location || 'the desk'}</p>
+      ) : isDone ? (
+        <p className="desk-call-note calm">{OUTCOME_NOTES[slot.status] || 'Interview completed.'}</p>
       ) : (
         <>
           <div className="row">
@@ -123,6 +149,11 @@ export default function LivePosition() {
   // switched apps or the phone is face-down. wasCalledRef gates the vibrate
   // to fire once per call (not every 5s poll while still desk_call).
   const wasCalledRef = useRef(false);
+  // Previous status per company (keyed by company name — a candidate tracks
+  // at most 3 distinct companies, so name collisions aren't a concern here).
+  // Used to fire the outcome notification exactly once, on the transition
+  // into a result, rather than on every 5s poll while it stays settled.
+  const prevStatusesRef = useRef({});
   useEffect(() => {
     const originalTitle = document.title;
     return () => { document.title = originalTitle; };
@@ -134,7 +165,30 @@ export default function LivePosition() {
       navigator.vibrate([200, 100, 200, 100, 200]);
     }
     wasCalledRef.current = isCalled;
-    if (!isCalled) return undefined;
+
+    // Outcome notification: a shorter, one-time attention grab (result is
+    // already final — no ongoing action needed, unlike desk_call) for any
+    // company that just newly landed on Selected/Rejected/Shortlisted/Hold/
+    // No_Show since the last poll.
+    const justSettled = data.slots.some((s) => {
+      const prev = prevStatusesRef.current[s.company];
+      return DONE_STATUSES.includes(s.status) && prev !== s.status && prev !== undefined;
+    });
+    prevStatusesRef.current = Object.fromEntries(data.slots.map((s) => [s.company, s.status]));
+
+    let outcomeTitleTimer;
+    if (justSettled) {
+      if (navigator.vibrate) navigator.vibrate([150, 80, 150]);
+      const settledTitle = document.title;
+      let flashes = 0;
+      outcomeTitleTimer = setInterval(() => {
+        document.title = flashes % 2 === 0 ? '🔔 Result posted' : settledTitle;
+        flashes += 1;
+        if (flashes >= 6) { clearInterval(outcomeTitleTimer); document.title = settledTitle; }
+      }, 700);
+    }
+
+    if (!isCalled) return () => clearInterval(outcomeTitleTimer);
 
     const originalTitle = document.title;
     let on = false;
@@ -143,7 +197,7 @@ export default function LivePosition() {
       on = !on;
       document.title = on ? originalTitle : '🔔 GO TO THE DESK NOW';
     }, 1000);
-    return () => { clearInterval(id); document.title = originalTitle; };
+    return () => { clearInterval(id); clearInterval(outcomeTitleTimer); document.title = originalTitle; };
   }, [data]);
 
   useEffect(() => {
