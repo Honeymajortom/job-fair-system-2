@@ -148,6 +148,9 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
 .s-body { padding: 18px; max-width: 1120px; width: 100%; margin: 0 auto; }
 
 .live-tag { font-family: var(--mono); font-size: 10.5px; color: var(--ink-60); display: inline-flex; align-items: center; gap: 6px; }
+.checkin-status { display: inline-flex; align-items: center; font-family: var(--mono); font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 999px; margin-top: 8px; text-transform: uppercase; letter-spacing: .05em; }
+.checkin-status.in { background: #E3F7EB; color: var(--st-selected); border: 1px solid #BEE8D0; }
+.checkin-status.out { background: var(--live-soft); color: var(--rung-hot); border: 1px solid #F3CBC2; }
 .pulse-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-selected); display: inline-block; }
 @media (prefers-reduced-motion: no-preference) {
   .pulse-dot.live { animation: pulse 1.6s ease-in-out infinite alternate; }

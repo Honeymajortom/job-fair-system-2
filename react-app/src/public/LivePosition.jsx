@@ -207,8 +207,11 @@ export default function LivePosition() {
     // registration instead (DetailsForm.jsx -> localStorage).
     const qr = data && localStorage.getItem(`checkin_qr_${token}`);
     if (!qr) { setQrDataUrl(null); return; }
-    const anyEligible = data.slots.some((s) => QR_ELIGIBLE_RUNGS.includes(s.rung));
-    if (!anyEligible) { setQrDataUrl(null); return; }
+    // Before check-in, this QR *is* the point of the page — that's what Gate
+    // staff scan. After check-in, only show it again once the queue itself
+    // needs it (gate/staging/desk_call), matching the previous behavior.
+    const shouldShow = data.checked_in ? data.slots.some((s) => QR_ELIGIBLE_RUNGS.includes(s.rung)) : true;
+    if (!shouldShow) { setQrDataUrl(null); return; }
     QRCode.toDataURL(qr, { margin: 1, width: 168 }).then(setQrDataUrl).catch(() => setQrDataUrl(null));
   }, [data, token]);
 
@@ -223,16 +226,40 @@ export default function LivePosition() {
         <div className="sub" style={{ marginTop: 6 }}>
           <span className="live-tag"><span className="pulse-dot live" />UPDATES EVERY FEW SECONDS</span>
         </div>
+        <div className={`checkin-status ${data.checked_in ? 'in' : 'out'}`}>
+          {data.checked_in ? '✅ Checked In' : '⚠️ Not Checked In'}
+        </div>
       </div>
       <div className="m-body">
-        <div className="ladder">
-          {data.slots.map((slot, i) => <PosCard key={`${slot.company}-${i}`} slot={slot} />)}
-        </div>
-        {qrDataUrl && (
-          <div className="qr-wrap">
-            <img src={qrDataUrl} alt="Check-in QR" width={168} height={168} />
-            <div className="save-note">Show this at the gate / desk</div>
-          </div>
+        {!data.checked_in ? (
+          // Positions/ETAs aren't meaningful to act on until the candidate
+          // has physically checked in at the Gate — show the check-in QR
+          // (their way in) instead of the queue ladder.
+          <>
+            <p className="desk-call-note calm" style={{ marginTop: 0 }}>
+              {qrDataUrl
+                ? 'Head to the entrance Gate and show this QR code to check in.'
+                : `Head to the entrance Gate and give staff your token number (${data.token}) to check in.`}
+            </p>
+            {qrDataUrl && (
+              <div className="qr-wrap">
+                <img src={qrDataUrl} alt="Check-in QR" width={168} height={168} />
+                <div className="save-note">Show this at the Gate to check in</div>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <div className="ladder">
+              {data.slots.map((slot, i) => <PosCard key={`${slot.company}-${i}`} slot={slot} />)}
+            </div>
+            {qrDataUrl && (
+              <div className="qr-wrap">
+                <img src={qrDataUrl} alt="Check-in QR" width={168} height={168} />
+                <div className="save-note">Show this at the gate / desk</div>
+              </div>
+            )}
+          </>
         )}
       </div>
       <div className="footer-note">This page is the only place you'll see updates — keep it open, or check back.</div>

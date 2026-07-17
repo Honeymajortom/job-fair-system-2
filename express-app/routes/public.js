@@ -296,6 +296,12 @@ router.get('/qr/schedule/:token', readTokenLimit, scheduleIpLimit, redisCache(15
   res.json({
     name: cand.name,
     token: cand.token_no,
+    // Top-level, not nested under batch: checked_in_at lives on candidates
+    // directly and can be set (routes/batches.js check-in) before any batch
+    // is ever assigned (batch_id starts NULL "before any batch existed
+    // yet" — see registerCandidate.js), so gating this behind `batch` being
+    // non-null would hide checked-in status for exactly those candidates.
+    checked_in: !!cand.checked_in_at,
     // checkin_sig is deliberately NOT returned here (red-team finding C1):
     // token_no is a guessable/enumerable sequential id, so echoing the HMAC
     // on every poll would hand an attacker the gate check-in bypass for any
