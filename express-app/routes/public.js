@@ -9,7 +9,7 @@ const requireRole = require('../middleware/requireRole');
 const rateLimit = require('../middleware/rateLimit');
 const redisCache = require('../middleware/redisCache');
 const registerCandidate = require('../lib/registerCandidate');
-const { normalizeMobile } = require('../lib/mobile');
+const { normalizeMobile, isValidMobile } = require('../lib/mobile');
 const store = require('../lib/queueStore');
 const { resolveRung } = require('../lib/pingLadder');
 const { computeGateStatus } = require('../lib/gateStatus');
@@ -180,8 +180,11 @@ router.post('/qr/register', l1Mobile, l2Device, l3Ip, asyncHandler(async (req, r
 
   // The public path requires a mobile number: it's the dedup key and the L1
   // rate-limit anchor. (Staff manual registration may omit it — flow D.)
-  if (!mobile || !normalizeMobile(mobile)) {
-    return res.status(400).json({ error: 'A valid mobile number is required' });
+  // isValidMobile, not just normalizeMobile — see lib/mobile.js: a bare
+  // normalize-and-check-non-empty let any digit string through, making the
+  // mobile-uniqueness re-registration guard trivial to defeat.
+  if (!mobile || !isValidMobile(mobile)) {
+    return res.status(400).json({ error: 'Enter a valid 10-digit mobile number' });
   }
 
   const result = await registerCandidate(req.body);

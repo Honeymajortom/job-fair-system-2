@@ -1,7 +1,7 @@
 const pool = require('../db');
 const { signToken } = require('./checkinSig');
 const queueStore = require('./queueStore');
-const { normalizeMobile } = require('./mobile');
+const { normalizeMobile, isValidMobile } = require('./mobile');
 const { emit } = require('./events');
 const { DONE_STATUSES } = require('./pingLadder');
 
@@ -24,6 +24,15 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
   }
   if (company_ids.length > MAX_COMPANIES) {
     return { status: 400, body: { error: `Select at most ${MAX_COMPANIES} companies` } };
+  }
+  // Mobile is optional here (staff manual entry, flow D, can omit it) but if
+  // one is given it has to be a real 10-digit number — the re-registration
+  // guard below is keyed entirely on mobile, so an unvalidated format
+  // ("1", "2", "3"...) made that guard trivial to defeat by incrementing a
+  // fake digit each time. Checked before opening a DB connection — a format
+  // error never needs one.
+  if (mobile && !isValidMobile(mobile)) {
+    return { status: 400, body: { error: 'Enter a valid 10-digit mobile number' } };
   }
   // Queue-system Phase 4 (new_architecture.md §3.3): feeds the "come now"
   // threshold (ETA <= travel time + 15min). Optional — an unset value just

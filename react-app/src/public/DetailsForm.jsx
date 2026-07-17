@@ -122,7 +122,23 @@ export default function DetailsForm() {
         </div>
         <div className="field">
           <label>Mobile (checked for duplicates)</label>
-          <input required inputMode="numeric" value={form.mobile} onChange={(e) => set('mobile', e.target.value)} />
+          <input
+            required
+            inputMode="numeric"
+            pattern="[6-9][0-9]{9}"
+            title="10-digit mobile number"
+            value={form.mobile}
+            // Sanitize as they type (digits only, capped at 10) rather than
+            // just validating on submit — matches the server's isValidMobile
+            // (lib/mobile.js), which now rejects anything that isn't a real
+            // 10-digit number instead of accepting any digit string.
+            // No maxLength attribute: that counts raw typed characters, so
+            // someone naturally typing "999-999-0400" would get cut off
+            // before all 10 digits land — the slice(0, 10) below caps the
+            // sanitized digit count instead, which is the number that
+            // actually matters.
+            onChange={(e) => set('mobile', e.target.value.replace(/\D/g, '').slice(0, 10))}
+          />
         </div>
         <div className="field">
           <label>Age</label>
