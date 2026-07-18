@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import SiteCredit from './SiteCredit.jsx';
 
 // Entrance Gate + Staging board (new_architecture_uiux_spec.html §03) — meant
 // for a monitor mounted at the venue entrance, not a candidate's own phone,
@@ -53,6 +54,7 @@ export default function GateBoard() {
       <p className="save-note" style={{ marginTop: 20, textAlign: 'center' }}>
         Waiting rooms are shared across all companies — if you're tracking three, you wait in one place, not three lines.
       </p>
+      <div style={{ marginTop: 24 }}><SiteCredit /></div>
     </div>
   );
 }

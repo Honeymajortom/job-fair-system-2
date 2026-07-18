@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { api } from '../api';
+import SiteCredit from './SiteCredit.jsx';
 
 const MAX_COMPANIES = 3;
 
@@ -75,6 +76,7 @@ export default function CompanyTiles() {
           Continue · {selected.length} of {MAX_COMPANIES} selected
         </button>
       </div>
+      <SiteCredit />
     </div>
   );
 }

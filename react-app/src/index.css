@@ -282,6 +282,11 @@ h2.screen-title { font-family: var(--disp); font-weight: 800; font-stretch: 85%;
 .rung-badge.waitlisted { background: var(--paper); color: var(--ink-60); }
 
 .footer-note { font-family: var(--mono); font-size: 10.5px; color: var(--ink-60); text-align: center; padding: 12px 18px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
+
+.site-credit { font-family: var(--mono); font-size: 10px; color: var(--ink-60); text-align: center; letter-spacing: .02em; }
+.site-credit .name { color: var(--ink); font-weight: 600; }
+.site-credit a { color: var(--ink-60); text-decoration: underline; text-underline-offset: 2px; }
+.site-credit a:hover { color: var(--ink); }
 .qr-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 14px 0; }
 .qr-wrap img { border-radius: 10px; border: 1px solid var(--line); }
 

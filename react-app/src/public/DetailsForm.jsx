@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api';
+import SiteCredit from './SiteCredit.jsx';
 
 const TRAVEL_PRESETS = [10, 25, 45, 60];
 const RESUME_MAX_BYTES = 5 * 1024 * 1024; // matches the server's multer limit — catch it client-side first
@@ -219,6 +220,7 @@ export default function DetailsForm() {
           </button>
         </div>
       </form>
+      <SiteCredit />
     </div>
   );
 }

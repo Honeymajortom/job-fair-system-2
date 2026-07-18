@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
 import { api } from '../api';
+import SiteCredit from './SiteCredit.jsx';
 
 // Lost-device recovery (QRLanding.jsx links here). Requires the same fair-QR
 // JWT registration does — stashed in sessionStorage by QRLanding when the
@@ -68,6 +69,7 @@ export default function RecoverToken() {
           Not registered yet? <Link to="/register">Start registration</Link>
         </p>
       </m.form>
+      <SiteCredit />
     </div>
   );
 }

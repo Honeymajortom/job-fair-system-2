@@ -1,6 +1,7 @@
 import { m } from 'framer-motion';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useEffect } from 'react';
+import SiteCredit from './SiteCredit.jsx';
 
 // Public entry point (v1's flow A, kept per new_architecture_uiux_spec.html
 // §01 step 1 — only steps underneath it change). `/qr?token=` stashes the
@@ -41,6 +42,7 @@ export default function QRLanding() {
         <Link className="btn" to="/register">Start registration</Link>
         <Link className="btn ghost" to="/recover">Already registered? Find my queue</Link>
       </div>
+      <SiteCredit />
     </div>
   );
 }

@@ -5,6 +5,7 @@ import QRCode from 'qrcode';
 import { api } from '../api';
 import RungBadge, { cardModifier } from './RungBadge';
 import FeedbackForm from './FeedbackForm';
+import SiteCredit from './SiteCredit.jsx';
 
 const POLL_MS = 5000; // server caches the route for 15s, so most polls are cache hits
 const QR_ELIGIBLE_RUNGS = ['gate', 'staging', 'desk_call'];
@@ -286,6 +287,7 @@ export default function LivePosition() {
         )}
       </div>
       <div className="footer-note">This page is the only place you'll see updates — keep it open, or check back.</div>
+      <div style={{ paddingBottom: 12 }}><SiteCredit /></div>
     </div>
   );
 }
