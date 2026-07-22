@@ -89,7 +89,12 @@ router.delete('/waiting-rooms/:floorNumber', authenticateJWT, requireRole('admin
   res.json({ ok: true, floor_number: result.rows[0].floor_number });
 }));
 
-// Admin / Registration Staff: auto-generate arrival waves from fair_settings (batch_size × batch_interval_minutes)
+// Admin / Registration Staff: auto-generate arrival waves from fair_settings
+// (batch_size × batch_interval_minutes). Appends rather than rejecting when a
+// date already has batches — batch_number picks up after the highest
+// existing one, on the same evenly-spaced grid the original batches used
+// (anchored on batch #1's arrival_time), so "Generate batch" can be used more
+// than once per fair day as more arrival waves turn out to be needed.
 router.post('/batches/generate', authenticateJWT, requireRole('admin', 'registration_staff'), asyncHandler(async (req, res) => {
   const { fair_date, first_arrival, batch_count } = req.body;
   if (!fair_date) return res.status(400).json({ error: 'fair_date is required' });
@@ -101,16 +106,32 @@ router.post('/batches/generate', authenticateJWT, requireRole('admin', 'registra
   if (!settingsRes.rows.length) return res.status(404).json({ error: 'No fair configured for that date' });
   const settings = settingsRes.rows[0];
 
-  const existing = await pool.query('SELECT 1 FROM fair_batches WHERE fair_date = $1 LIMIT 1', [fair_date]);
-  if (existing.rows.length) return res.status(409).json({ error: 'Batches already generated for that date' });
+  const lastRes = await pool.query(
+    'SELECT batch_number FROM fair_batches WHERE fair_date = $1 ORDER BY batch_number DESC LIMIT 1',
+    [fair_date]
+  );
+  const startNumber = lastRes.rows.length ? lastRes.rows[0].batch_number + 1 : 1;
 
-  const firstArrival = first_arrival || `${fair_date} 09:00`;
+  // Re-derive the original firstArrival from batch #1 (rather than re-
+  // anchoring at "now" or trusting a caller-supplied first_arrival) so
+  // appended batches land on the exact same grid as the existing ones —
+  // batch_number n's arrival_time is always firstArrival + (n-1)*interval,
+  // whether n was inserted today or in an earlier call.
+  let firstArrival = first_arrival || `${fair_date} 09:00`;
+  if (lastRes.rows.length) {
+    const anchorRes = await pool.query(
+      'SELECT arrival_time FROM fair_batches WHERE fair_date = $1 AND batch_number = 1',
+      [fair_date]
+    );
+    firstArrival = anchorRes.rows[0].arrival_time;
+  }
+
   const result = await pool.query(
     `INSERT INTO fair_batches (fair_date, batch_number, arrival_time, capacity)
      SELECT $1, gs.n, $2::timestamptz + (gs.n - 1) * ($3 * interval '1 minute'), $4
-     FROM generate_series(1, $5) AS gs(n)
+     FROM generate_series($5::int, $5::int + $6::int - 1) AS gs(n)
      RETURNING *`,
-    [fair_date, firstArrival, settings.batch_interval_minutes, settings.batch_size, batch_count]
+    [fair_date, firstArrival, settings.batch_interval_minutes, settings.batch_size, startNumber, batch_count]
   );
   res.status(201).json(result.rows);
 }));

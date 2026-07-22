@@ -194,8 +194,13 @@ export default function GateCheckIn() {
       // JSON) — routes/fair.js builds `${fair_date} 09:00` for the first
       // arrival, so a timestamp string here produces an invalid timestamp.
       const fairDate = active.fair_date.slice(0, 10);
-      await api.generateBatches({ fair_date: fairDate, batch_count: count });
-      showToast(`${count} batch${count === 1 ? '' : 'es'} generated`);
+      const added = await api.generateBatches({ fair_date: fairDate, batch_count: count });
+      // Batch numbers continue after whatever's already there (routes/fair.js
+      // appends rather than rejecting a date that already has batches), so
+      // naming the actual range added is clearer than a bare count once this
+      // isn't necessarily the first time it's been clicked for this date.
+      const nums = added.map((b) => b.batch_number);
+      showToast(`Added batch${nums.length === 1 ? '' : 'es'} #${Math.min(...nums)}${nums.length > 1 ? `–${Math.max(...nums)}` : ''}`);
       setShowBatchGen(false);
       setBatchGenCount('');
       loadBatches();
