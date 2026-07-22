@@ -363,7 +363,7 @@ export default function CompanyManagement() {
         </div>
         <div className="field" style={{ maxWidth: 100 }}>
           <label>Floor number</label>
-          <input type="number" value={companyForm.floor_number} onChange={(e) => setCompanyForm({ ...companyForm, floor_number: e.target.value })} placeholder="1" />
+          <input type="number" min="0" value={companyForm.floor_number} onChange={(e) => setCompanyForm({ ...companyForm, floor_number: e.target.value })} placeholder="0" />
         </div>
         <div className="field" style={{ maxWidth: 140 }}>
           <label>Field</label>

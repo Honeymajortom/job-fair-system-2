@@ -78,12 +78,18 @@ router.post('/companies', authenticateJWT, requireRole('admin'), asyncHandler(as
   if (interview_minutes != null && !(Number.isInteger(interview_minutes) && interview_minutes > 0)) {
     return res.status(400).json({ error: 'interview_minutes must be a positive integer' });
   }
+  // Ground floor is 0, not 1 — reject negatives before they hit the DB
+  // CHECK constraint. `floor_number || null` below would silently turn a
+  // valid 0 into null (0 is falsy), so this uses an explicit null check.
+  if (floor_number != null && !(Number.isInteger(floor_number) && floor_number >= 0)) {
+    return res.status(400).json({ error: 'floor_number must be a non-negative integer' });
+  }
 
   try {
     const result = await pool.query(
       `INSERT INTO companies (company_name, description, location, floor_number, field, job_type, min_qualification, max_qualification, max_queue_limit, seats, interview_minutes)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8, COALESCE($9, 7), COALESCE($10, 1), COALESCE($11, 6)) RETURNING *`,
-      [company_name, description || null, location || null, floor_number || null, field || null, job_type || null, min_qualification || null, max_qualification || null, max_queue_limit || null, seats || null, interview_minutes || null]
+      [company_name, description || null, location || null, floor_number != null ? floor_number : null, field || null, job_type || null, min_qualification || null, max_qualification || null, max_queue_limit || null, seats || null, interview_minutes || null]
     );
     const company = result.rows[0];
 
@@ -97,6 +103,9 @@ router.post('/companies', authenticateJWT, requireRole('admin'), asyncHandler(as
     res.status(201).json(company);
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'A company with that name already exists' });
+    if (err.code === '23514' && err.constraint === 'companies_floor_number_nonnegative') {
+      return res.status(400).json({ error: 'floor_number must be a non-negative integer' });
+    }
     if (err.code === '23514') return res.status(400).json({ error: 'interview_minutes must be a positive integer' });
     throw err;
   }

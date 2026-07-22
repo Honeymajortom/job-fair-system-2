@@ -280,6 +280,14 @@ ALTER TABLE candidates
 ALTER TABLE companies
   ADD COLUMN IF NOT EXISTS floor_number INTEGER;
 
+-- Ground floor is 0, not 1 — no negative floors. Same drop-then-add idiom as
+-- companies_interview_minutes_positive above, for the same reason: an inline
+-- CHECK can't be widened/added in place, only replaced.
+ALTER TABLE companies
+  DROP CONSTRAINT IF EXISTS companies_floor_number_nonnegative;
+ALTER TABLE companies
+  ADD CONSTRAINT companies_floor_number_nonnegative CHECK (floor_number >= 0);
+
 -- ---------------------------------------------------------------------------
 -- Company Management (new_architecture_uiux_spec.html §07): vacancy tracking.
 -- Migrated from old/SDC_JobFair_Architecture.md's v2.5 company_posts design —
