@@ -7,10 +7,13 @@ import IncomingCard from './IncomingCard';
 import CountdownRing from './CountdownRing';
 import InterviewTimer from './InterviewTimer';
 
-// Backend always arms the same-floor timer (90s) — floor tracking doesn't
-// exist yet (lib/noShowTimer.js's own floor-awareness note) — so this is the
-// one real duration the ring will ever need to render against client-side.
+// lib/queueDispatcher.js arms the timer at one of these two durations
+// depending on resolveSameFloor()'s companies.floor_number comparison; the
+// dispatch/occupant payload's own `sameFloor` (below) says which one applies
+// to this specific candidate, so the ring's totalMs has to follow it rather
+// than assuming same-floor always.
 const SAME_FLOOR_MS = 90 * 1000;
+const CROSS_FLOOR_MS = 180 * 1000;
 
 async function fetchCandidateDetails(token, companyId) {
   const full = await api.getCandidate(token);
@@ -20,7 +23,6 @@ async function fetchCandidateDetails(token, companyId) {
     name: full.name,
     qualification: full.qualification,
     missedCalls: co ? co.misses : 0,
-    comingFrom: 'Same floor',
     // GET /api/candidates/:token already SELECT *s the candidates row, so
     // this needs zero backend changes beyond the resume_uploaded_at column.
     hasResume: !!full.resume_uploaded_at,
@@ -50,12 +52,13 @@ export default function DeskTablet() {
     setTimeout(() => setToast(null), 2500);
   }
 
-  async function applyIncoming({ candidateId, ccsId, token, expiresAt, interviewStartedAt = null }) {
+  async function applyIncoming({ candidateId, ccsId, token, expiresAt, sameFloor = true, interviewStartedAt = null }) {
+    const comingFrom = sameFloor ? 'Same floor' : 'Different floor';
     try {
       const details = await fetchCandidateDetails(token, companyId);
-      setIncoming({ candidateId, ccsId, expiresAt, interviewStartedAt, details });
+      setIncoming({ candidateId, ccsId, expiresAt, sameFloor, interviewStartedAt, details: { ...details, comingFrom } });
     } catch {
-      setIncoming({ candidateId, ccsId, expiresAt, interviewStartedAt, details: { token, name: token, missedCalls: 0, comingFrom: 'Same floor' } });
+      setIncoming({ candidateId, ccsId, expiresAt, sameFloor, interviewStartedAt, details: { token, name: token, missedCalls: 0, comingFrom } });
     }
   }
 
@@ -70,7 +73,7 @@ export default function DeskTablet() {
   // component mounted its desk_incoming listener (rare race, cheap to cover).
   useSocketEvent('candidate_dispatched', (payload) => {
     if (payload.companyId === companyId && payload.deskId === String(deskId)) {
-      applyIncoming({ candidateId: payload.candidateId, ccsId: payload.ccsId, token: payload.token, expiresAt: payload.expiresAt });
+      applyIncoming({ candidateId: payload.candidateId, ccsId: payload.ccsId, token: payload.token, expiresAt: payload.expiresAt, sameFloor: payload.sameFloor });
     }
   });
 
@@ -168,7 +171,7 @@ export default function DeskTablet() {
         {incoming?.interviewStartedAt ? (
           <InterviewTimer startedAt={incoming.interviewStartedAt} />
         ) : (
-          <CountdownRing expiresAt={incoming?.expiresAt} totalMs={SAME_FLOOR_MS} />
+          <CountdownRing expiresAt={incoming?.expiresAt} totalMs={incoming?.sameFloor === false ? CROSS_FLOOR_MS : SAME_FLOOR_MS} />
         )}
       </div>
       {toast && <div className={`toast${toast.isErr ? ' err' : ''}`}>{toast.text}</div>}

@@ -2,11 +2,11 @@
 // Separate BullMQ queue from lib/dispatchQueue.js's 'dispatch' queue (that
 // one is v1's fixed-slot-time model, untouched until the Phase 6 cutover).
 //
-// Floor-awareness simplification: §6.1 specifies 90s same-floor / 180s
-// cross-floor, but nothing in this schema tracks which floor a candidate or
-// desk is on yet (waiting-room-per-floor infra isn't built). Every timer
-// below arms at the same-floor duration unless a caller explicitly passes
-// sameFloor: false — the hook is real, the floor data behind it isn't yet.
+// §6.1 specifies 90s same-floor / 180s cross-floor. companies.floor_number
+// is the floor data; lib/queueDispatcher.js's resolveSameFloor() derives the
+// candidate's current floor from their most recently completed interview and
+// passes the real sameFloor in here. A caller that omits it (fixtures, or a
+// company/candidate with no floor history yet) gets the same-floor default.
 require('dotenv').config();
 const { Queue } = require('bullmq');
 const IORedis = require('ioredis');

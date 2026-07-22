@@ -60,6 +60,7 @@ export const api = {
   getCompanies: () => request('/companies'),
   getCompany: (id) => request(`/companies/${id}`),
   createCompany: (payload) => request('/companies', { method: 'POST', body: JSON.stringify(payload) }),
+  deleteCompany: (id) => request(`/companies/${id}`, { method: 'DELETE' }),
   addRatingParameter: (id, payload) => request(`/companies/${id}/rating-parameters`, { method: 'POST', body: JSON.stringify(payload) }),
   deleteRatingParameter: (id, paramId) => request(`/companies/${id}/rating-parameters/${paramId}`, { method: 'DELETE' }),
   addCompanyPost: (id, payload) => request(`/companies/${id}/posts`, { method: 'POST', body: JSON.stringify(payload) }),

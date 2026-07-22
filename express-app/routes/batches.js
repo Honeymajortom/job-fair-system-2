@@ -10,9 +10,9 @@ const router = express.Router();
 
 const BATCH_STATUSES = ['upcoming', 'active', 'closed'];
 
-// Admin: batch lifecycle — upcoming → active → closed (flow E).
+// Admin / Registration Staff: batch lifecycle — upcoming → active → closed (flow E).
 // Listing lives in fair.js (GET /api/batches); generation in POST /api/batches/generate.
-router.put('/batch/:id/status', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
+router.put('/batch/:id/status', authenticateJWT, requireRole('admin', 'registration_staff'), asyncHandler(async (req, res) => {
   const { status } = req.body;
   if (!BATCH_STATUSES.includes(status)) {
     return res.status(400).json({ error: `status must be one of ${BATCH_STATUSES.join(', ')}` });

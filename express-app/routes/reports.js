@@ -18,7 +18,7 @@ router.use(['/company-stats', '/qual-distribution', '/field-distribution', '/mas
 // Per-company funnel — also feeds the FloorMonitor grid header counts.
 router.get('/company-stats', asyncHandler(async (req, res) => {
   const result = await pool.query(
-    `SELECT c.id, c.company_name, c.location,
+    `SELECT c.id, c.company_name, c.location, c.floor_number,
             COUNT(ccs.id) FILTER (WHERE ccs.deleted_at IS NULL)::int AS assigned,
             COUNT(*) FILTER (WHERE ccs.status = 'Pending' AND ccs.deleted_at IS NULL)::int AS pending,
             COUNT(*) FILTER (WHERE ccs.status = 'Dispatched' AND ccs.deleted_at IS NULL)::int AS at_desk,

@@ -66,7 +66,11 @@ export default function CompanyTiles() {
               {sel && <span className="tick">✓</span>}
               <span className="slots">{c.queue_depth} ahead</span>
               <div className="co">{c.company_name}</div>
-              <div className="loc">{c.location ? `${c.location} · ` : ''}{c.field}</div>
+              <div className="loc">
+                {c.location ? `${c.location} · ` : ''}
+                {c.floor_number != null ? `Floor ${c.floor_number} · ` : ''}
+                {c.field}
+              </div>
             </button>
           );
         })}

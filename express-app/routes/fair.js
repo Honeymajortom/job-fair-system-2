@@ -9,7 +9,10 @@ const router = express.Router();
 // Fair configuration + arrival-wave generation (Admin setup, Phase 1).
 // Batch check-in and status transitions belong to stage 3's batches.js.
 
-router.get('/fair-settings', authenticateJWT, requireRole('admin'), asyncHandler(async (_req, res) => {
+// Read-only: also needed by Registration Staff's "Generate batch" control on
+// the Gate tab (reads the active fair's date/interval) — write endpoints
+// below stay admin-only.
+router.get('/fair-settings', authenticateJWT, requireRole('admin', 'registration_staff'), asyncHandler(async (_req, res) => {
   const result = await pool.query('SELECT * FROM fair_settings ORDER BY fair_date DESC');
   res.json(result.rows);
 }));
@@ -51,8 +54,8 @@ router.put('/fair-settings/:id', authenticateJWT, requireRole('admin'), asyncHan
   res.json(result.rows[0]);
 }));
 
-// Admin: auto-generate arrival waves from fair_settings (batch_size × batch_interval_minutes)
-router.post('/batches/generate', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
+// Admin / Registration Staff: auto-generate arrival waves from fair_settings (batch_size × batch_interval_minutes)
+router.post('/batches/generate', authenticateJWT, requireRole('admin', 'registration_staff'), asyncHandler(async (req, res) => {
   const { fair_date, first_arrival, batch_count } = req.body;
   if (!fair_date) return res.status(400).json({ error: 'fair_date is required' });
   if (!Number.isInteger(batch_count) || batch_count < 1 || batch_count > 100) {

@@ -30,6 +30,14 @@ function trackWidth(position) {
   return Math.min(100, position * 1.38);
 }
 
+// location is free text ("Hall A Desk 5"); floor_number is the plain integer
+// companies.js added alongside it — shown together, floor first, since it's
+// the more useful signal for wayfinding at a glance across multiple halls.
+function describeLocation(slot) {
+  const floor = slot.floor_number != null ? `Floor ${slot.floor_number}` : null;
+  return [floor, slot.location].filter(Boolean).join(' · ') || null;
+}
+
 function PosCard({ slot }) {
   const isWaitlisted = slot.rung === undefined;
   const rung = isWaitlisted ? 'waitlisted' : slot.rung;
@@ -61,7 +69,7 @@ function PosCard({ slot }) {
           {/* Every tile shows where that company is set up, not just the
               moment they're called — a candidate picking up interviews for
               multiple companies needs this ahead of time too. */}
-          {slot.location && <div className="loc-note">📍 {slot.location}</div>}
+          {describeLocation(slot) && <div className="loc-note">📍 {describeLocation(slot)}</div>}
         </div>
         <RungBadge rung={rung} status={slot.status} />
       </div>
@@ -74,12 +82,12 @@ function PosCard({ slot }) {
         // candidate right now — a bare "0" position number reads as noise at
         // exactly the moment it matters most, so this replaces the numeric
         // display with an explicit call to action instead.
-        <p className="desk-call-note">🔔 Your turn — go to {slot.location || 'the desk'} now</p>
+        <p className="desk-call-note">🔔 Your turn — go to {describeLocation(slot) || 'the desk'} now</p>
       ) : isInInterview ? (
         // interview_started_at is set (confirm-arrival) but status is still
         // 'Dispatched' — the candidate is already at the desk, so the blinking
         // "come now" call would be actively wrong here.
-        <p className="desk-call-note calm">🎤 Interview in progress at {slot.location || 'the desk'}</p>
+        <p className="desk-call-note calm">🎤 Interview in progress at {describeLocation(slot) || 'the desk'}</p>
       ) : isDone ? (
         <p className="desk-call-note calm">{OUTCOME_NOTES[slot.status] || 'Interview completed.'}</p>
       ) : (

@@ -156,9 +156,9 @@ export default function GateCheckIn() {
     }
   }
 
-  // Admin-only: POST /api/batches/generate needs a fair_date — read it off
-  // whichever fair_settings row is active (falling back to the newest one)
-  // instead of asking staff to type a date at the gate.
+  // Admin / Registration Staff: POST /api/batches/generate needs a fair_date
+  // — read it off whichever fair_settings row is active (falling back to the
+  // newest one) instead of asking staff to type a date at the gate.
   async function generateBatch() {
     const count = parseInt(batchGenCount, 10);
     if (!count || count < 1 || count > 100) { showToast('Enter a batch count between 1 and 100', true); return; }
@@ -183,10 +183,11 @@ export default function GateCheckIn() {
     }
   }
 
-  // Admin-only: mint the fair-wide registration QR (routes/public.js GET
-  // /api/qr/token) and render it as an actual scannable image for the
-  // entrance poster — one shared code every candidate scans to reach
-  // /register, distinct from each candidate's own personal check-in QR.
+  // Admin / Registration Staff: mint the fair-wide registration QR
+  // (routes/public.js GET /api/qr/token) and render it as an actual
+  // scannable image for the entrance poster — one shared code every
+  // candidate scans to reach /register, distinct from each candidate's own
+  // personal check-in QR.
   async function generateEntranceQr() {
     setGeneratingQr(true);
     try {
@@ -203,8 +204,10 @@ export default function GateCheckIn() {
 
   const selectedBatch = batches && batches.find((b) => String(b.id) === String(batchId));
   const exitMode = mode === 'exit';
-  const isAdmin = user.role === 'admin';
-  const checkInStepNum = isAdmin ? 2 : 1;
+  // Gate operations (batch generation/activation, entrance QR mint) are
+  // Admin + Registration Staff — both roles actually staff the entrance.
+  const canManageGate = user.role === 'admin' || user.role === 'registration_staff';
+  const checkInStepNum = canManageGate ? 2 : 1;
 
   return (
     <div className="s-body" style={{ maxWidth: 520 }}>
@@ -231,7 +234,7 @@ export default function GateCheckIn() {
                   </option>
                 ))}
               </select>
-              {isAdmin && (
+              {canManageGate && (
                 <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} onClick={() => setShowBatchGen((v) => !v)}>
                   Generate batch
                 </button>
@@ -255,7 +258,7 @@ export default function GateCheckIn() {
             )}
           </div>
 
-          {isAdmin && selectedBatch && (
+          {canManageGate && selectedBatch && (
             <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
               <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} disabled={selectedBatch.status === 'active'} onClick={() => setBatchStatus('active')}>
                 Activate
@@ -266,7 +269,7 @@ export default function GateCheckIn() {
             </div>
           )}
 
-          {isAdmin && (
+          {canManageGate && (
             <div className="field" style={{ marginBottom: 16 }}>
               <div className="sec-label" style={{ marginBottom: 8 }}>Step 1 · Generate entrance QR</div>
               <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} onClick={generateEntranceQr} disabled={generatingQr}>

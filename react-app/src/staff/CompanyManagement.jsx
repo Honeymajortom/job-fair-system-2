@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from 'react';
 import { api } from '../api';
 
 const emptyCompanyForm = {
-  company_name: '', description: '', location: '', field: '', job_type: '',
+  company_name: '', description: '', location: '', floor_number: '', field: '', job_type: '',
   min_qualification: '', max_qualification: '', seats: '', interview_minutes: '',
 };
 
@@ -61,6 +61,7 @@ export default function CompanyManagement() {
     try {
       await api.createCompany({
         ...companyForm,
+        floor_number: companyForm.floor_number ? Number(companyForm.floor_number) : undefined,
         seats: companyForm.seats ? Number(companyForm.seats) : undefined,
         interview_minutes: companyForm.interview_minutes ? Number(companyForm.interview_minutes) : undefined,
       });
@@ -71,6 +72,21 @@ export default function CompanyManagement() {
       showToast(err.message, true);
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function deleteCompany(company) {
+    if (!window.confirm(`Delete ${company.company_name}? This can't be undone.`)) return;
+    try {
+      await api.deleteCompany(company.id);
+      showToast(`${company.company_name} deleted`);
+      if (expandedId === company.id) {
+        setExpandedId(null);
+        setDetail(null);
+      }
+      loadRoster();
+    } catch (err) {
+      showToast(err.message, true);
     }
   }
 
@@ -172,25 +188,33 @@ export default function CompanyManagement() {
       <div className="table-wrap">
         <table className="data-table">
           <thead>
-            <tr><th>Name</th><th>Field</th><th>Qualification</th><th>Seats / Interview</th><th></th></tr>
+            <tr><th>Name</th><th>Floor</th><th>Field</th><th>Qualification</th><th>Seats / Interview</th><th></th></tr>
           </thead>
           <tbody>
             {roster && roster.map((c) => (
               <Fragment key={c.id}>
                 <tr>
                   <td>{c.company_name}</td>
+                  <td className="mono">{c.floor_number ?? '—'}</td>
                   <td>{c.field || '—'}</td>
                   <td>{[c.min_qualification, c.max_qualification].filter(Boolean).join(' – ') || '—'}</td>
                   <td className="mono">{c.seats ?? '—'} / {c.interview_minutes ?? '—'}m</td>
-                  <td>
+                  <td style={{ display: 'flex', gap: 6 }}>
                     <button className="btn ghost" style={{ width: 'auto', padding: '8px 12px' }} onClick={() => toggleExpand(c.id)}>
                       {expandedId === c.id ? 'Collapse' : 'Manage'}
+                    </button>
+                    <button
+                      className="btn ghost"
+                      style={{ width: 'auto', padding: '8px 12px', color: 'var(--st-rejected)' }}
+                      onClick={() => deleteCompany(c)}
+                    >
+                      Delete
                     </button>
                   </td>
                 </tr>
                 {expandedId === c.id && (
                   <tr>
-                    <td colSpan={5}>
+                    <td colSpan={6}>
                       {!detail ? 'Loading…' : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 20, padding: '8px 0' }}>
                           <div>
@@ -317,7 +341,7 @@ export default function CompanyManagement() {
               </Fragment>
             ))}
             {roster && !roster.length && (
-              <tr><td colSpan={5} className="save-note">No companies yet.</td></tr>
+              <tr><td colSpan={6} className="save-note">No companies yet.</td></tr>
             )}
           </tbody>
         </table>
@@ -336,6 +360,10 @@ export default function CompanyManagement() {
         <div className="field" style={{ maxWidth: 160 }}>
           <label>Location</label>
           <input value={companyForm.location} onChange={(e) => setCompanyForm({ ...companyForm, location: e.target.value })} placeholder="Hall A Desk 5" />
+        </div>
+        <div className="field" style={{ maxWidth: 100 }}>
+          <label>Floor number</label>
+          <input type="number" value={companyForm.floor_number} onChange={(e) => setCompanyForm({ ...companyForm, floor_number: e.target.value })} placeholder="1" />
         </div>
         <div className="field" style={{ maxWidth: 140 }}>
           <label>Field</label>

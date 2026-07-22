@@ -12,6 +12,7 @@ const COMPANIES = [
     company_name: 'Infosys',
     description: 'IT services & consulting',
     location: 'Hall B · Desk 2',
+    floor_number: 2,
     field: 'IT',
     job_type: 'Full-time',
     min_qualification: 'Diploma',
@@ -22,6 +23,7 @@ const COMPANIES = [
     company_name: 'TCS',
     description: 'Global IT & business solutions',
     location: 'Hall A · Desk 5',
+    floor_number: 1,
     field: 'IT',
     job_type: 'Full-time',
     min_qualification: 'Diploma',
@@ -32,6 +34,7 @@ const COMPANIES = [
     company_name: 'Wipro',
     description: 'IT & manufacturing services',
     location: 'Hall B · Desk 1',
+    floor_number: 2,
     field: 'IT',
     job_type: 'Full-time',
     min_qualification: 'ITI',
@@ -91,9 +94,9 @@ async function seed() {
       }
 
       const res = await client.query(
-        `INSERT INTO companies (company_name, description, location, field, job_type, min_qualification, max_qualification)
-         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-        [c.company_name, c.description, c.location, c.field, c.job_type, c.min_qualification, c.max_qualification]
+        `INSERT INTO companies (company_name, description, location, floor_number, field, job_type, min_qualification, max_qualification)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+        [c.company_name, c.description, c.location, c.floor_number, c.field, c.job_type, c.min_qualification, c.max_qualification]
       );
       companyId = res.rows[0].id;
 

@@ -114,10 +114,10 @@ function ensureDeviceCookie(req, res, next) {
 // Routes — mounted under /api, so these serve /api/qr/*
 // ---------------------------------------------------------------------------
 
-// Admin: mint the fair QR (flow A) — a signed 24h JWT embedded in the QR URL
-// printed at the entrance. Registration is only accepted with a valid one
-// (integrity fix #6: fake QR registrations).
-router.get('/qr/token', authenticateJWT, requireRole('admin'), asyncHandler(async (_req, res) => {
+// Admin / Registration Staff: mint the fair QR (flow A) — a signed 24h JWT
+// embedded in the QR URL printed at the entrance. Registration is only
+// accepted with a valid one (integrity fix #6: fake QR registrations).
+router.get('/qr/token', authenticateJWT, requireRole('admin', 'registration_staff'), asyncHandler(async (_req, res) => {
   const fair = await pool.query(
     'SELECT fair_name, fair_date, fair_hours FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1'
   );
@@ -142,7 +142,7 @@ router.get('/qr/token', authenticateJWT, requireRole('admin'), asyncHandler(asyn
 // cookie, since this is the first request the registration page makes.
 router.get('/qr/companies', readIpLimit, ensureDeviceCookie, redisCache(60), asyncHandler(async (_req, res) => {
   const result = await pool.query(
-    `SELECT c.id, c.company_name, c.description, c.location, c.field, c.job_type,
+    `SELECT c.id, c.company_name, c.description, c.location, c.floor_number, c.field, c.job_type,
             c.min_qualification, c.max_qualification,
             COALESCE(SUM(GREATEST(s.capacity - t.taken, 0)), 0)::int AS open_slots
      FROM companies c
@@ -311,7 +311,7 @@ router.get('/qr/schedule/:token', readTokenLimit, scheduleIpLimit, redisCache(15
   const cand = candRes.rows[0];
 
   const slotsRes = await pool.query(
-    `SELECT s.slot_start AS time, c.company_name AS company, c.location, ccs.status,
+    `SELECT s.slot_start AS time, c.company_name AS company, c.location, c.floor_number, ccs.status,
             ccs.company_id, ccs.serial, c.seats, c.interview_minutes, ccs.interview_started_at
      FROM candidate_company_status ccs
      JOIN companies c ON c.id = ccs.company_id
@@ -325,7 +325,7 @@ router.get('/qr/schedule/:token', readTokenLimit, scheduleIpLimit, redisCache(15
   // (new-model) bookings — waitlisted entries (serial IS NULL) are left as-is
   // so the frontend can render a distinct waitlisted card.
   const slots = await Promise.all(slotsRes.rows.map(async (row) => {
-    const base = { time: row.time, company: row.company, location: row.location, status: row.status };
+    const base = { time: row.time, company: row.company, location: row.location, floor_number: row.floor_number, status: row.status };
     if (row.serial === null) return base;
     const ladder = await resolveRung({
       status: row.status,

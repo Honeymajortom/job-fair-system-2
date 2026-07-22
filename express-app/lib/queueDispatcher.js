@@ -8,8 +8,33 @@
 const pool = require('../db');
 const store = require('./queueStore');
 const { emit, emitToRoom } = require('./events');
-const { armNoShowTimer, clearNoShowTimer, SAME_FLOOR_MS } = require('./noShowTimer');
+const { armNoShowTimer, clearNoShowTimer, SAME_FLOOR_MS, CROSS_FLOOR_MS } = require('./noShowTimer');
 const { retunePingBuffer } = require('./bufferController');
+
+// §6.1's 90s/180s split by companies.floor_number. "Where the candidate is
+// right now" = the company of their most recently *completed* interview
+// (processed_at IS NOT NULL) — a candidate is locked to at most one desk at a
+// time, so this is stable to recompute even after a page reload (nothing else
+// can complete for them while they're locked here). No completed interview
+// yet (first dispatch of the day) or a company with no floor_number set both
+// default to same-floor: there's no signal to say otherwise, and same-floor
+// is the shorter, safer default — matches the timer's pre-floor-tracking behavior.
+async function resolveSameFloor(candidateId, companyId) {
+  const targetRes = await pool.query('SELECT floor_number FROM companies WHERE id = $1', [companyId]);
+  const targetFloor = targetRes.rows[0]?.floor_number;
+  if (targetFloor == null) return true;
+
+  const lastRes = await pool.query(
+    `SELECT c.floor_number
+       FROM candidate_company_status ccs
+       JOIN companies c ON c.id = ccs.company_id
+      WHERE ccs.candidate_id = $1 AND ccs.processed_at IS NOT NULL AND ccs.deleted_at IS NULL
+      ORDER BY ccs.processed_at DESC LIMIT 1`,
+    [candidateId]
+  );
+  const lastFloor = lastRes.rows[0]?.floor_number;
+  return lastFloor == null || lastFloor === targetFloor;
+}
 
 // Desk-level occupancy has no dedicated index — only the candidate-keyed
 // lock (lock:{candidateId} -> deskId) exists. Find whoever's currently
@@ -33,14 +58,17 @@ async function findDeskOccupant(companyId, deskId) {
   return idx === -1 ? null : dispatchedRes.rows[idx];
 }
 
-function occupantPayload(companyId, deskId, occupant) {
+async function occupantPayload(companyId, deskId, occupant) {
+  const sameFloor = await resolveSameFloor(occupant.candidate_id, companyId);
+  const timerMs = sameFloor ? SAME_FLOOR_MS : CROSS_FLOOR_MS;
   return {
     candidateId: occupant.candidate_id,
     ccsId: occupant.ccs_id,
     companyId,
     deskId,
     token: occupant.token_no,
-    expiresAt: new Date(new Date(occupant.dispatched_at).getTime() + SAME_FLOOR_MS).toISOString(),
+    sameFloor,
+    expiresAt: new Date(new Date(occupant.dispatched_at).getTime() + timerMs).toISOString(),
     interviewStartedAt: occupant.interview_started_at,
   };
 }
@@ -53,7 +81,7 @@ function occupantPayload(companyId, deskId, occupant) {
 // tap anything.
 async function getDeskOccupant(companyId, deskId) {
   const occupant = await findDeskOccupant(companyId, deskId);
-  return occupant ? occupantPayload(companyId, deskId, occupant) : null;
+  return occupant ? await occupantPayload(companyId, deskId, occupant) : null;
 }
 
 // Company j's desk `deskId` just freed. Scan the queue in rank order, skip
@@ -65,7 +93,7 @@ async function dispatch(companyId, deskId) {
   const occupant = await findDeskOccupant(companyId, deskId);
   if (occupant) {
     console.log(`[queue-dispatcher] desk ${deskId} at company ${companyId} already serving ${occupant.token_no} — returning existing occupant instead of double-dispatching`);
-    return { ...occupantPayload(companyId, deskId, occupant), alreadyDispatched: true };
+    return { ...(await occupantPayload(companyId, deskId, occupant)), alreadyDispatched: true };
   }
 
   const candidateIds = await store.topCandidates(companyId, 20);
@@ -98,17 +126,16 @@ async function dispatch(companyId, deskId) {
     // into this cycle's "has the interview actually started" state.
     await pool.query(`UPDATE candidate_company_status SET status = 'Dispatched', dispatched_at = now(), interview_started_at = NULL WHERE id = $1`, [row.ccs_id]);
     await store.clearDeskWaiting(companyId, deskId);
-    await armNoShowTimer({ candidateId, companyId, deskId, ccsId: row.ccs_id });
-    // armNoShowTimer defaults sameFloor:true (see noShowTimer.js's floor-
-    // awareness note) — mirror that here so the deadline we hand out matches
-    // the timer we actually armed.
-    const expiresAt = new Date(Date.now() + SAME_FLOOR_MS).toISOString();
+    const sameFloor = await resolveSameFloor(candidateId, companyId);
+    await armNoShowTimer({ candidateId, companyId, deskId, ccsId: row.ccs_id, sameFloor });
+    const expiresAt = new Date(Date.now() + (sameFloor ? SAME_FLOOR_MS : CROSS_FLOOR_MS)).toISOString();
 
     emit('candidate_dispatched', {
       token: row.token_no,
       companyId,
       deskId,
       expiresAt,
+      sameFloor,
       statsDelta: { atDesk: 1, pending: -1 },
     });
     // Desk-tablet-scoped push — Phase 3's "Q-->>D: incoming · arm timer"
@@ -122,9 +149,10 @@ async function dispatch(companyId, deskId) {
       companyId,
       deskId,
       expiresAt,
+      sameFloor,
     });
     console.log(`[queue-dispatcher] dispatched ${row.token_no} -> company ${companyId} desk ${deskId}`);
-    return { candidateId, ccsId: row.ccs_id, companyId, deskId, token: row.token_no, expiresAt, interviewStartedAt: null };
+    return { candidateId, ccsId: row.ccs_id, companyId, deskId, token: row.token_no, expiresAt, sameFloor, interviewStartedAt: null };
   }
 
   await store.markDeskWaiting(companyId, deskId);

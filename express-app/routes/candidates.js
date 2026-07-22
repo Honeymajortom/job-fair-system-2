@@ -46,7 +46,7 @@ router.get('/candidates/:token', authenticateJWT, asyncHandler(async (req, res) 
 
   const statusRes = await pool.query(
     `SELECT ccs.id, ccs.status, ccs.ratings, ccs.feedback_text, ccs.processed_at, ccs.misses,
-            c.id AS company_id, c.company_name, c.location,
+            c.id AS company_id, c.company_name, c.location, c.floor_number,
             s.slot_start
      FROM candidate_company_status ccs
      JOIN companies c ON c.id = ccs.company_id

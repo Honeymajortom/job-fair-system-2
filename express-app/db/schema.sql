@@ -269,6 +269,18 @@ ALTER TABLE candidates
   ADD COLUMN IF NOT EXISTS resume_uploaded_at TIMESTAMPTZ;
 
 -- ---------------------------------------------------------------------------
+-- Floor number (distinct from the free-text `location`, e.g. "Hall B Desk 2"):
+-- a plain integer so it can actually be compared, not just displayed. Feeds
+-- lib/queueDispatcher.js's same-floor/cross-floor no-show timer (§6.1's 90s/
+-- 180s) — before this, nothing tracked which floor a company was on, so
+-- every timer armed at the same-floor duration regardless (see noShowTimer.js's
+-- former floor-awareness note). Nullable: a company with no floor set is
+-- treated as unknown and still defaults to same-floor, matching prior behavior.
+-- ---------------------------------------------------------------------------
+ALTER TABLE companies
+  ADD COLUMN IF NOT EXISTS floor_number INTEGER;
+
+-- ---------------------------------------------------------------------------
 -- Company Management (new_architecture_uiux_spec.html §07): vacancy tracking.
 -- Migrated from old/SDC_JobFair_Architecture.md's v2.5 company_posts design —
 -- a company can advertise multiple named postings, each with its own vacancy

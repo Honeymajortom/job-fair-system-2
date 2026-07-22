@@ -6,12 +6,24 @@ const requireRole = require('../middleware/requireRole');
 
 const router = express.Router();
 
+// Standard Company HR evaluation rubric — seeded onto every new company at
+// creation time so HR always has a rating form to score against instead of
+// an empty one; admin can still add/remove parameters afterward via the
+// rating-parameters endpoints below.
+const DEFAULT_RATING_PARAMETERS = [
+  'Communication',
+  'Technical Skills',
+  'Adaptability',
+  'Confidence Level',
+  'Behavior & Personality',
+];
+
 // Staff (any role): list companies with open-slot counts, for tiles and admin
 // list. The public tile view arrives in stage 4 as GET /qr/companies.
 router.get('/companies', authenticateJWT, asyncHandler(async (_req, res) => {
   const result = await pool.query(`
     SELECT
-      c.id, c.company_name, c.description, c.location, c.field, c.job_type,
+      c.id, c.company_name, c.description, c.location, c.floor_number, c.field, c.job_type,
       c.min_qualification, c.max_qualification, c.max_queue_limit,
       COUNT(s.id) FILTER (WHERE s.id IS NOT NULL) AS total_slots,
       COUNT(s.id) FILTER (
@@ -56,7 +68,7 @@ router.get('/companies/:id', authenticateJWT, asyncHandler(async (req, res) => {
 // interviews (sim's baseline) so an unconfigured company still gets a
 // sane, non-zero cap instead of silently waitlisting everyone.
 router.post('/companies', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
-  const { company_name, description, location, field, job_type, min_qualification, max_qualification, max_queue_limit, seats, interview_minutes } = req.body;
+  const { company_name, description, location, floor_number, field, job_type, min_qualification, max_qualification, max_queue_limit, seats, interview_minutes } = req.body;
   if (!company_name) return res.status(400).json({ error: 'company_name is required' });
   // Red-team L3: interview_minutes feeds `60 / interview_minutes` in the
   // booking-cap math (registerCandidate.js) — 0 or negative breaks that
@@ -69,14 +81,43 @@ router.post('/companies', authenticateJWT, requireRole('admin'), asyncHandler(as
 
   try {
     const result = await pool.query(
-      `INSERT INTO companies (company_name, description, location, field, job_type, min_qualification, max_qualification, max_queue_limit, seats, interview_minutes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7, COALESCE($8, 7), COALESCE($9, 1), COALESCE($10, 6)) RETURNING *`,
-      [company_name, description || null, location || null, field || null, job_type || null, min_qualification || null, max_qualification || null, max_queue_limit || null, seats || null, interview_minutes || null]
+      `INSERT INTO companies (company_name, description, location, floor_number, field, job_type, min_qualification, max_qualification, max_queue_limit, seats, interview_minutes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8, COALESCE($9, 7), COALESCE($10, 1), COALESCE($11, 6)) RETURNING *`,
+      [company_name, description || null, location || null, floor_number || null, field || null, job_type || null, min_qualification || null, max_qualification || null, max_queue_limit || null, seats || null, interview_minutes || null]
     );
-    res.status(201).json(result.rows[0]);
+    const company = result.rows[0];
+
+    for (let i = 0; i < DEFAULT_RATING_PARAMETERS.length; i++) {
+      await pool.query(
+        'INSERT INTO rating_parameters (company_id, parameter_name, display_order) VALUES ($1,$2,$3)',
+        [company.id, DEFAULT_RATING_PARAMETERS[i], i]
+      );
+    }
+
+    res.status(201).json(company);
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'A company with that name already exists' });
     if (err.code === '23514') return res.status(400).json({ error: 'interview_minutes must be a positive integer' });
+    throw err;
+  }
+}));
+
+// Admin: delete a company — hard delete (companies aren't fair-scoped or
+// soft-deleted like candidates are). FK RESTRICT on interview_slots,
+// candidate_company_status, and users.company_id is the real guard here: a
+// company with any booked candidates, slots, or an assigned company_hr
+// account can't be deleted out from under live data — this just turns that
+// constraint violation into a clean 409 instead of a raw DB error. rating_
+// parameters/company_posts are ON DELETE CASCADE, so those go with it.
+router.delete('/companies/:id', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
+  try {
+    const result = await pool.query('DELETE FROM companies WHERE id = $1 RETURNING id, company_name', [req.params.id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'Company not found' });
+    res.json({ ok: true, id: result.rows[0].id });
+  } catch (err) {
+    if (err.code === '23503') {
+      return res.status(409).json({ error: 'Cannot delete a company with existing candidates, interview slots, or assigned staff — remove those first' });
+    }
     throw err;
   }
 }));
