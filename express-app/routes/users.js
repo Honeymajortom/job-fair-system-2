@@ -8,6 +8,9 @@ const requireRole = require('../middleware/requireRole');
 const router = express.Router();
 
 const ROLES = ['admin', 'registration_staff', 'floor_manager', 'company_hr', 'volunteer'];
+// name@sdc.com for a person, company-name@sdc.com for a company_hr account —
+// one consistent, recognizable format for every staff login.
+const USERNAME_FORMAT = /^[a-zA-Z0-9._-]+@sdc\.com$/;
 
 // User management is Admin-only across the board (permission matrix).
 router.use('/users', authenticateJWT, requireRole('admin'));
@@ -20,6 +23,9 @@ router.get('/users', asyncHandler(async (_req, res) => {
 router.post('/users', asyncHandler(async (req, res) => {
   const { username, password, role, company_id } = req.body;
   if (!username || !username.trim()) return res.status(400).json({ error: 'username is required' });
+  if (!USERNAME_FORMAT.test(username.trim())) {
+    return res.status(400).json({ error: 'username must be in the form name@sdc.com (or company-name@sdc.com for Company HR)' });
+  }
   if (!password || password.length < 6) return res.status(400).json({ error: 'password must be at least 6 characters' });
   if (!ROLES.includes(role)) return res.status(400).json({ error: `role must be one of ${ROLES.join(', ')}` });
   // Red-team H3: a company_hr account is scoped to exactly one company —

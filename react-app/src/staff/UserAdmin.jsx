@@ -7,12 +7,15 @@ const ROLES = ['admin', 'registration_staff', 'floor_manager', 'company_hr', 'vo
 export default function UserAdmin() {
   const { user } = useAuth();
   const [roster, setRoster] = useState(null);
+  const [companies, setCompanies] = useState([]);
   const [editingId, setEditingId] = useState(null);
   const [editRole, setEditRole] = useState('');
+  const [editCompanyId, setEditCompanyId] = useState('');
   const [editPassword, setEditPassword] = useState('');
-  const [newUsername, setNewUsername] = useState('');
+  const [newUsernameLocal, setNewUsernameLocal] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newRole, setNewRole] = useState('registration_staff');
+  const [newCompanyId, setNewCompanyId] = useState('');
   const [creating, setCreating] = useState(false);
   const [toast, setToast] = useState(null);
 
@@ -26,10 +29,20 @@ export default function UserAdmin() {
   }
 
   useEffect(() => { loadRoster(); }, []);
+  // Needed for the Company HR company picker (both the add-staff form and the
+  // roster's Company column) — same roster-fetching endpoint CompanyManagement
+  // already uses.
+  useEffect(() => { api.getCompanies().then(setCompanies).catch(() => {}); }, []);
+
+  function companyName(id) {
+    const c = companies.find((c) => c.id === id);
+    return c ? c.company_name : '—';
+  }
 
   function startEdit(row) {
     setEditingId(row.id);
     setEditRole(row.role);
+    setEditCompanyId(row.company_id ?? '');
     setEditPassword('');
   }
 
@@ -42,6 +55,14 @@ export default function UserAdmin() {
     const payload = {};
     if (editRole !== row.role) payload.role = editRole;
     if (editPassword) payload.password = editPassword;
+    // Company HR always needs a company_id in the request — the backend can't
+    // tell "keep the one already on file" from "none provided" otherwise
+    // (routes/users.js), so this sends it whenever the role is (or is
+    // becoming) company_hr, not just when it changed.
+    if (editRole === 'company_hr') {
+      if (!editCompanyId) { showToast('Pick a company for this Company HR account', true); return; }
+      payload.company_id = Number(editCompanyId);
+    }
     if (!Object.keys(payload).length) { cancelEdit(); return; }
     try {
       await api.updateUser(row.id, payload);
@@ -67,13 +88,24 @@ export default function UserAdmin() {
 
   async function createStaff(e) {
     e.preventDefault();
+    if (newRole === 'company_hr' && !newCompanyId) {
+      showToast('Pick a company for this Company HR account', true);
+      return;
+    }
+    const username = `${newUsernameLocal.trim()}@sdc.com`;
     setCreating(true);
     try {
-      await api.createUser({ username: newUsername, password: newPassword, role: newRole });
-      showToast(`${newUsername} added`);
-      setNewUsername('');
+      await api.createUser({
+        username,
+        password: newPassword,
+        role: newRole,
+        company_id: newRole === 'company_hr' ? Number(newCompanyId) : undefined,
+      });
+      showToast(`${username} added`);
+      setNewUsernameLocal('');
       setNewPassword('');
       setNewRole('registration_staff');
+      setNewCompanyId('');
       loadRoster();
     } catch (err) {
       showToast(err.message, true);
@@ -88,7 +120,7 @@ export default function UserAdmin() {
       <div className="table-wrap">
         <table className="data-table">
           <thead>
-            <tr><th>Username</th><th>Role</th><th>Created</th><th></th></tr>
+            <tr><th>Username</th><th>Role</th><th>Company</th><th>Created</th><th></th></tr>
           </thead>
           <tbody>
             {roster && roster.map((row) => (
@@ -104,6 +136,18 @@ export default function UserAdmin() {
                   ) : (
                     <span className={`role-chip ${row.role}`}>{row.role}</span>
                   )}
+                </td>
+                <td>
+                  {editingId === row.id ? (
+                    editRole === 'company_hr' && (
+                      <div className="field" style={{ maxWidth: 180 }}>
+                        <select value={editCompanyId} onChange={(e) => setEditCompanyId(e.target.value)} required>
+                          <option value="" disabled>Select a company…</option>
+                          {companies.map((c) => <option key={c.id} value={c.id}>{c.company_name}</option>)}
+                        </select>
+                      </div>
+                    )
+                  ) : row.role === 'company_hr' ? companyName(row.company_id) : '—'}
                 </td>
                 <td className="mono">{new Date(row.created_at).toLocaleDateString()}</td>
                 <td>
@@ -133,7 +177,7 @@ export default function UserAdmin() {
               </tr>
             ))}
             {roster && !roster.length && (
-              <tr><td colSpan={4} className="save-note">No staff accounts yet.</td></tr>
+              <tr><td colSpan={5} className="save-note">No staff accounts yet.</td></tr>
             )}
           </tbody>
         </table>
@@ -141,9 +185,19 @@ export default function UserAdmin() {
 
       <div className="sec-label" style={{ marginTop: 24, marginBottom: 10 }}>Add staff</div>
       <form onSubmit={createStaff} style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'end' }}>
-        <div className="field" style={{ maxWidth: 200 }}>
+        <div className="field" style={{ maxWidth: 240 }}>
           <label>Username</label>
-          <input value={newUsername} onChange={(e) => setNewUsername(e.target.value)} required />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input
+              value={newUsernameLocal}
+              onChange={(e) => setNewUsernameLocal(e.target.value)}
+              placeholder={newRole === 'company_hr' ? 'company-name' : 'name'}
+              pattern="[a-zA-Z0-9._-]+"
+              title="Letters, numbers, dots, underscores, hyphens only"
+              required
+            />
+            <span className="save-note" style={{ marginTop: 0, whiteSpace: 'nowrap' }}>@sdc.com</span>
+          </div>
         </div>
         <div className="field" style={{ maxWidth: 200 }}>
           <label>Temp password</label>
@@ -151,10 +205,19 @@ export default function UserAdmin() {
         </div>
         <div className="field" style={{ maxWidth: 200 }}>
           <label>Role</label>
-          <select value={newRole} onChange={(e) => setNewRole(e.target.value)}>
+          <select value={newRole} onChange={(e) => { setNewRole(e.target.value); setNewCompanyId(''); }}>
             {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
           </select>
         </div>
+        {newRole === 'company_hr' && (
+          <div className="field" style={{ maxWidth: 200 }}>
+            <label>Company</label>
+            <select value={newCompanyId} onChange={(e) => setNewCompanyId(e.target.value)} required>
+              <option value="" disabled>Select a company…</option>
+              {companies.map((c) => <option key={c.id} value={c.id}>{c.company_name}</option>)}
+            </select>
+          </div>
+        )}
         <button className="btn" style={{ width: 'auto', padding: '11px 18px' }} type="submit" disabled={creating}>
           {creating ? 'Adding…' : '+ Add staff'}
         </button>

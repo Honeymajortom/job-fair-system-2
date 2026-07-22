@@ -34,12 +34,29 @@ function Gate({ roles, children }) {
 }
 
 function DeskPicker() {
+  const { user } = useAuth();
   const [companies, setCompanies] = useState(null);
   const [companyId, setCompanyId] = useState('');
   const [deskId, setDeskId] = useState('1');
   const navigate = useNavigate();
 
-  useEffect(() => { api.getCompanies().then(setCompanies).catch(() => setCompanies([])); }, []);
+  // company_hr is scoped to exactly one company (requireCompanyScope already
+  // enforces this server-side on every desk/queue action) — showing every
+  // company in this dropdown just invites picking the wrong one and hitting a
+  // 403 the moment they try to call a candidate. admin/floor_manager still see
+  // the full list, since they can legitimately work any desk.
+  const isCompanyHr = user.role === 'company_hr';
+
+  useEffect(() => {
+    api.getCompanies().then((rows) => {
+      setCompanies(isCompanyHr ? rows.filter((c) => c.id === user.company_id) : rows);
+    }).catch(() => setCompanies([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (isCompanyHr && companies && companies.length) setCompanyId(String(companies[0].id));
+  }, [isCompanyHr, companies]);
 
   function go(e) {
     e.preventDefault();
@@ -53,7 +70,7 @@ function DeskPicker() {
       <form onSubmit={go} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div className="field">
           <label>Company</label>
-          <select value={companyId} onChange={(e) => setCompanyId(e.target.value)} required>
+          <select value={companyId} onChange={(e) => setCompanyId(e.target.value)} disabled={isCompanyHr} required>
             <option value="" disabled>Select a company…</option>
             {companies && companies.map((c) => <option key={c.id} value={c.id}>{c.company_name}</option>)}
           </select>
