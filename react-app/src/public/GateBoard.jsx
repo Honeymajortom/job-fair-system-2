@@ -30,13 +30,15 @@ export default function GateBoard() {
       {status && (
         <div className="gate-strip">
           <div className="gate-card">
-            <div className="n">{status.waiting_room}<span style={{ fontSize: 16, color: 'var(--ink-60)' }}> / {status.waiting_room_max}</span></div>
-            <div className="l">Waiting room</div>
-            {(status.waiting_room_location || status.waiting_room_floor_number != null) && (
-              <div className="save-note" style={{ marginTop: 6 }}>
-                📍 {[status.waiting_room_floor_number != null ? `Floor ${status.waiting_room_floor_number}` : null, status.waiting_room_location].filter(Boolean).join(' · ')}
+            <div className="n">{status.waiting_room_total}<span style={{ fontSize: 16, color: 'var(--ink-60)' }}> / {status.waiting_room_max}</span></div>
+            <div className="l" style={{ marginBottom: 6 }}>Waiting rooms, by floor</div>
+            {status.waiting_rooms.map((r) => (
+              <div key={r.floor_number ?? 'unassigned'} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 13 }}>
+                <span>{r.floor_number != null ? `Floor ${r.floor_number}` : 'Floor TBD'}{r.location ? ` · ${r.location}` : ''}</span>
+                <span className="mono">{r.count}</span>
               </div>
-            )}
+            ))}
+            {!status.waiting_rooms.length && <p className="save-note" style={{ marginTop: 0 }}>No one waiting right now.</p>}
           </div>
           <div className="gate-card">
             <div className="l" style={{ marginBottom: 6 }}>Staging queue (max {status.staging_max})</div>
@@ -57,7 +59,7 @@ export default function GateBoard() {
       )}
 
       <p className="save-note" style={{ marginTop: 20, textAlign: 'center' }}>
-        Waiting rooms are shared across all companies — if you're tracking three, you wait in one place, not three lines.
+        Each floor has its own waiting room — your phone tells you which one, matched to whichever company calls you next.
       </p>
       <div style={{ marginTop: 24 }}><SiteCredit /></div>
     </div>

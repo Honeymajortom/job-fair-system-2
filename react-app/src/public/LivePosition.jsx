@@ -19,14 +19,16 @@ const DONE_STATUSES = ['Selected', 'Rejected', 'Shortlisted', 'Hold', 'No_Show']
 const RUNG_RANK = { in_interview: -1, desk_call: 0, staging: 1, gate: 2, warm: 3, far: 4, done: 5 };
 
 // A candidate tracking 3 companies is physically in one place — this reduces
-// their bookings to the single most-urgent rung, the same way gateStatus.js
+// their bookings to the single most-urgent one, the same way gateStatus.js
 // does fair-wide, so the top-of-page banner can tell them "wait" or "go"
-// without them cross-referencing 3 separate cards themselves.
-function mostUrgentRung(slots) {
+// without them cross-referencing 3 separate cards themselves. Returns the
+// whole slot, not just the rung — the banner needs its `floor_number` too, to
+// match against the right per-floor waiting room.
+function mostUrgentSlot(slots) {
   let best = null;
   for (const s of slots) {
     if (s.rung === undefined) continue; // waitlisted — never entered the live queue
-    if (best === null || RUNG_RANK[s.rung] < RUNG_RANK[best]) best = s.rung;
+    if (best === null || RUNG_RANK[s.rung] < RUNG_RANK[best.rung]) best = s;
   }
   return best;
 }
@@ -61,16 +63,20 @@ function describeLocation(slot) {
 // Tells the candidate whether to be in the waiting room right now, or that
 // they've earned their way past it — the direct answer to "should I be
 // waiting in the room or not," derived from whichever booking is most urgent
-// across all of them. desk_call/in_interview aren't handled here: PosCard's
-// own per-card message ("go to the desk now" / "interview in progress") is
-// already more specific than a generic banner would be.
-function WaitingDirective({ slots, waitingRoom }) {
-  const rung = mostUrgentRung(slots);
+// across all of them. Waiting rooms are per-floor now (matched against the
+// most-urgent booking's own company floor — the same `floor_number` its card
+// already shows), not one fair-wide room: a candidate about to be called by a
+// Floor 2 company gets pointed at the Floor 2 room specifically. desk_call/
+// in_interview aren't handled here: PosCard's own per-card message ("go to
+// the desk now" / "interview in progress") is already more specific than a
+// generic banner would be.
+function WaitingDirective({ slots, waitingRooms }) {
+  const slot = mostUrgentSlot(slots);
+  const rung = slot && slot.rung;
   if (rung === 'far' || rung === 'warm' || rung === 'gate') {
-    const loc = [
-      waitingRoom && waitingRoom.floor_number != null ? `Floor ${waitingRoom.floor_number}` : null,
-      waitingRoom && waitingRoom.location,
-    ].filter(Boolean).join(' · ');
+    const room = waitingRooms.find((r) => r.floor_number === slot.floor_number);
+    const floorLabel = slot.floor_number != null ? `Floor ${slot.floor_number}` : null;
+    const loc = [floorLabel, room && room.location].filter(Boolean).join(' · ');
     return (
       <p className="desk-call-note calm" style={{ marginTop: 0, marginBottom: 14 }}>
         🪑 Please wait in the Waiting Room{loc ? ` — ${loc}` : ''}.
@@ -331,7 +337,7 @@ export default function LivePosition() {
           </div>
         ) : (
           <>
-            <WaitingDirective slots={data.slots} waitingRoom={data.waiting_room} />
+            <WaitingDirective slots={data.slots} waitingRooms={data.waiting_rooms || []} />
             <div className="ladder">
               {data.slots.map((slot, i) => <PosCard key={`${slot.company}-${i}`} slot={slot} />)}
             </div>

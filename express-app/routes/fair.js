@@ -34,39 +34,59 @@ router.post('/fair-settings', authenticateJWT, requireRole('admin'), asyncHandle
   }
 }));
 
-// Partial update — also how the is_active soft-delete guard is toggled, and
-// (per new_architecture.md) the one place the fair-wide waiting room's
-// physical location/floor gets set — Gate tab, admin only.
+// Partial update — also how the is_active soft-delete guard is toggled
 router.put('/fair-settings/:id', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
-  const { fair_name, max_companies_per_candidate, slot_duration_minutes, batch_size, batch_interval_minutes, is_active, waiting_room_location, waiting_room_floor_number } = req.body;
+  const { fair_name, max_companies_per_candidate, slot_duration_minutes, batch_size, batch_interval_minutes, is_active } = req.body;
 
-  if (waiting_room_floor_number != null && !(Number.isInteger(waiting_room_floor_number) && waiting_room_floor_number >= 0)) {
-    return res.status(400).json({ error: 'waiting_room_floor_number must be a non-negative integer' });
-  }
+  const result = await pool.query(
+    `UPDATE fair_settings SET
+       fair_name = COALESCE($1, fair_name),
+       max_companies_per_candidate = COALESCE($2, max_companies_per_candidate),
+       slot_duration_minutes = COALESCE($3, slot_duration_minutes),
+       batch_size = COALESCE($4, batch_size),
+       batch_interval_minutes = COALESCE($5, batch_interval_minutes),
+       is_active = COALESCE($6, is_active)
+     WHERE id = $7
+     RETURNING *`,
+    [fair_name || null, max_companies_per_candidate || null, slot_duration_minutes || null, batch_size || null, batch_interval_minutes || null, is_active === undefined ? null : is_active, req.params.id]
+  );
+  if (!result.rows.length) return res.status(404).json({ error: 'Fair settings not found' });
+  res.json(result.rows[0]);
+}));
 
-  try {
-    const result = await pool.query(
-      `UPDATE fair_settings SET
-         fair_name = COALESCE($1, fair_name),
-         max_companies_per_candidate = COALESCE($2, max_companies_per_candidate),
-         slot_duration_minutes = COALESCE($3, slot_duration_minutes),
-         batch_size = COALESCE($4, batch_size),
-         batch_interval_minutes = COALESCE($5, batch_interval_minutes),
-         is_active = COALESCE($6, is_active),
-         waiting_room_location = COALESCE($7, waiting_room_location),
-         waiting_room_floor_number = COALESCE($8, waiting_room_floor_number)
-       WHERE id = $9
-       RETURNING *`,
-      [fair_name || null, max_companies_per_candidate || null, slot_duration_minutes || null, batch_size || null, batch_interval_minutes || null, is_active === undefined ? null : is_active, waiting_room_location || null, waiting_room_floor_number != null ? waiting_room_floor_number : null, req.params.id]
-    );
-    if (!result.rows.length) return res.status(404).json({ error: 'Fair settings not found' });
-    res.json(result.rows[0]);
-  } catch (err) {
-    if (err.code === '23514' && err.constraint === 'fair_settings_waiting_room_floor_nonnegative') {
-      return res.status(400).json({ error: 'waiting_room_floor_number must be a non-negative integer' });
-    }
-    throw err;
+// Waiting rooms, one per floor — matched against companies.floor_number so a
+// candidate waiting for a Floor 2 company is told to sit in the Floor 2
+// waiting room, not a fair-wide generic one (superseded fair_settings.
+// waiting_room_location/floor_number the same day it shipped, see schema.sql).
+// Read is public (GateBoard.jsx + every candidate's LivePosition.jsx need the
+// full list to pick the right one); writes are admin-only, from the Gate tab.
+router.get('/waiting-rooms', asyncHandler(async (_req, res) => {
+  const result = await pool.query('SELECT floor_number, location FROM waiting_rooms ORDER BY floor_number');
+  res.json(result.rows);
+}));
+
+// Upsert — floor_number is the natural key, so "set the Floor 2 waiting room
+// to X" is always one call whether Floor 2 already had one or not.
+router.post('/waiting-rooms', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
+  const { floor_number, location } = req.body;
+  if (!(Number.isInteger(floor_number) && floor_number >= 0)) {
+    return res.status(400).json({ error: 'floor_number must be a non-negative integer' });
   }
+  if (!location || !location.trim()) return res.status(400).json({ error: 'location is required' });
+
+  const result = await pool.query(
+    `INSERT INTO waiting_rooms (floor_number, location) VALUES ($1, $2)
+     ON CONFLICT (floor_number) DO UPDATE SET location = EXCLUDED.location
+     RETURNING floor_number, location`,
+    [floor_number, location.trim()]
+  );
+  res.status(201).json(result.rows[0]);
+}));
+
+router.delete('/waiting-rooms/:floorNumber', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
+  const result = await pool.query('DELETE FROM waiting_rooms WHERE floor_number = $1 RETURNING floor_number', [req.params.floorNumber]);
+  if (!result.rows.length) return res.status(404).json({ error: 'No waiting room configured for that floor' });
+  res.json({ ok: true, floor_number: result.rows[0].floor_number });
 }));
 
 // Admin / Registration Staff: auto-generate arrival waves from fair_settings (batch_size × batch_interval_minutes)

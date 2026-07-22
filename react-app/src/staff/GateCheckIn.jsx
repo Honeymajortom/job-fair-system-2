@@ -51,9 +51,12 @@ export default function GateCheckIn() {
   const [showBatchGen, setShowBatchGen] = useState(false);
   const [batchGenCount, setBatchGenCount] = useState('');
   const [generatingBatch, setGeneratingBatch] = useState(false);
-  const [fairSettingsId, setFairSettingsId] = useState(null);
-  const [waitingRoomForm, setWaitingRoomForm] = useState({ location: '', floor_number: '' });
-  const [savingWaitingRoom, setSavingWaitingRoom] = useState(false);
+  const [waitingRooms, setWaitingRoomsState] = useState([]);
+  const [roomEdits, setRoomEdits] = useState({}); // floor_number -> location being edited
+  const [savingRoomFloor, setSavingRoomFloor] = useState(null);
+  const [newRoomFloor, setNewRoomFloor] = useState('');
+  const [newRoomLocation, setNewRoomLocation] = useState('');
+  const [addingRoom, setAddingRoom] = useState(false);
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -84,20 +87,20 @@ export default function GateCheckIn() {
 
   useEffect(() => { loadBatches(); }, []);
 
-  // Admin only, matching PUT /fair-settings/:id's role — the waiting room is
-  // fair-wide config (new_architecture.md), not a per-batch or per-company
-  // thing, so it's read once here rather than re-derived from loadBatches.
+  // Admin only, matching the waiting-rooms write endpoints' role — one row
+  // per floor, matched against companies.floor_number so a candidate waiting
+  // for a Floor 2 company gets told to sit in the Floor 2 room, not a
+  // fair-wide generic one.
+  function loadWaitingRooms() {
+    api.getWaitingRooms().then((rows) => {
+      setWaitingRoomsState(rows);
+      setRoomEdits(Object.fromEntries(rows.map((r) => [r.floor_number, r.location])));
+    }).catch(() => {});
+  }
+
   useEffect(() => {
     if (user.role !== 'admin') return;
-    api.getFairSettings().then((settings) => {
-      const active = settings.find((s) => s.is_active) || settings[0];
-      if (!active) return;
-      setFairSettingsId(active.id);
-      setWaitingRoomForm({
-        location: active.waiting_room_location || '',
-        floor_number: active.waiting_room_floor_number ?? '',
-      });
-    }).catch(() => {});
+    loadWaitingRooms();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -222,23 +225,51 @@ export default function GateCheckIn() {
     }
   }
 
-  // Admin: the physical waiting-room location/floor candidates get told to
-  // hold in (LivePosition.jsx) and GateBoard shows — fair-wide per
-  // new_architecture.md, so it lives on fair_settings, not on a company.
-  async function saveWaitingRoom(e) {
-    e.preventDefault();
-    if (!fairSettingsId) { showToast('No fair configured yet', true); return; }
-    setSavingWaitingRoom(true);
+  // floor_number is the natural key (waiting_rooms.floor_number PRIMARY KEY),
+  // so saving an existing row's edited location and adding a brand-new floor
+  // both just call the same upsert endpoint.
+  async function saveRoomLocation(floorNumber) {
+    const location = (roomEdits[floorNumber] || '').trim();
+    if (!location) { showToast('Location is required', true); return; }
+    setSavingRoomFloor(floorNumber);
     try {
-      await api.updateFairSettings(fairSettingsId, {
-        waiting_room_location: waitingRoomForm.location || undefined,
-        waiting_room_floor_number: waitingRoomForm.floor_number !== '' ? Number(waitingRoomForm.floor_number) : undefined,
-      });
-      showToast('Waiting room location saved');
+      await api.setWaitingRoom(floorNumber, location);
+      showToast(`Floor ${floorNumber} waiting room saved`);
+      loadWaitingRooms();
     } catch (err) {
       showToast(err.message, true);
     } finally {
-      setSavingWaitingRoom(false);
+      setSavingRoomFloor(null);
+    }
+  }
+
+  async function removeWaitingRoom(floorNumber) {
+    if (!window.confirm(`Remove the Floor ${floorNumber} waiting room?`)) return;
+    try {
+      await api.deleteWaitingRoom(floorNumber);
+      showToast('Waiting room removed');
+      loadWaitingRooms();
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  async function addWaitingRoom(e) {
+    e.preventDefault();
+    const floor = Number(newRoomFloor);
+    if (newRoomFloor === '' || !Number.isInteger(floor) || floor < 0) { showToast('Floor number must be 0 or higher', true); return; }
+    if (!newRoomLocation.trim()) { showToast('Location is required', true); return; }
+    setAddingRoom(true);
+    try {
+      await api.setWaitingRoom(floor, newRoomLocation.trim());
+      showToast(`Floor ${floor} waiting room added`);
+      setNewRoomFloor('');
+      setNewRoomLocation('');
+      loadWaitingRooms();
+    } catch (err) {
+      showToast(err.message, true);
+    } finally {
+      setAddingRoom(false);
     }
   }
 
@@ -329,31 +360,52 @@ export default function GateCheckIn() {
 
           {user.role === 'admin' && (
             <div className="field" style={{ marginBottom: 16 }}>
-              <div className="sec-label" style={{ marginBottom: 8 }}>Waiting room location</div>
+              <div className="sec-label" style={{ marginBottom: 8 }}>Waiting rooms, per floor</div>
               <p className="save-note" style={{ marginTop: 0, marginBottom: 8 }}>
-                Shown to every candidate not yet called and on the entrance board — one shared room, not per company.
+                Matched against each company's floor — a candidate waiting for a Floor 2 company is told to sit in the Floor 2 room, not a fair-wide generic one.
               </p>
-              <form onSubmit={saveWaitingRoom} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'end' }}>
+              {waitingRooms.map((r) => (
+                <div key={r.floor_number} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'end' }}>
+                  <div className="field" style={{ maxWidth: 80 }}>
+                    <label>Floor</label>
+                    <input value={r.floor_number} disabled className="mono" />
+                  </div>
+                  <div className="field" style={{ flex: 1, maxWidth: 220 }}>
+                    <label>Location</label>
+                    <input
+                      value={roomEdits[r.floor_number] ?? ''}
+                      onChange={(e) => setRoomEdits({ ...roomEdits, [r.floor_number]: e.target.value })}
+                    />
+                  </div>
+                  <button
+                    className="btn ghost"
+                    style={{ width: 'auto', padding: '8px 14px' }}
+                    disabled={savingRoomFloor === r.floor_number}
+                    onClick={() => saveRoomLocation(r.floor_number)}
+                  >
+                    {savingRoomFloor === r.floor_number ? 'Saving…' : 'Save'}
+                  </button>
+                  <button
+                    className="btn ghost"
+                    style={{ width: 'auto', padding: '8px 14px', color: 'var(--st-rejected)' }}
+                    onClick={() => removeWaitingRoom(r.floor_number)}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+              {!waitingRooms.length && <p className="save-note" style={{ marginBottom: 8 }}>No waiting rooms configured yet.</p>}
+              <form onSubmit={addWaitingRoom} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'end' }}>
+                <div className="field" style={{ maxWidth: 80 }}>
+                  <label>Floor</label>
+                  <input type="number" min="0" value={newRoomFloor} onChange={(e) => setNewRoomFloor(e.target.value)} placeholder="0" />
+                </div>
                 <div className="field" style={{ maxWidth: 200 }}>
                   <label>Location</label>
-                  <input
-                    value={waitingRoomForm.location}
-                    onChange={(e) => setWaitingRoomForm({ ...waitingRoomForm, location: e.target.value })}
-                    placeholder="Main Hall"
-                  />
+                  <input value={newRoomLocation} onChange={(e) => setNewRoomLocation(e.target.value)} placeholder="Main Hall" />
                 </div>
-                <div className="field" style={{ maxWidth: 100 }}>
-                  <label>Floor number</label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={waitingRoomForm.floor_number}
-                    onChange={(e) => setWaitingRoomForm({ ...waitingRoomForm, floor_number: e.target.value })}
-                    placeholder="0"
-                  />
-                </div>
-                <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} type="submit" disabled={savingWaitingRoom}>
-                  {savingWaitingRoom ? 'Saving…' : 'Save'}
+                <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} type="submit" disabled={addingRoom}>
+                  {addingRoom ? 'Adding…' : '+ Add floor'}
                 </button>
               </form>
             </div>

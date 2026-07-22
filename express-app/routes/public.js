@@ -346,18 +346,16 @@ router.get('/qr/schedule/:token', readTokenLimit, scheduleIpLimit, redisCache(15
   }));
 
   const feedbackRes = await pool.query('SELECT 1 FROM candidate_feedback WHERE candidate_id = $1', [cand.id]);
-  const fairRes = await pool.query(
-    'SELECT waiting_room_location, waiting_room_floor_number FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1'
-  );
+  const roomsRes = await pool.query('SELECT floor_number, location FROM waiting_rooms ORDER BY floor_number');
 
   res.json({
     name: cand.name,
     token: cand.token_no,
-    // Where the "waiting room" the ping ladder keeps referencing actually is
-    // — null until admin sets it (Gate tab), same as any other unset field.
-    waiting_room: fairRes.rows.length
-      ? { location: fairRes.rows[0].waiting_room_location, floor_number: fairRes.rows[0].waiting_room_floor_number }
-      : { location: null, floor_number: null },
+    // Every configured waiting room, not just one — the client picks whichever
+    // floor matches its most-urgent booking's company (each `slot.floor_number`
+    // above is that company's floor), since "the" waiting room isn't a single
+    // fair-wide place anymore (see db/schema.sql's waiting_rooms comment).
+    waiting_rooms: roomsRes.rows,
     // Top-level, not nested under batch: checked_in_at lives on candidates
     // directly and can be set (routes/batches.js check-in) before any batch
     // is ever assigned (batch_id starts NULL "before any batch existed

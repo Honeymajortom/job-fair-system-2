@@ -352,18 +352,20 @@ ALTER TABLE companies
   ADD COLUMN IF NOT EXISTS is_open BOOLEAN NOT NULL DEFAULT false;
 
 -- ---------------------------------------------------------------------------
--- Waiting room location: per new_architecture.md/new_architecture_uiux_spec.html,
--- the waiting room is deliberately fair-wide and general (one shared pool, not
--- per-company or per-floor), so this lives on fair_settings rather than on
--- companies. Surfaced on the public gate-status board and each candidate's
--- live position page (routes/public.js), so both know where "the waiting
--- room" the ping ladder keeps referring to actually physically is.
+-- Waiting rooms, per floor (superseded the single fair-wide waiting_room_
+-- location/floor_number on fair_settings the same day it shipped — floors
+-- turned out to matter after all: a candidate waiting for a company on
+-- Floor 2 shouldn't be told to sit in a Floor 1 waiting room). One row per
+-- floor that has a waiting room; a floor with no row just has no configured
+-- location yet (candidates still get told which floor, just not a specific
+-- room). floor_number is the natural key — there's exactly one waiting room
+-- per floor, matched against companies.floor_number.
 -- ---------------------------------------------------------------------------
 ALTER TABLE fair_settings
-  ADD COLUMN IF NOT EXISTS waiting_room_location VARCHAR,
-  ADD COLUMN IF NOT EXISTS waiting_room_floor_number INTEGER;
+  DROP COLUMN IF EXISTS waiting_room_location,
+  DROP COLUMN IF EXISTS waiting_room_floor_number;
 
-ALTER TABLE fair_settings
-  DROP CONSTRAINT IF EXISTS fair_settings_waiting_room_floor_nonnegative;
-ALTER TABLE fair_settings
-  ADD CONSTRAINT fair_settings_waiting_room_floor_nonnegative CHECK (waiting_room_floor_number >= 0);
+CREATE TABLE IF NOT EXISTS waiting_rooms (
+  floor_number  INTEGER PRIMARY KEY CHECK (floor_number >= 0),
+  location      VARCHAR NOT NULL
+);
