@@ -6,6 +6,11 @@ const emptyCompanyForm = {
   min_qualification: '', max_qualification: '', seats: '', interview_minutes: '',
 };
 
+const emptyEditForm = {
+  company_name: '', description: '', location: '', floor_number: '', field: '', job_type: '',
+  min_qualification: '', max_qualification: '', seats: '', interview_minutes: '',
+};
+
 const emptyParamForm = { parameter_name: '', display_order: '' };
 
 const emptyPostForm = {
@@ -19,6 +24,9 @@ export default function CompanyManagement() {
 
   const [expandedId, setExpandedId] = useState(null);
   const [detail, setDetail] = useState(null);
+  const [editForm, setEditForm] = useState(emptyEditForm);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [togglingOpen, setTogglingOpen] = useState(null);
 
   const [paramForm, setParamForm] = useState(emptyParamForm);
   const [postForm, setPostForm] = useState(emptyPostForm);
@@ -39,7 +47,15 @@ export default function CompanyManagement() {
   useEffect(() => { loadRoster(); }, []);
 
   function loadDetail(id) {
-    api.getCompany(id).then(setDetail).catch((err) => showToast(err.message, true));
+    api.getCompany(id).then((c) => {
+      setDetail(c);
+      setEditForm({
+        company_name: c.company_name, description: c.description || '', location: c.location || '',
+        floor_number: c.floor_number ?? '', field: c.field || '', job_type: c.job_type || '',
+        min_qualification: c.min_qualification || '', max_qualification: c.max_qualification || '',
+        seats: c.seats ?? '', interview_minutes: c.interview_minutes ?? '',
+      });
+    }).catch((err) => showToast(err.message, true));
   }
 
   function toggleExpand(id) {
@@ -87,6 +103,38 @@ export default function CompanyManagement() {
       loadRoster();
     } catch (err) {
       showToast(err.message, true);
+    }
+  }
+
+  async function saveEdit(e) {
+    e.preventDefault();
+    setSavingEdit(true);
+    try {
+      await api.updateCompany(expandedId, {
+        ...editForm,
+        floor_number: editForm.floor_number !== '' ? Number(editForm.floor_number) : undefined,
+        seats: editForm.seats !== '' ? Number(editForm.seats) : undefined,
+        interview_minutes: editForm.interview_minutes !== '' ? Number(editForm.interview_minutes) : undefined,
+      });
+      showToast('Company details saved');
+      loadDetail(expandedId);
+      loadRoster();
+    } catch (err) {
+      showToast(err.message, true);
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
+  async function toggleOpen(company) {
+    setTogglingOpen(company.id);
+    try {
+      await api.setCompanyOpenStatus(company.id, !company.is_open);
+      loadRoster();
+    } catch (err) {
+      showToast(err.message, true);
+    } finally {
+      setTogglingOpen(null);
     }
   }
 
@@ -188,7 +236,7 @@ export default function CompanyManagement() {
       <div className="table-wrap">
         <table className="data-table">
           <thead>
-            <tr><th>Name</th><th>Floor</th><th>Field</th><th>Qualification</th><th>Seats / Interview</th><th></th></tr>
+            <tr><th>Name</th><th>Floor</th><th>Field</th><th>Qualification</th><th>Seats / Interview</th><th>Desk</th><th></th></tr>
           </thead>
           <tbody>
             {roster && roster.map((c) => (
@@ -199,6 +247,17 @@ export default function CompanyManagement() {
                   <td>{c.field || '—'}</td>
                   <td>{[c.min_qualification, c.max_qualification].filter(Boolean).join(' – ') || '—'}</td>
                   <td className="mono">{c.seats ?? '—'} / {c.interview_minutes ?? '—'}m</td>
+                  <td>
+                    <button
+                      className={`checkin-status ${c.is_open ? 'in' : 'out'}`}
+                      style={{ cursor: 'pointer', marginTop: 0 }}
+                      disabled={togglingOpen === c.id}
+                      onClick={() => toggleOpen(c)}
+                      title="Toggle whether candidates can see and register for this company"
+                    >
+                      {togglingOpen === c.id ? '…' : c.is_open ? 'Open' : 'Closed'}
+                    </button>
+                  </td>
                   <td style={{ display: 'flex', gap: 6 }}>
                     <button className="btn ghost" style={{ width: 'auto', padding: '8px 12px' }} onClick={() => toggleExpand(c.id)}>
                       {expandedId === c.id ? 'Collapse' : 'Manage'}
@@ -214,9 +273,58 @@ export default function CompanyManagement() {
                 </tr>
                 {expandedId === c.id && (
                   <tr>
-                    <td colSpan={6}>
+                    <td colSpan={7}>
                       {!detail ? 'Loading…' : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 20, padding: '8px 0' }}>
+                          <div>
+                            <div className="sec-label" style={{ marginBottom: 8 }}>Company details</div>
+                            <form onSubmit={saveEdit} style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'end' }}>
+                              <div className="field" style={{ maxWidth: 200 }}>
+                                <label>Name</label>
+                                <input value={editForm.company_name} onChange={(e) => setEditForm({ ...editForm, company_name: e.target.value })} required />
+                              </div>
+                              <div className="field" style={{ maxWidth: 220 }}>
+                                <label>Description</label>
+                                <input value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} />
+                              </div>
+                              <div className="field" style={{ maxWidth: 160 }}>
+                                <label>Location</label>
+                                <input value={editForm.location} onChange={(e) => setEditForm({ ...editForm, location: e.target.value })} placeholder="Hall A Desk 5" />
+                              </div>
+                              <div className="field" style={{ maxWidth: 100 }}>
+                                <label>Floor number</label>
+                                <input type="number" min="0" value={editForm.floor_number} onChange={(e) => setEditForm({ ...editForm, floor_number: e.target.value })} placeholder="0" />
+                              </div>
+                              <div className="field" style={{ maxWidth: 140 }}>
+                                <label>Field</label>
+                                <input value={editForm.field} onChange={(e) => setEditForm({ ...editForm, field: e.target.value })} placeholder="IT Services" />
+                              </div>
+                              <div className="field" style={{ maxWidth: 140 }}>
+                                <label>Job type</label>
+                                <input value={editForm.job_type} onChange={(e) => setEditForm({ ...editForm, job_type: e.target.value })} />
+                              </div>
+                              <div className="field" style={{ maxWidth: 120 }}>
+                                <label>Min qualification</label>
+                                <input value={editForm.min_qualification} onChange={(e) => setEditForm({ ...editForm, min_qualification: e.target.value })} />
+                              </div>
+                              <div className="field" style={{ maxWidth: 120 }}>
+                                <label>Max qualification</label>
+                                <input value={editForm.max_qualification} onChange={(e) => setEditForm({ ...editForm, max_qualification: e.target.value })} />
+                              </div>
+                              <div className="field" style={{ maxWidth: 90 }}>
+                                <label>Seats</label>
+                                <input type="number" value={editForm.seats} onChange={(e) => setEditForm({ ...editForm, seats: e.target.value })} placeholder="1" />
+                              </div>
+                              <div className="field" style={{ maxWidth: 110 }}>
+                                <label>Interview min</label>
+                                <input type="number" value={editForm.interview_minutes} onChange={(e) => setEditForm({ ...editForm, interview_minutes: e.target.value })} placeholder="6" />
+                              </div>
+                              <button className="btn" style={{ width: 'auto', padding: '11px 18px' }} type="submit" disabled={savingEdit}>
+                                {savingEdit ? 'Saving…' : 'Save details'}
+                              </button>
+                            </form>
+                          </div>
+
                           <div>
                             <div className="sec-label" style={{ marginBottom: 8 }}>Rating parameters</div>
                             <table className="data-table">
@@ -341,7 +449,7 @@ export default function CompanyManagement() {
               </Fragment>
             ))}
             {roster && !roster.length && (
-              <tr><td colSpan={6} className="save-note">No companies yet.</td></tr>
+              <tr><td colSpan={7} className="save-note">No companies yet.</td></tr>
             )}
           </tbody>
         </table>

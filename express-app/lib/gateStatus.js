@@ -61,9 +61,16 @@ async function computeGateStatus() {
   }
   stagingCandidates.sort((a, b) => a.eta_minutes - b.eta_minutes);
 
+  const fairRes = await pool.query(
+    'SELECT waiting_room_location, waiting_room_floor_number FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1'
+  );
+  const fair = fairRes.rows[0];
+
   return {
     waiting_room: waitingRoom,
     waiting_room_max: WAITING_ROOM_MAX,
+    waiting_room_location: fair ? fair.waiting_room_location : null,
+    waiting_room_floor_number: fair ? fair.waiting_room_floor_number : null,
     staging: stagingCandidates.slice(0, STAGING_MAX).map((r) => r.token),
     staging_max: STAGING_MAX,
     staging_overflow: Math.max(0, stagingCandidates.length - STAGING_MAX),

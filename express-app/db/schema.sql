@@ -333,3 +333,37 @@ CREATE TABLE IF NOT EXISTS candidate_feedback (
   interested_in_sdc  BOOLEAN NOT NULL,
   submitted_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ---------------------------------------------------------------------------
+-- Desk-open signal: candidates should only ever see a company on the
+-- registration tiles (GET /qr/companies) if someone is actually going to be
+-- there to interview them — before this, a company was visible the instant it
+-- was created, with no way to represent "registered for the fair but not
+-- running desks yet/today." Defaults to false: a freshly created company (or
+-- one nobody has opened yet this morning) shows to nobody, matching "no
+-- companies open yet" rather than "every company, whether staffed or not."
+-- Admin toggles it from the Companies tab; company_hr toggles their own
+-- company's from the Desk tablet (PUT /companies/:id/open-status, company-
+-- scoped the same way requireCompanyScope already confines company_hr
+-- elsewhere). Existing companies will need a one-time manual open after this
+-- migration runs — see CLAUDE.md.
+-- ---------------------------------------------------------------------------
+ALTER TABLE companies
+  ADD COLUMN IF NOT EXISTS is_open BOOLEAN NOT NULL DEFAULT false;
+
+-- ---------------------------------------------------------------------------
+-- Waiting room location: per new_architecture.md/new_architecture_uiux_spec.html,
+-- the waiting room is deliberately fair-wide and general (one shared pool, not
+-- per-company or per-floor), so this lives on fair_settings rather than on
+-- companies. Surfaced on the public gate-status board and each candidate's
+-- live position page (routes/public.js), so both know where "the waiting
+-- room" the ping ladder keeps referring to actually physically is.
+-- ---------------------------------------------------------------------------
+ALTER TABLE fair_settings
+  ADD COLUMN IF NOT EXISTS waiting_room_location VARCHAR,
+  ADD COLUMN IF NOT EXISTS waiting_room_floor_number INTEGER;
+
+ALTER TABLE fair_settings
+  DROP CONSTRAINT IF EXISTS fair_settings_waiting_room_floor_nonnegative;
+ALTER TABLE fair_settings
+  ADD CONSTRAINT fair_settings_waiting_room_floor_nonnegative CHECK (waiting_room_floor_number >= 0);

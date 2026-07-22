@@ -3,6 +3,7 @@ const pool = require('../db');
 const asyncHandler = require('../asyncHandler');
 const { authenticateJWT } = require('../middleware/auth');
 const requireRole = require('../middleware/requireRole');
+const requireCompanyScope = require('../middleware/requireCompanyScope');
 
 const router = express.Router();
 
@@ -23,7 +24,7 @@ const DEFAULT_RATING_PARAMETERS = [
 router.get('/companies', authenticateJWT, asyncHandler(async (_req, res) => {
   const result = await pool.query(`
     SELECT
-      c.id, c.company_name, c.description, c.location, c.floor_number, c.field, c.job_type,
+      c.id, c.company_name, c.description, c.location, c.floor_number, c.is_open, c.field, c.job_type,
       c.min_qualification, c.max_qualification, c.max_queue_limit,
       COUNT(s.id) FILTER (WHERE s.id IS NOT NULL) AS total_slots,
       COUNT(s.id) FILTER (
@@ -111,20 +112,83 @@ router.post('/companies', authenticateJWT, requireRole('admin'), asyncHandler(as
   }
 }));
 
+// Admin: edit a company's own fields — the create form (POST /companies)
+// was the only way to set these; nothing let you fix a typo'd location or
+// add a floor number after the fact. Same partial-update (COALESCE) shape
+// as the postings PUT below, and the same interview_minutes/floor_number
+// validation as POST /companies, since this can change either one too.
+router.put('/companies/:id', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
+  const { company_name, description, location, floor_number, field, job_type, min_qualification, max_qualification, max_queue_limit, seats, interview_minutes, is_open } = req.body;
+
+  if (interview_minutes != null && !(Number.isInteger(interview_minutes) && interview_minutes > 0)) {
+    return res.status(400).json({ error: 'interview_minutes must be a positive integer' });
+  }
+  if (floor_number != null && !(Number.isInteger(floor_number) && floor_number >= 0)) {
+    return res.status(400).json({ error: 'floor_number must be a non-negative integer' });
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE companies SET
+         company_name = COALESCE($1, company_name),
+         description = COALESCE($2, description),
+         location = COALESCE($3, location),
+         floor_number = COALESCE($4, floor_number),
+         field = COALESCE($5, field),
+         job_type = COALESCE($6, job_type),
+         min_qualification = COALESCE($7, min_qualification),
+         max_qualification = COALESCE($8, max_qualification),
+         max_queue_limit = COALESCE($9, max_queue_limit),
+         seats = COALESCE($10, seats),
+         interview_minutes = COALESCE($11, interview_minutes),
+         is_open = COALESCE($12, is_open)
+       WHERE id = $13
+       RETURNING *`,
+      [company_name || null, description || null, location || null, floor_number != null ? floor_number : null,
+       field || null, job_type || null, min_qualification || null, max_qualification || null,
+       max_queue_limit || null, seats || null, interview_minutes || null,
+       typeof is_open === 'boolean' ? is_open : null, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Company not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'A company with that name already exists' });
+    if (err.code === '23514' && err.constraint === 'companies_floor_number_nonnegative') {
+      return res.status(400).json({ error: 'floor_number must be a non-negative integer' });
+    }
+    if (err.code === '23514') return res.status(400).json({ error: 'interview_minutes must be a positive integer' });
+    throw err;
+  }
+}));
+
+// Admin / Company HR (own company only): the quick "is this desk actually
+// running today" toggle — the thing candidates' GET /qr/companies checks.
+// Separate from the general edit above so company_hr, who can't touch any
+// other company field, can still flip their own without an admin in the loop.
+router.put('/companies/:id/open-status', authenticateJWT, requireRole('admin', 'company_hr'), requireCompanyScope((req) => req.params.id), asyncHandler(async (req, res) => {
+  const { is_open } = req.body;
+  if (typeof is_open !== 'boolean') return res.status(400).json({ error: 'is_open must be a boolean' });
+
+  const result = await pool.query('UPDATE companies SET is_open = $1 WHERE id = $2 RETURNING id, company_name, is_open', [is_open, req.params.id]);
+  if (!result.rows.length) return res.status(404).json({ error: 'Company not found' });
+  res.json(result.rows[0]);
+}));
+
 // Admin: delete a company — hard delete (companies aren't fair-scoped or
-// soft-deleted like candidates are). FK RESTRICT on interview_slots,
-// candidate_company_status, and users.company_id is the real guard here: a
-// company with any booked candidates, slots, or an assigned company_hr
-// account can't be deleted out from under live data — this just turns that
-// constraint violation into a clean 409 instead of a raw DB error. rating_
-// parameters/company_posts are ON DELETE CASCADE, so those go with it.
+// soft-deleted like candidates are). FK RESTRICT on interview_slots and
+// candidate_company_status is the real guard here — Postgres raises 23001
+// (restrict_violation) for those explicit ON DELETE RESTRICT columns, not
+// 23503 (only users.company_id, which has no ON DELETE clause, would raise
+// that) — so both codes need catching, or a company with real bookings/slots
+// crashes this into a raw 500 instead of a clean 409. rating_parameters/
+// company_posts are ON DELETE CASCADE, so those go with it.
 router.delete('/companies/:id', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
   try {
     const result = await pool.query('DELETE FROM companies WHERE id = $1 RETURNING id, company_name', [req.params.id]);
     if (!result.rows.length) return res.status(404).json({ error: 'Company not found' });
     res.json({ ok: true, id: result.rows[0].id });
   } catch (err) {
-    if (err.code === '23503') {
+    if (err.code === '23503' || err.code === '23001') {
       return res.status(409).json({ error: 'Cannot delete a company with existing candidates, interview slots, or assigned staff — remove those first' });
     }
     throw err;

@@ -11,6 +11,26 @@ const POLL_MS = 5000; // server caches the route for 15s, so most polls are cach
 const QR_ELIGIBLE_RUNGS = ['gate', 'staging', 'desk_call'];
 const DONE_STATUSES = ['Selected', 'Rejected', 'Shortlisted', 'Hold', 'No_Show']; // mirrors express-app/lib/pingLadder.js
 
+// Mirrors lib/gateStatus.js's RUNG_RANK (lower = more urgent), extended with
+// in_interview/done — gateStatus.js never needs those two since it excludes
+// settled bookings up front and doesn't special-case interview-in-progress,
+// but a candidate's own multi-company view has to rank *everything* they're
+// tracking to find the single most urgent thing across all of them.
+const RUNG_RANK = { in_interview: -1, desk_call: 0, staging: 1, gate: 2, warm: 3, far: 4, done: 5 };
+
+// A candidate tracking 3 companies is physically in one place — this reduces
+// their bookings to the single most-urgent rung, the same way gateStatus.js
+// does fair-wide, so the top-of-page banner can tell them "wait" or "go"
+// without them cross-referencing 3 separate cards themselves.
+function mostUrgentRung(slots) {
+  let best = null;
+  for (const s of slots) {
+    if (s.rung === undefined) continue; // waitlisted — never entered the live queue
+    if (best === null || RUNG_RANK[s.rung] < RUNG_RANK[best]) best = s.rung;
+  }
+  return best;
+}
+
 // Card-body copy for a settled outcome (rung 'done') — a bare "position 0"
 // or generic "DONE" doesn't tell the candidate whether that was good news.
 const OUTCOME_NOTES = {
@@ -36,6 +56,35 @@ function trackWidth(position) {
 function describeLocation(slot) {
   const floor = slot.floor_number != null ? `Floor ${slot.floor_number}` : null;
   return [floor, slot.location].filter(Boolean).join(' · ') || null;
+}
+
+// Tells the candidate whether to be in the waiting room right now, or that
+// they've earned their way past it — the direct answer to "should I be
+// waiting in the room or not," derived from whichever booking is most urgent
+// across all of them. desk_call/in_interview aren't handled here: PosCard's
+// own per-card message ("go to the desk now" / "interview in progress") is
+// already more specific than a generic banner would be.
+function WaitingDirective({ slots, waitingRoom }) {
+  const rung = mostUrgentRung(slots);
+  if (rung === 'far' || rung === 'warm' || rung === 'gate') {
+    const loc = [
+      waitingRoom && waitingRoom.floor_number != null ? `Floor ${waitingRoom.floor_number}` : null,
+      waitingRoom && waitingRoom.location,
+    ].filter(Boolean).join(' · ');
+    return (
+      <p className="desk-call-note calm" style={{ marginTop: 0, marginBottom: 14 }}>
+        🪑 Please wait in the Waiting Room{loc ? ` — ${loc}` : ''}.
+      </p>
+    );
+  }
+  if (rung === 'staging') {
+    return (
+      <p className="desk-call-note calm" style={{ marginTop: 0, marginBottom: 14 }}>
+        🚶 You're almost up — stay near the desks, no need to wait in the room anymore.
+      </p>
+    );
+  }
+  return null;
 }
 
 function PosCard({ slot }) {
@@ -282,6 +331,7 @@ export default function LivePosition() {
           </div>
         ) : (
           <>
+            <WaitingDirective slots={data.slots} waitingRoom={data.waiting_room} />
             <div className="ladder">
               {data.slots.map((slot, i) => <PosCard key={`${slot.company}-${i}`} slot={slot} />)}
             </div>

@@ -60,6 +60,8 @@ export const api = {
   getCompanies: () => request('/companies'),
   getCompany: (id) => request(`/companies/${id}`),
   createCompany: (payload) => request('/companies', { method: 'POST', body: JSON.stringify(payload) }),
+  updateCompany: (id, payload) => request(`/companies/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  setCompanyOpenStatus: (id, is_open) => request(`/companies/${id}/open-status`, { method: 'PUT', body: JSON.stringify({ is_open }) }),
   deleteCompany: (id) => request(`/companies/${id}`, { method: 'DELETE' }),
   addRatingParameter: (id, payload) => request(`/companies/${id}/rating-parameters`, { method: 'POST', body: JSON.stringify(payload) }),
   deleteRatingParameter: (id, paramId) => request(`/companies/${id}/rating-parameters/${paramId}`, { method: 'DELETE' }),
@@ -88,6 +90,7 @@ export const api = {
   // fair config (admin)
   getFairSettings: () => request('/fair-settings'),
   createFairSettings: (payload) => request('/fair-settings', { method: 'POST', body: JSON.stringify(payload) }),
+  updateFairSettings: (id, payload) => request(`/fair-settings/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   generateBatches: (payload) => request('/batches/generate', { method: 'POST', body: JSON.stringify(payload) }),
 
   // users (admin)

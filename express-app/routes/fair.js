@@ -34,24 +34,39 @@ router.post('/fair-settings', authenticateJWT, requireRole('admin'), asyncHandle
   }
 }));
 
-// Partial update — also how the is_active soft-delete guard is toggled
+// Partial update — also how the is_active soft-delete guard is toggled, and
+// (per new_architecture.md) the one place the fair-wide waiting room's
+// physical location/floor gets set — Gate tab, admin only.
 router.put('/fair-settings/:id', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
-  const { fair_name, max_companies_per_candidate, slot_duration_minutes, batch_size, batch_interval_minutes, is_active } = req.body;
+  const { fair_name, max_companies_per_candidate, slot_duration_minutes, batch_size, batch_interval_minutes, is_active, waiting_room_location, waiting_room_floor_number } = req.body;
 
-  const result = await pool.query(
-    `UPDATE fair_settings SET
-       fair_name = COALESCE($1, fair_name),
-       max_companies_per_candidate = COALESCE($2, max_companies_per_candidate),
-       slot_duration_minutes = COALESCE($3, slot_duration_minutes),
-       batch_size = COALESCE($4, batch_size),
-       batch_interval_minutes = COALESCE($5, batch_interval_minutes),
-       is_active = COALESCE($6, is_active)
-     WHERE id = $7
-     RETURNING *`,
-    [fair_name || null, max_companies_per_candidate || null, slot_duration_minutes || null, batch_size || null, batch_interval_minutes || null, is_active === undefined ? null : is_active, req.params.id]
-  );
-  if (!result.rows.length) return res.status(404).json({ error: 'Fair settings not found' });
-  res.json(result.rows[0]);
+  if (waiting_room_floor_number != null && !(Number.isInteger(waiting_room_floor_number) && waiting_room_floor_number >= 0)) {
+    return res.status(400).json({ error: 'waiting_room_floor_number must be a non-negative integer' });
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE fair_settings SET
+         fair_name = COALESCE($1, fair_name),
+         max_companies_per_candidate = COALESCE($2, max_companies_per_candidate),
+         slot_duration_minutes = COALESCE($3, slot_duration_minutes),
+         batch_size = COALESCE($4, batch_size),
+         batch_interval_minutes = COALESCE($5, batch_interval_minutes),
+         is_active = COALESCE($6, is_active),
+         waiting_room_location = COALESCE($7, waiting_room_location),
+         waiting_room_floor_number = COALESCE($8, waiting_room_floor_number)
+       WHERE id = $9
+       RETURNING *`,
+      [fair_name || null, max_companies_per_candidate || null, slot_duration_minutes || null, batch_size || null, batch_interval_minutes || null, is_active === undefined ? null : is_active, waiting_room_location || null, waiting_room_floor_number != null ? waiting_room_floor_number : null, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Fair settings not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23514' && err.constraint === 'fair_settings_waiting_room_floor_nonnegative') {
+      return res.status(400).json({ error: 'waiting_room_floor_number must be a non-negative integer' });
+    }
+    throw err;
+  }
 }));
 
 // Admin / Registration Staff: auto-generate arrival waves from fair_settings (batch_size × batch_interval_minutes)

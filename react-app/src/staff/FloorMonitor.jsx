@@ -45,43 +45,57 @@ export default function FloorMonitor() {
             <div className="stat hot"><div className="n">{stats.needs_attention}</div><div className="l">Needs attention</div></div>
           </div>
 
-          <div className="sec-label" style={{ margin: '18px 0 10px' }}>People on hand, per company</div>
-          <div className="buffer-list">
-            {stats.companies.map((c) => {
-              // Fill and target tick share one scale (the larger of the two,
-              // plus headroom) so "fill reaches the tick" reads as "at target"
-              // regardless of whether on_hand or target happens to be bigger.
-              const scaleMax = Math.max(c.on_hand, c.target, 1) * 1.15;
-              const fillPct = Math.round((c.on_hand / scaleMax) * 100);
-              const targetPct = Math.round((c.target / scaleMax) * 100);
-              return (
-                <div key={c.id} className={`buf-row${c.low ? ' low' : ''}`}>
-                  <div className="co">{c.name}<small>{c.interviewers} interviewer{c.interviewers === 1 ? '' : 's'}</small></div>
-                  <div className="buf-track">
-                    <span className="buf-fill" style={{ width: `${fillPct}%` }} />
-                    <span className="buf-target" style={{ left: `${targetPct}%` }} />
-                  </div>
-                  <div className="val">{c.on_hand}/{c.target}</div>
-                </div>
-              );
-            })}
-            {!stats.companies.length && <p className="save-note">No companies yet.</p>}
-          </div>
+          {/* Three independently-scrolling panels side by side instead of
+              three full-width lists stacked and growing forever — with many
+              companies, the old layout meant scrolling past "people on hand"
+              and "now serving" just to reach the at-risk alerts. Sorting each
+              list so the thing that needs attention is at the top means the
+              urgent case is visible without any scrolling at all. */}
+          <div className="floor-grid">
+            <div className="floor-panel">
+              <div className="sec-label">People on hand, per company</div>
+              <div className="buffer-list">
+                {[...stats.companies].sort((a, b) => (a.low === b.low ? 0 : a.low ? -1 : 1)).map((c) => {
+                  // Fill and target tick share one scale (the larger of the
+                  // two, plus headroom) so "fill reaches the tick" reads as
+                  // "at target" regardless of which happens to be bigger.
+                  const scaleMax = Math.max(c.on_hand, c.target, 1) * 1.15;
+                  const fillPct = Math.round((c.on_hand / scaleMax) * 100);
+                  const targetPct = Math.round((c.target / scaleMax) * 100);
+                  return (
+                    <div key={c.id} className={`buf-row${c.low ? ' low' : ''}`}>
+                      <div className="co">{c.name}<small>{c.interviewers} interviewer{c.interviewers === 1 ? '' : 's'}</small></div>
+                      <div className="buf-track">
+                        <span className="buf-fill" style={{ width: `${fillPct}%` }} />
+                        <span className="buf-target" style={{ left: `${targetPct}%` }} />
+                      </div>
+                      <div className="val">{c.on_hand}/{c.target}</div>
+                    </div>
+                  );
+                })}
+                {!stats.companies.length && <p className="save-note">No companies yet.</p>}
+              </div>
+            </div>
 
-          <div className="sec-label" style={{ margin: '18px 0 10px' }}>Now serving</div>
-          <div className="now-board">
-            {stats.now_serving.map((r) => (
-              <div key={r.token} className="now-tok"><b>{r.token}</b><span>→ {r.company_name} · Desk {r.desk_id}</span></div>
-            ))}
-            {!stats.now_serving.length && <p className="save-note">Nobody at a desk right now.</p>}
-          </div>
+            <div className="floor-panel">
+              <div className="sec-label">Now serving</div>
+              <div className="now-board">
+                {stats.now_serving.map((r) => (
+                  <div key={r.token} className="now-tok"><b>{r.token}</b><span>→ {r.company_name} · Desk {r.desk_id}</span></div>
+                ))}
+                {!stats.now_serving.length && <p className="save-note">Nobody at a desk right now.</p>}
+              </div>
+            </div>
 
-          <div className="sec-label" style={{ margin: '18px 0 10px' }}>Won't finish in time — rechecked every 30 min</div>
-          <div className="alert-list">
-            {stats.alerts.map((a) => (
-              <div key={a.company_id} className="alert"><b>{a.company_name}</b> — {alertMessage(a)}</div>
-            ))}
-            {!stats.alerts.length && <p className="save-note">No companies at risk right now.</p>}
+            <div className="floor-panel">
+              <div className="sec-label">Won't finish in time — rechecked every 30 min</div>
+              <div className="alert-list">
+                {[...stats.alerts].sort((a, b) => b.remaining - a.remaining).map((a) => (
+                  <div key={a.company_id} className="alert"><b>{a.company_name}</b> — {alertMessage(a)}</div>
+                ))}
+                {!stats.alerts.length && <p className="save-note">No companies at risk right now.</p>}
+              </div>
+            </div>
           </div>
         </>
       )}

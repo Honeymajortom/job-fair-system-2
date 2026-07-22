@@ -35,6 +35,8 @@ export default function DeskTablet() {
   const { joinDesk } = useSocket();
 
   const [ratingParameters, setRatingParameters] = useState([]);
+  const [isOpen, setIsOpen] = useState(null); // null while unknown — company_hr's own desk-open status
+  const [togglingOpen, setTogglingOpen] = useState(false);
   const [incoming, setIncoming] = useState(null); // { candidateId, ccsId, expiresAt, interviewStartedAt, details }
   const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -44,12 +46,30 @@ export default function DeskTablet() {
   }, [companyId, deskId, joinDesk]);
 
   useEffect(() => {
-    api.getCompany(companyId).then((c) => setRatingParameters(c.rating_parameters || [])).catch(() => {});
+    api.getCompany(companyId).then((c) => {
+      setRatingParameters(c.rating_parameters || []);
+      setIsOpen(c.is_open);
+    }).catch(() => {});
   }, [companyId]);
 
   function showToast(text, isErr) {
     setToast({ text, isErr });
     setTimeout(() => setToast(null), 2500);
+  }
+
+  // The signal candidates' GET /qr/companies filters on — this is where
+  // whoever's actually staffing the desk flips it, rather than needing an
+  // admin to do it from the Companies tab on their behalf.
+  async function toggleDeskOpen() {
+    setTogglingOpen(true);
+    try {
+      const res = await api.setCompanyOpenStatus(companyId, !isOpen);
+      setIsOpen(res.is_open);
+    } catch (err) {
+      showToast(err.message, true);
+    } finally {
+      setTogglingOpen(false);
+    }
   }
 
   async function applyIncoming({ candidateId, ccsId, token, expiresAt, sameFloor = true, interviewStartedAt = null }) {
@@ -146,7 +166,20 @@ export default function DeskTablet() {
 
   return (
     <div className="s-body">
-      <h2 className="screen-title">Desk {deskId}</h2>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+        <h2 className="screen-title">Desk {deskId}</h2>
+        {isOpen !== null && (
+          <button
+            className={`checkin-status ${isOpen ? 'in' : 'out'}`}
+            style={{ cursor: 'pointer', marginTop: 0 }}
+            disabled={togglingOpen}
+            onClick={toggleDeskOpen}
+            title="Whether candidates can currently see and register for this company"
+          >
+            {togglingOpen ? '…' : isOpen ? 'Desk open — candidates can register' : 'Desk closed — hidden from candidates'}
+          </button>
+        )}
+      </div>
       <div className="tablet-grid">
         <AnimatePresence mode="wait">
           {incoming ? (

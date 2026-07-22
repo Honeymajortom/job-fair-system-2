@@ -51,6 +51,9 @@ export default function GateCheckIn() {
   const [showBatchGen, setShowBatchGen] = useState(false);
   const [batchGenCount, setBatchGenCount] = useState('');
   const [generatingBatch, setGeneratingBatch] = useState(false);
+  const [fairSettingsId, setFairSettingsId] = useState(null);
+  const [waitingRoomForm, setWaitingRoomForm] = useState({ location: '', floor_number: '' });
+  const [savingWaitingRoom, setSavingWaitingRoom] = useState(false);
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -80,6 +83,23 @@ export default function GateCheckIn() {
   }
 
   useEffect(() => { loadBatches(); }, []);
+
+  // Admin only, matching PUT /fair-settings/:id's role — the waiting room is
+  // fair-wide config (new_architecture.md), not a per-batch or per-company
+  // thing, so it's read once here rather than re-derived from loadBatches.
+  useEffect(() => {
+    if (user.role !== 'admin') return;
+    api.getFairSettings().then((settings) => {
+      const active = settings.find((s) => s.is_active) || settings[0];
+      if (!active) return;
+      setFairSettingsId(active.id);
+      setWaitingRoomForm({
+        location: active.waiting_room_location || '',
+        floor_number: active.waiting_room_floor_number ?? '',
+      });
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => stopCamera, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -202,6 +222,26 @@ export default function GateCheckIn() {
     }
   }
 
+  // Admin: the physical waiting-room location/floor candidates get told to
+  // hold in (LivePosition.jsx) and GateBoard shows — fair-wide per
+  // new_architecture.md, so it lives on fair_settings, not on a company.
+  async function saveWaitingRoom(e) {
+    e.preventDefault();
+    if (!fairSettingsId) { showToast('No fair configured yet', true); return; }
+    setSavingWaitingRoom(true);
+    try {
+      await api.updateFairSettings(fairSettingsId, {
+        waiting_room_location: waitingRoomForm.location || undefined,
+        waiting_room_floor_number: waitingRoomForm.floor_number !== '' ? Number(waitingRoomForm.floor_number) : undefined,
+      });
+      showToast('Waiting room location saved');
+    } catch (err) {
+      showToast(err.message, true);
+    } finally {
+      setSavingWaitingRoom(false);
+    }
+  }
+
   const selectedBatch = batches && batches.find((b) => String(b.id) === String(batchId));
   const exitMode = mode === 'exit';
   // Gate operations (batch generation/activation, entrance QR mint) are
@@ -284,6 +324,38 @@ export default function GateCheckIn() {
                   </p>
                 </div>
               )}
+            </div>
+          )}
+
+          {user.role === 'admin' && (
+            <div className="field" style={{ marginBottom: 16 }}>
+              <div className="sec-label" style={{ marginBottom: 8 }}>Waiting room location</div>
+              <p className="save-note" style={{ marginTop: 0, marginBottom: 8 }}>
+                Shown to every candidate not yet called and on the entrance board — one shared room, not per company.
+              </p>
+              <form onSubmit={saveWaitingRoom} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'end' }}>
+                <div className="field" style={{ maxWidth: 200 }}>
+                  <label>Location</label>
+                  <input
+                    value={waitingRoomForm.location}
+                    onChange={(e) => setWaitingRoomForm({ ...waitingRoomForm, location: e.target.value })}
+                    placeholder="Main Hall"
+                  />
+                </div>
+                <div className="field" style={{ maxWidth: 100 }}>
+                  <label>Floor number</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={waitingRoomForm.floor_number}
+                    onChange={(e) => setWaitingRoomForm({ ...waitingRoomForm, floor_number: e.target.value })}
+                    placeholder="0"
+                  />
+                </div>
+                <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} type="submit" disabled={savingWaitingRoom}>
+                  {savingWaitingRoom ? 'Saving…' : 'Save'}
+                </button>
+              </form>
             </div>
           )}
         </>

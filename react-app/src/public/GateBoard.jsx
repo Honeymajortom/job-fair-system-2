@@ -32,6 +32,11 @@ export default function GateBoard() {
           <div className="gate-card">
             <div className="n">{status.waiting_room}<span style={{ fontSize: 16, color: 'var(--ink-60)' }}> / {status.waiting_room_max}</span></div>
             <div className="l">Waiting room</div>
+            {(status.waiting_room_location || status.waiting_room_floor_number != null) && (
+              <div className="save-note" style={{ marginTop: 6 }}>
+                📍 {[status.waiting_room_floor_number != null ? `Floor ${status.waiting_room_floor_number}` : null, status.waiting_room_location].filter(Boolean).join(' · ')}
+              </div>
+            )}
           </div>
           <div className="gate-card">
             <div className="l" style={{ marginBottom: 6 }}>Staging queue (max {status.staging_max})</div>

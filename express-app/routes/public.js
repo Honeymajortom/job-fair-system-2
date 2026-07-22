@@ -140,6 +140,11 @@ router.get('/qr/token', authenticateJWT, requireRole('admin', 'registration_staf
 
 // Public: company tiles — cache TTL 60s (v3.0 §7). Also mints the L2 device
 // cookie, since this is the first request the registration page makes.
+// is_open filters out companies nobody's actually staffing yet/today — a
+// candidate shouldn't be able to book a desk that isn't running (see
+// schema.sql's is_open comment). Companies a candidate already booked keep
+// showing on their own schedule page (GET /qr/schedule/:token) regardless —
+// this filter only applies to the initial pick-a-company step.
 router.get('/qr/companies', readIpLimit, ensureDeviceCookie, redisCache(60), asyncHandler(async (_req, res) => {
   const result = await pool.query(
     `SELECT c.id, c.company_name, c.description, c.location, c.floor_number, c.field, c.job_type,
@@ -151,6 +156,7 @@ router.get('/qr/companies', readIpLimit, ensureDeviceCookie, redisCache(60), asy
        SELECT COUNT(*)::int AS taken FROM candidate_company_status ccs
        WHERE ccs.slot_id = s.id AND ccs.deleted_at IS NULL
      ) t ON true
+     WHERE c.is_open = true
      GROUP BY c.id
      ORDER BY c.company_name`
   );
@@ -340,10 +346,18 @@ router.get('/qr/schedule/:token', readTokenLimit, scheduleIpLimit, redisCache(15
   }));
 
   const feedbackRes = await pool.query('SELECT 1 FROM candidate_feedback WHERE candidate_id = $1', [cand.id]);
+  const fairRes = await pool.query(
+    'SELECT waiting_room_location, waiting_room_floor_number FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1'
+  );
 
   res.json({
     name: cand.name,
     token: cand.token_no,
+    // Where the "waiting room" the ping ladder keeps referencing actually is
+    // — null until admin sets it (Gate tab), same as any other unset field.
+    waiting_room: fairRes.rows.length
+      ? { location: fairRes.rows[0].waiting_room_location, floor_number: fairRes.rows[0].waiting_room_floor_number }
+      : { location: null, floor_number: null },
     // Top-level, not nested under batch: checked_in_at lives on candidates
     // directly and can be set (routes/batches.js check-in) before any batch
     // is ever assigned (batch_id starts NULL "before any batch existed
