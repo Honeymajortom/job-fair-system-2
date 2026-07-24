@@ -8,7 +8,7 @@ const redisCache = require('../middleware/redisCache');
 const { emit } = require('../lib/events');
 const { verifyQr } = require('../lib/checkinSig');
 const dispatcher = require('../lib/queueDispatcher');
-const { clearNoShowTimer } = require('../lib/noShowTimer');
+const { clearNoShowTimer, pauseNoShowTimer, resumeNoShowTimer } = require('../lib/noShowTimer');
 const store = require('../lib/queueStore');
 const redis = require('../lib/redisClient');
 const { computeFloorStats } = require('../lib/floorStats');
@@ -207,9 +207,44 @@ router.post('/queue/confirm-arrival', authenticateJWT, requireRole('admin', 'flo
   res.json({ ok: true, timer_cleared: cleared, interview_started_at: ccsRes.rows[0].interview_started_at });
 }));
 
-// Admin / Floor Manager: mark a no-show (flow D) — frees the desk; the slot
-// can then be given to someone else via PUT /slots/:id/reassign.
-router.post('/no-show', authenticateJWT, requireRole('admin', 'floor_manager'), asyncHandler(async (req, res) => {
+// Admin / Floor Manager / Company HR: freeze the arrival (no-show) countdown
+// — e.g. the previous interview overran and it isn't fair to count that
+// against the next candidate's 90s/180s window. Removes the underlying
+// BullMQ job entirely (rather than just hiding it client-side) so the
+// candidate genuinely can't be auto-no-showed while paused; the remaining
+// time is handed back to the client and re-armed verbatim on resume.
+router.post('/queue/pause-arrival', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), requireCompanyScope((req) => req.body.company_id), asyncHandler(async (req, res) => {
+  const { token, company_id } = req.body;
+  if (!token || !company_id) return res.status(400).json({ error: 'token and company_id are required' });
+  const candRes = await pool.query('SELECT id FROM candidates WHERE token_no = $1 AND deleted_at IS NULL', [token]);
+  if (!candRes.rows.length) return res.status(404).json({ error: 'Candidate not found' });
+  const remaining = await pauseNoShowTimer(candRes.rows[0].id, Number(company_id));
+  if (remaining == null) return res.status(409).json({ error: 'No active arrival timer to pause' });
+  res.json({ ok: true, remaining_ms: remaining });
+}));
+
+router.post('/queue/resume-arrival', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), requireCompanyScope((req) => req.body.company_id), asyncHandler(async (req, res) => {
+  const { token, company_id, same_floor } = req.body;
+  if (!token || !company_id) return res.status(400).json({ error: 'token and company_id are required' });
+  const candRes = await pool.query('SELECT id FROM candidates WHERE token_no = $1 AND deleted_at IS NULL', [token]);
+  if (!candRes.rows.length) return res.status(404).json({ error: 'Candidate not found' });
+  const candidateId = candRes.rows[0].id;
+  const ccsRes = await pool.query(
+    `SELECT id FROM candidate_company_status WHERE candidate_id = $1 AND company_id = $2 AND status = 'Dispatched' AND deleted_at IS NULL`,
+    [candidateId, company_id]
+  );
+  const deskId = await store.getLockDesk(candidateId);
+  const remaining = await resumeNoShowTimer({
+    candidateId, companyId: Number(company_id), deskId, ccsId: ccsRes.rows[0]?.id, sameFloor: same_floor !== false,
+  });
+  if (remaining == null) return res.status(409).json({ error: 'Timer is not paused' });
+  res.json({ ok: true, expires_at: new Date(Date.now() + remaining).toISOString() });
+}));
+
+// Admin / Floor Manager / Company HR: mark a no-show — frees the desk. Also
+// the Desk tablet's "Next" button (skip a candidate who hasn't shown up yet
+// rather than waiting out the full 90s/180s arrival timer).
+router.post('/no-show', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), requireCompanyScope((req) => req.body.company_id), asyncHandler(async (req, res) => {
   const { token, company_id } = req.body;
   if (!token || !company_id) return res.status(400).json({ error: 'token and company_id are required' });
 

@@ -1,6 +1,7 @@
 const pool = require('../db');
 const { signToken } = require('./checkinSig');
 const queueStore = require('./queueStore');
+const { getOrCreateAvailableBatch } = require('./batchAssignment');
 const { normalizeMobile, isValidMobile } = require('./mobile');
 const { emit } = require('./events');
 const { DONE_STATUSES } = require('./pingLadder');
@@ -92,40 +93,18 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
     tokenNo = `A-${tokenRes.rows[0].n}`;
 
     // Gate 1 (batch capacity): earliest non-closed batch of the active fair with
-    // seats left. Rows are locked FOR UPDATE first, then occupancy is counted in
-    // a separate statement (fresh snapshot) so two concurrent registrations
-    // can't both take the last seat. Capacity stays fixed (the "18/25" display);
-    // occupancy is the count of live candidates assigned to the batch.
-    // No batches generated yet → batch_id stays NULL and Gate 2 doesn't floor
-    // the slots (prototype-friendly: stage 1/2 curl flows keep working).
-    const batchesRes = await client.query(
-      `SELECT b.id, b.arrival_time, b.capacity
-       FROM fair_batches b
-       JOIN fair_settings fs ON fs.fair_date = b.fair_date AND fs.is_active = true
-       WHERE b.status != 'closed'
-       ORDER BY b.arrival_time ASC
-       FOR UPDATE OF b`
+    // seats left, auto-creating the next one on the fly if every existing batch
+    // is full or closed — staff never have to press "Generate batch" for
+    // registration to keep working (see lib/batchAssignment.js). No active fair
+    // configured at all → batch stays null and Gate 2 doesn't floor the slots
+    // (prototype-friendly: stage 1/2 curl flows keep working).
+    const fairRes = await client.query(
+      `SELECT to_char(fair_date, 'YYYY-MM-DD') AS fair_date, fair_hours, batch_size, batch_interval_minutes
+       FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1`
     );
-    for (const b of batchesRes.rows) {
-      const occ = await client.query(
-        'SELECT COUNT(*)::int AS n FROM candidates WHERE batch_id = $1 AND deleted_at IS NULL',
-        [b.id]
-      );
-      if (occ.rows[0].n < b.capacity) {
-        batch = b;
-        break;
-      }
-    }
-    if (!batch) {
-      const anyBatch = await client.query(
-        `SELECT 1 FROM fair_batches b
-         JOIN fair_settings fs ON fs.fair_date = b.fair_date AND fs.is_active = true
-         LIMIT 1`
-      );
-      if (anyBatch.rows.length) {
-        await client.query('ROLLBACK');
-        return { status: 409, body: { error: 'All arrival batches are full or closed' } };
-      }
+    const fair = fairRes.rows[0] || null;
+    if (fair) {
+      batch = await getOrCreateAvailableBatch(client, fair);
     }
 
     const candidateRes = await client.query(
@@ -146,10 +125,7 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
     // fixed ascending-id order, before any booking work below — so two
     // candidates registering for the same two companies in opposite
     // preference order can never deadlock waiting on each other's locks.
-    const fairRes = await client.query(
-      `SELECT fair_hours FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1`
-    );
-    const fairHours = fairRes.rows.length ? Number(fairRes.rows[0].fair_hours) : 8;
+    const fairHours = fair ? Number(fair.fair_hours) : 8;
 
     const lockOrder = [...new Set(company_ids.map(Number))].sort((a, b) => a - b);
     for (const cid of lockOrder) {

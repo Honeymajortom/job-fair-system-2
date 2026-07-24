@@ -12,15 +12,20 @@ function format(ms) {
 // Pure client-side ticker against a server-provided deadline (expiresAt) —
 // the actual no-show reversion is server-authoritative (workers/noShowWorker.js);
 // this ring never fires anything itself, it just visualizes the same deadline.
-export default function CountdownRing({ expiresAt, totalMs }) {
+// While paused (Company HR's Pause button, DeskTablet.jsx), the underlying
+// BullMQ job has been removed server-side (lib/noShowTimer.js) — the ring
+// just freezes on the remaining time it was told about at pause time instead
+// of ticking down against a deadline that no longer means anything.
+export default function CountdownRing({ expiresAt, totalMs, paused, pausedRemainingMs }) {
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
+    if (paused) return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [paused]);
 
-  if (!expiresAt) {
+  if (!expiresAt && !paused) {
     return (
       <div className="ring-wrap">
         <div className="ring"><div className="face"><span className="mm-ss">--:--</span></div></div>
@@ -29,16 +34,16 @@ export default function CountdownRing({ expiresAt, totalMs }) {
     );
   }
 
-  const remaining = new Date(expiresAt).getTime() - now;
+  const remaining = paused ? pausedRemainingMs : new Date(expiresAt).getTime() - now;
   const pct = Math.max(0, Math.min(100, (remaining / totalMs) * 100));
-  const warn = remaining <= WARN_THRESHOLD_MS;
+  const warn = !paused && remaining <= WARN_THRESHOLD_MS;
 
   return (
     <div className="ring-wrap">
-      <div className={`ring${warn ? ' warn' : ''}`} style={{ '--pct': pct }}>
+      <div className={`ring${warn ? ' warn' : ''}${paused ? ' paused' : ''}`} style={{ '--pct': pct }}>
         <div className="face"><span className="mm-ss">{format(remaining)}</span></div>
       </div>
-      <div className="ring-label">Time to arrive</div>
+      <div className="ring-label">{paused ? 'Paused' : 'Time to arrive'}</div>
     </div>
   );
 }

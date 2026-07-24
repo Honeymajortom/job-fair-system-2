@@ -54,4 +54,33 @@ async function clearNoShowTimer(candidateId, companyId) {
   }
 }
 
-module.exports = { noShowQueue, armNoShowTimer, clearNoShowTimer, SAME_FLOOR_MS, CROSS_FLOOR_MS };
+const pausedKey = (candidateId, companyId) => `noshow:paused:${candidateId}:${companyId}`;
+
+// Company HR's Pause button (DeskTablet.jsx) — removes the armed job and
+// hands back how much time was left, rather than just leaving it running
+// underneath a frozen-looking UI. Stored in Redis (not Postgres) since it's
+// as ephemeral as the timer job itself; a generous 1h TTL is just a safety
+// net against a paused-and-forgotten key outliving the fair day.
+async function pauseNoShowTimer(candidateId, companyId) {
+  const job = await noShowQueue.getJob(jobId(candidateId, companyId));
+  if (!job) return null;
+  const remaining = Math.max(1000, job.timestamp + job.opts.delay - Date.now());
+  await job.remove();
+  await connection.set(pausedKey(candidateId, companyId), String(remaining), 'EX', 3600);
+  return remaining;
+}
+
+// Re-arms with exactly the remaining time captured at pause — the candidate
+// doesn't lose or gain arrival-window time just because it was paused.
+async function resumeNoShowTimer({ candidateId, companyId, deskId, ccsId, sameFloor }) {
+  const key = pausedKey(candidateId, companyId);
+  const remaining = await connection.get(key);
+  if (remaining == null) return null;
+  await connection.del(key);
+  await armNoShowTimer({ candidateId, companyId, deskId, ccsId, sameFloor, delayMsOverride: Number(remaining) });
+  return Number(remaining);
+}
+
+module.exports = {
+  noShowQueue, armNoShowTimer, clearNoShowTimer, pauseNoShowTimer, resumeNoShowTimer, SAME_FLOOR_MS, CROSS_FLOOR_MS,
+};

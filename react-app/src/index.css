@@ -304,6 +304,7 @@ h2.screen-title { font-family: var(--disp); font-weight: 800; font-stretch: 85%;
 .ring { position: relative; width: 120px; height: 120px; border-radius: 50%; background: conic-gradient(var(--system) calc(var(--pct, 100) * 1%), var(--line) 0); display: flex; align-items: center; justify-content: center; transition: background .2s linear; }
 .ring.warn { background: conic-gradient(var(--rung-hot) calc(var(--pct, 100) * 1%), var(--line) 0); }
 .ring.done { background: var(--st-selected); }
+.ring.paused { background: conic-gradient(var(--ink-60) calc(var(--pct, 100) * 1%), var(--line) 0); opacity: .7; }
 .ring .face { width: 96px; height: 96px; border-radius: 50%; background: var(--card); display: flex; align-items: center; justify-content: center; }
 .mm-ss { font-family: var(--mono); font-weight: 600; font-size: 20px; }
 .ring-label { font-family: var(--mono); font-size: 9.5px; color: var(--ink-60); text-transform: uppercase; letter-spacing: .1em; }

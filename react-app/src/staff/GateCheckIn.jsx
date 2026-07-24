@@ -40,7 +40,6 @@ export default function GateCheckIn() {
   const { user } = useAuth();
   const [mode, setMode] = useState('entrance'); // 'entrance' | 'exit' — same scanner, opposite direction
   const [batches, setBatches] = useState(null);
-  const [batchId, setBatchId] = useState('');
   const [manualToken, setManualToken] = useState('');
   const [log, setLog] = useState([]);
   const [toast, setToast] = useState(null);
@@ -48,9 +47,6 @@ export default function GateCheckIn() {
   const [submitting, setSubmitting] = useState(false);
   const [entranceQr, setEntranceQr] = useState(null); // { dataUrl, fairName, expiresAt }
   const [generatingQr, setGeneratingQr] = useState(false);
-  const [showBatchGen, setShowBatchGen] = useState(false);
-  const [batchGenCount, setBatchGenCount] = useState('');
-  const [generatingBatch, setGeneratingBatch] = useState(false);
   const [waitingRooms, setWaitingRoomsState] = useState([]);
   const [roomEdits, setRoomEdits] = useState({}); // floor_number -> location being edited
   const [savingRoomFloor, setSavingRoomFloor] = useState(null);
@@ -64,8 +60,6 @@ export default function GateCheckIn() {
   const detectorRef = useRef(null);
   const intervalRef = useRef(null);
   const pausedRef = useRef(false);
-  const batchIdRef = useRef('');
-  batchIdRef.current = batchId;
   const modeRef = useRef(mode);
   modeRef.current = mode;
 
@@ -75,14 +69,7 @@ export default function GateCheckIn() {
   }
 
   function loadBatches() {
-    api.getBatches().then((rows) => {
-      setBatches(rows);
-      setBatchId((cur) => {
-        if (cur && rows.some((b) => String(b.id) === String(cur))) return cur;
-        const active = rows.find((b) => b.status === 'active');
-        return active ? String(active.id) : (rows[0] ? String(rows[0].id) : '');
-      });
-    }).catch((err) => showToast(err.message, true));
+    api.getBatches().then(setBatches).catch((err) => showToast(err.message, true));
   }
 
   useEffect(() => { loadBatches(); }, []);
@@ -108,10 +95,9 @@ export default function GateCheckIn() {
 
   async function submitCheckIn(payload) {
     const exitMode = modeRef.current === 'exit';
-    if (!exitMode && !batchIdRef.current) { showToast('Pick a batch first', true); return; }
     setSubmitting(true);
     try {
-      const res = exitMode ? await api.exitCandidate(payload) : await api.checkIn(batchIdRef.current, payload);
+      const res = exitMode ? await api.exitCandidate(payload) : await api.checkIn(payload);
       setLog((cur) => [{
         ok: true, token: res.token, name: res.name, exited: exitMode,
         checked_in: res.checked_in, capacity: res.capacity, ts: Date.now(),
@@ -168,46 +154,16 @@ export default function GateCheckIn() {
     }
   }
 
-  async function setBatchStatus(status) {
-    if (!batchId) return;
+  // Batches are created automatically now (lib/batchAssignment.js) — the one
+  // manual action left is closing a wave once it's done, so new arrivals stop
+  // being assigned to it and roll onto the next one.
+  async function closeBatch(id) {
     try {
-      await api.setBatchStatus(batchId, status);
-      showToast(`Batch ${status}`);
+      await api.setBatchStatus(id, 'closed');
+      showToast('Batch closed');
       loadBatches();
     } catch (err) {
       showToast(err.message, true);
-    }
-  }
-
-  // Admin / Registration Staff: POST /api/batches/generate needs a fair_date
-  // — read it off whichever fair_settings row is active (falling back to the
-  // newest one) instead of asking staff to type a date at the gate.
-  async function generateBatch() {
-    const count = parseInt(batchGenCount, 10);
-    if (!count || count < 1 || count > 100) { showToast('Enter a batch count between 1 and 100', true); return; }
-    setGeneratingBatch(true);
-    try {
-      const settings = await api.getFairSettings();
-      const active = settings.find((s) => s.is_active) || settings[0];
-      if (!active) { showToast('No fair configured yet', true); return; }
-      // fair_date comes back as a full ISO timestamp (pg DATE -> JS Date ->
-      // JSON) — routes/fair.js builds `${fair_date} 09:00` for the first
-      // arrival, so a timestamp string here produces an invalid timestamp.
-      const fairDate = active.fair_date.slice(0, 10);
-      const added = await api.generateBatches({ fair_date: fairDate, batch_count: count });
-      // Batch numbers continue after whatever's already there (routes/fair.js
-      // appends rather than rejecting a date that already has batches), so
-      // naming the actual range added is clearer than a bare count once this
-      // isn't necessarily the first time it's been clicked for this date.
-      const nums = added.map((b) => b.batch_number);
-      showToast(`Added batch${nums.length === 1 ? '' : 'es'} #${Math.min(...nums)}${nums.length > 1 ? `–${Math.max(...nums)}` : ''}`);
-      setShowBatchGen(false);
-      setBatchGenCount('');
-      loadBatches();
-    } catch (err) {
-      showToast(err.message, true);
-    } finally {
-      setGeneratingBatch(false);
     }
   }
 
@@ -278,10 +234,9 @@ export default function GateCheckIn() {
     }
   }
 
-  const selectedBatch = batches && batches.find((b) => String(b.id) === String(batchId));
   const exitMode = mode === 'exit';
-  // Gate operations (batch generation/activation, entrance QR mint) are
-  // Admin + Registration Staff — both roles actually staff the entrance.
+  // Gate operations (batch close, entrance QR mint) are Admin + Registration
+  // Staff — both roles actually staff the entrance.
   const canManageGate = user.role === 'admin' || user.role === 'registration_staff';
   const checkInStepNum = canManageGate ? 2 : 1;
 
@@ -299,49 +254,21 @@ export default function GateCheckIn() {
 
       {!exitMode && (
         <>
-          <div className="field" style={{ marginBottom: 12 }}>
-            <label>Batch</label>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <select value={batchId} onChange={(e) => setBatchId(e.target.value)} style={{ flex: 1 }}>
-                {(!batches || !batches.length) && <option value="">No batches yet</option>}
-                {batches && batches.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    Batch {b.batch_number} · {b.status} · {b.checked_in}/{b.capacity}
-                  </option>
-                ))}
-              </select>
-              {canManageGate && (
-                <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} onClick={() => setShowBatchGen((v) => !v)}>
-                  Generate batch
-                </button>
-              )}
-            </div>
-            {showBatchGen && (
-              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                <input
-                  type="number"
-                  min="1"
-                  max="100"
-                  placeholder="How many batches?"
-                  value={batchGenCount}
-                  onChange={(e) => setBatchGenCount(e.target.value)}
-                  style={{ flex: 1 }}
-                />
-                <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} onClick={generateBatch} disabled={generatingBatch}>
-                  {generatingBatch ? 'Generating…' : 'Confirm'}
-                </button>
-              </div>
-            )}
-          </div>
-
-          {canManageGate && selectedBatch && (
-            <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-              <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} disabled={selectedBatch.status === 'active'} onClick={() => setBatchStatus('active')}>
-                Activate
-              </button>
-              <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} disabled={selectedBatch.status === 'closed'} onClick={() => setBatchStatus('closed')}>
-                Close
-              </button>
+          {canManageGate && (
+            <div className="field" style={{ marginBottom: 16 }}>
+              <label>Today's arrival batches</label>
+              <p className="save-note" style={{ marginTop: 0, marginBottom: 8 }}>
+                Batches are created automatically as candidates register or check in — nothing to generate or pick by hand.
+              </p>
+              {batches && batches.map((b) => (
+                <div key={b.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                  <span className="mono">Batch {b.batch_number} · {b.checked_in}/{b.capacity}{b.status === 'closed' ? ' · closed' : ''}</span>
+                  <button className="btn ghost" style={{ width: 'auto', padding: '6px 10px' }} disabled={b.status === 'closed'} onClick={() => closeBatch(b.id)}>
+                    Close
+                  </button>
+                </div>
+              ))}
+              {(!batches || !batches.length) && <p className="save-note">No batches yet — the first registration will create one.</p>}
             </div>
           )}
 
@@ -434,7 +361,7 @@ export default function GateCheckIn() {
             <video ref={videoRef} muted playsInline style={{ width: '100%', borderRadius: 10, border: '1px solid var(--line)', display: scanning ? 'block' : 'none', background: '#000' }} />
             <canvas ref={canvasRef} style={{ display: 'none' }} />
             {!scanning ? (
-              <button className="scan-btn" style={{ width: '100%', padding: '13px' }} type="button" onClick={startCamera} disabled={!exitMode && !batchId}>
+              <button className="scan-btn" style={{ width: '100%', padding: '13px' }} type="button" onClick={startCamera}>
                 ⌗ Start camera
               </button>
             ) : (

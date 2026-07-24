@@ -40,6 +40,10 @@ export default function DeskTablet() {
   const [incoming, setIncoming] = useState(null); // { candidateId, ccsId, expiresAt, interviewStartedAt, details }
   const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [pausedRemainingMs, setPausedRemainingMs] = useState(null);
+  const [pausing, setPausing] = useState(false);
+  const [skipping, setSkipping] = useState(false);
 
   useEffect(() => {
     joinDesk({ companyId, deskId });
@@ -74,6 +78,8 @@ export default function DeskTablet() {
 
   async function applyIncoming({ candidateId, ccsId, token, expiresAt, sameFloor = true, interviewStartedAt = null }) {
     const comingFrom = sameFloor ? 'Same floor' : 'Different floor';
+    setPaused(false);
+    setPausedRemainingMs(null);
     try {
       const details = await fetchCandidateDetails(token, companyId);
       setIncoming({ candidateId, ccsId, expiresAt, sameFloor, interviewStartedAt, details: { ...details, comingFrom } });
@@ -126,6 +132,55 @@ export default function DeskTablet() {
     }
   }
 
+  // Sits between InterviewTimer and CountdownRing — one control governing
+  // whichever of the two is currently showing. Pre-arrival, this is a real
+  // server-side pause (the no-show timer is actually removed, see
+  // lib/noShowTimer.js); once interviewing, there's no backend deadline to
+  // pause, so it's just a local freeze of the elapsed-time display.
+  async function togglePause() {
+    if (!incoming) return;
+    if (incoming.interviewStartedAt) {
+      setPaused((p) => !p);
+      return;
+    }
+    setPausing(true);
+    try {
+      if (!paused) {
+        const res = await api.pauseArrival({ token: incoming.details.token, company_id: companyId });
+        setPaused(true);
+        setPausedRemainingMs(res.remaining_ms);
+      } else {
+        const res = await api.resumeArrival({ token: incoming.details.token, company_id: companyId, same_floor: incoming.sameFloor });
+        setIncoming((cur) => (cur ? { ...cur, expiresAt: res.expires_at } : cur));
+        setPaused(false);
+        setPausedRemainingMs(null);
+      }
+    } catch (err) {
+      showToast(err.message, true);
+    } finally {
+      setPausing(false);
+    }
+  }
+
+  // "Next" — skip a candidate who hasn't arrived yet rather than waiting out
+  // the full 90s/180s arrival timer. Reuses the same manual no-show endpoint
+  // Floor Manager already had; Company HR just gets a one-tap shortcut to it
+  // instead of watching the countdown run out on its own.
+  async function handleSkip() {
+    if (!incoming || incoming.interviewStartedAt) return;
+    setSkipping(true);
+    try {
+      await api.markNoShow({ token: incoming.details.token, company_id: companyId });
+      showToast(`${incoming.details.token} — skipped`);
+      setIncoming(null);
+      await callNext();
+    } catch (err) {
+      showToast(err.message, true);
+    } finally {
+      setSkipping(false);
+    }
+  }
+
   // Desk occupancy on mount: read-only (GET /queue/desk/:companyId/:deskId,
   // no dispatch side effect), so a page reload while someone's mid-interview
   // reattaches to them instead of leaving the tablet showing an empty "Call
@@ -158,6 +213,8 @@ export default function DeskTablet() {
       await api.submitResult({ token: incoming.details.token, company_id: companyId, status, ratings });
       showToast(`${incoming.details.token} — ${status}`);
       setIncoming(null);
+      setPaused(false);
+      setPausedRemainingMs(null);
       await callNext();
     } catch (err) {
       showToast(err.message, true);
@@ -201,10 +258,27 @@ export default function DeskTablet() {
             </m.div>
           )}
         </AnimatePresence>
+        {incoming && (
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginBottom: 10 }}>
+            <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} disabled={pausing} onClick={togglePause}>
+              {pausing ? '…' : paused ? '▶ Resume' : '⏸ Pause'}
+            </button>
+            {!incoming.interviewStartedAt && (
+              <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} disabled={skipping} onClick={handleSkip}>
+                {skipping ? '…' : '⏭ Next'}
+              </button>
+            )}
+          </div>
+        )}
         {incoming?.interviewStartedAt ? (
-          <InterviewTimer startedAt={incoming.interviewStartedAt} />
+          <InterviewTimer startedAt={incoming.interviewStartedAt} paused={paused} />
         ) : (
-          <CountdownRing expiresAt={incoming?.expiresAt} totalMs={incoming?.sameFloor === false ? CROSS_FLOOR_MS : SAME_FLOOR_MS} />
+          <CountdownRing
+            expiresAt={incoming?.expiresAt}
+            totalMs={incoming?.sameFloor === false ? CROSS_FLOOR_MS : SAME_FLOOR_MS}
+            paused={paused}
+            pausedRemainingMs={pausedRemainingMs}
+          />
         )}
       </div>
       {toast && <div className={`toast${toast.isErr ? ' err' : ''}`}>{toast.text}</div>}

@@ -79,7 +79,7 @@ function WaitingDirective({ slots, waitingRooms }) {
     const loc = [floorLabel, room && room.location].filter(Boolean).join(' · ');
     return (
       <p className="desk-call-note calm" style={{ marginTop: 0, marginBottom: 14 }}>
-        🪑 Please wait in the Waiting Room{loc ? ` — ${loc}` : ''}.
+        🪑 Please wait in the Waiting Room{loc ? <> — <strong>{loc}</strong></> : ''}.
       </p>
     );
   }
