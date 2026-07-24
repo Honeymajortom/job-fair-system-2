@@ -36,6 +36,19 @@ function decodeJwtExp(token) {
   }
 }
 
+// Local calendar date, not UTC — new Date().toISOString() alone would show
+// tomorrow's date for anyone west of UTC in their evening, or yesterday's for
+// anyone east of it in the early morning. Subtracting the timezone offset
+// before converting to ISO is the standard way to get "today" in local terms.
+function todayLocal() {
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+function fmtDate(iso) {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
 export default function GateCheckIn() {
   const { user } = useAuth();
   const [mode, setMode] = useState('entrance'); // 'entrance' | 'exit' — same scanner, opposite direction
@@ -53,6 +66,10 @@ export default function GateCheckIn() {
   const [newRoomFloor, setNewRoomFloor] = useState('');
   const [newRoomLocation, setNewRoomLocation] = useState('');
   const [addingRoom, setAddingRoom] = useState(false);
+  const [fairSettings, setFairSettings] = useState(null);
+  const [fairDate, setFairDate] = useState(todayLocal);
+  const [startingFair, setStartingFair] = useState(false);
+  const [endingFair, setEndingFair] = useState(false);
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -90,6 +107,49 @@ export default function GateCheckIn() {
     loadWaitingRooms();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Admin only — starting/ending the whole job fair (POST /fair-settings/
+  // activate, PUT /fair-settings/:id) is the same write-permission tier as
+  // the rest of fair-settings, not the Reg. Staff batch/QR controls below.
+  function loadFairSettings() {
+    api.getFairSettings().then(setFairSettings).catch(() => {});
+  }
+
+  useEffect(() => {
+    if (user.role !== 'admin') return;
+    loadFairSettings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function startFair(e) {
+    e.preventDefault();
+    if (!fairDate) { showToast('Pick a date', true); return; }
+    setStartingFair(true);
+    try {
+      await api.activateFair({ fair_date: fairDate });
+      showToast(`Job fair started for ${fmtDate(fairDate)}`);
+      loadFairSettings();
+    } catch (err) {
+      showToast(err.message, true);
+    } finally {
+      setStartingFair(false);
+    }
+  }
+
+  async function endFair() {
+    if (!activeFair) return;
+    if (!window.confirm(`End the job fair for ${fmtDate(activeFair.fair_date)}?`)) return;
+    setEndingFair(true);
+    try {
+      await api.updateFairSettings(activeFair.id, { is_active: false });
+      showToast('Job fair ended');
+      loadFairSettings();
+    } catch (err) {
+      showToast(err.message, true);
+    } finally {
+      setEndingFair(false);
+    }
+  }
 
   useEffect(() => stopCamera, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -234,6 +294,7 @@ export default function GateCheckIn() {
     }
   }
 
+  const activeFair = fairSettings && fairSettings.find((f) => f.is_active);
   const exitMode = mode === 'exit';
   // Gate operations (batch close, entrance QR mint) are Admin + Registration
   // Staff — both roles actually staff the entrance.
@@ -243,6 +304,31 @@ export default function GateCheckIn() {
   return (
     <div className="s-body" style={{ maxWidth: 520 }}>
       <h2 className="screen-title">Gate {exitMode ? 'exit-scan' : 'check-in'}</h2>
+
+      {user.role === 'admin' && (
+        <div className="field" style={{ marginBottom: 16 }}>
+          <div className="sec-label" style={{ marginBottom: 8 }}>Job fair</div>
+          {activeFair ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span className="checkin-status in">Active — {fmtDate(activeFair.fair_date)}</span>
+              <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} disabled={endingFair} onClick={endFair}>
+                {endingFair ? 'Ending…' : 'End job fair'}
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={startFair} style={{ display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }}>
+              <div className="field" style={{ maxWidth: 200 }}>
+                <label>Date</label>
+                <input type="date" value={fairDate} onChange={(e) => setFairDate(e.target.value)} />
+              </div>
+              <button className="btn" style={{ width: 'auto', padding: '8px 14px' }} type="submit" disabled={startingFair}>
+                {startingFair ? 'Starting…' : 'Start job fair'}
+              </button>
+            </form>
+          )}
+          {!fairSettings && <p className="save-note" style={{ marginTop: 8 }}>Loading…</p>}
+        </div>
+      )}
 
       <div className="field" style={{ marginBottom: 16 }}>
         <label>Direction</label>

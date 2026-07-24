@@ -12,8 +12,21 @@ const router = express.Router();
 // Read-only: also needed by Registration Staff's "Generate batch" control on
 // the Gate tab (reads the active fair's date/interval) — write endpoints
 // below stay admin-only.
+// fair_date is cast to text here (rather than left as the raw DATE column) —
+// node-pg parses DATE into a JS Date via `new Date(y,m,d)` in the server
+// process's local time, and JSON serializing that calls .toISOString() (UTC);
+// on a server running ahead of UTC that round trip silently shifts the date
+// back a day (same pitfall lib/insights.js's available_dates works around).
+// Nothing in the frontend currently reads fair_date from this response raw
+// (the one place that used to, GateCheckIn.jsx's old "Generate batch"
+// button, was removed — see lib/batchAssignment.js), so this is a pure fix,
+// not a contract change.
 router.get('/fair-settings', authenticateJWT, requireRole('admin', 'registration_staff'), asyncHandler(async (_req, res) => {
-  const result = await pool.query('SELECT * FROM fair_settings ORDER BY fair_date DESC');
+  const result = await pool.query(
+    `SELECT id, fair_name, to_char(fair_date, 'YYYY-MM-DD') AS fair_date, max_companies_per_candidate,
+            slot_duration_minutes, batch_size, batch_interval_minutes, is_active, created_at, fair_hours
+     FROM fair_settings ORDER BY fair_date DESC`
+  );
   res.json(result.rows);
 }));
 
@@ -29,8 +42,46 @@ router.post('/fair-settings', authenticateJWT, requireRole('admin'), asyncHandle
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
+    if (err.code === '23505' && err.constraint === 'uq_fair_settings_one_active') {
+      return res.status(409).json({ error: 'Another fair is already active — end it first' });
+    }
     if (err.code === '23505') return res.status(409).json({ error: 'A fair already exists for that date' });
     throw err;
+  }
+}));
+
+// Admin: the Gate tab's "Start job fair" date picker — one call instead of
+// staff having to create-then-activate (and hit uq_fair_settings_one_active
+// themselves if another fair was still active). Deactivates whatever's
+// currently active, then upserts the target date active — reactivating an
+// already-configured past date keeps its existing batch_size/etc rather than
+// resetting them, since only fair_name/is_active are ever touched here.
+router.post('/fair-settings/activate', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
+  const { fair_date, fair_name } = req.body;
+  if (!fair_date) return res.status(400).json({ error: 'fair_date is required' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `UPDATE fair_settings SET is_active = false WHERE is_active = true AND fair_date != $1`,
+      [fair_date]
+    );
+    const result = await client.query(
+      `INSERT INTO fair_settings (fair_name, fair_date, is_active)
+       VALUES (COALESCE($2, 'SDC Job Fair'), $1, true)
+       ON CONFLICT (fair_date) DO UPDATE SET is_active = true, fair_name = COALESCE($2, fair_settings.fair_name)
+       RETURNING id, fair_name, to_char(fair_date, 'YYYY-MM-DD') AS fair_date, max_companies_per_candidate,
+                 slot_duration_minutes, batch_size, batch_interval_minutes, is_active, created_at, fair_hours`,
+      [fair_date, fair_name || null]
+    );
+    await client.query('COMMIT');
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
   }
 }));
 
