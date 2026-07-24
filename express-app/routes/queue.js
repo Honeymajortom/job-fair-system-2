@@ -55,8 +55,8 @@ router.get('/stats', authenticateJWT, requireRole('admin', 'floor_manager'), red
 // now-serving board, starvation alerts. 30s cache — matches §6.3's alert
 // recheck cadence closely enough while keeping the rest of the dashboard
 // reasonably fresh without a bespoke TTL per field.
-router.get('/floor-stats', authenticateJWT, requireRole('admin', 'floor_manager'), redisCache(30), asyncHandler(async (_req, res) => {
-  res.json(await computeFloorStats());
+router.get('/floor-stats', authenticateJWT, requireRole('admin', 'floor_manager'), redisCache(30), asyncHandler(async (req, res) => {
+  res.json(await computeFloorStats({ date: req.query.date }));
 }));
 
 // Company HR (+ Admin): record interview result + ratings + feedback

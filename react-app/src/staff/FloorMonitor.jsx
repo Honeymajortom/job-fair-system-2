@@ -9,31 +9,49 @@ const alertMessage = (a) =>
   `${a.remaining} people still waiting, won't all get seen before closing at this pace. ` +
   `Reach out now: offer a transfer, a priority slot tomorrow, or a virtual interview.`;
 
+function fmtDate(iso) {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
 export default function FloorMonitor() {
+  const [date, setDate] = useState(''); // '' = all time, same convention as Insights
   const [stats, setStats] = useState(null);
   const [recent, setRecent] = useState(null);
 
-  function load() {
-    api.getFloorStats().then(setStats).catch(() => {});
-    api.listCandidates().then((rows) => setRecent(rows.slice(0, RECENT_LIMIT))).catch(() => {});
+  function load(d) {
+    api.getFloorStats(d).then(setStats).catch(() => {});
+    api.listCandidates(d).then(setRecent).catch(() => {});
   }
 
   useEffect(() => {
-    load();
-    const t = setInterval(load, POLL_MS);
+    load(date);
+    const t = setInterval(() => load(date), POLL_MS);
     return () => clearInterval(t);
-  }, []);
+  }, [date]);
 
   // Live-ish without full local delta application (v1's FloorMonitor did
   // that; this pass just re-fetches on the events that would move a number).
-  useSocketEvent('candidate_registered', load);
-  useSocketEvent('candidate_dispatched', load);
-  useSocketEvent('interview_processed', load);
-  useSocketEvent('no_show_marked', load);
+  useSocketEvent('candidate_registered', () => load(date));
+  useSocketEvent('candidate_dispatched', () => load(date));
+  useSocketEvent('interview_processed', () => load(date));
+  useSocketEvent('no_show_marked', () => load(date));
+
+  // now_serving/alerts are always live (no historical record to scope by
+  // day, see lib/floorStats.js) — everything else, including this list,
+  // respects the dropdown via GET /candidates' optional ?date=.
+  const recentScoped = recent ? recent.slice(0, RECENT_LIMIT) : null;
 
   return (
     <div className="s-body">
       <h2 className="screen-title">Floor</h2>
+
+      <div className="field" style={{ maxWidth: 260, marginBottom: 16 }}>
+        <label>Day</label>
+        <select value={date} onChange={(e) => setDate(e.target.value)}>
+          <option value="">All time</option>
+          {stats && stats.available_dates.map((d) => <option key={d} value={d}>{fmtDate(d)}</option>)}
+        </select>
+      </div>
 
       {stats && (
         <>
@@ -107,7 +125,7 @@ export default function FloorMonitor() {
             <tr><th>Token</th><th>Name</th><th>Qualification</th><th>Registered at</th><th>Checked in</th></tr>
           </thead>
           <tbody>
-            {recent && recent.map((c) => (
+            {recentScoped && recentScoped.map((c) => (
               <tr key={c.id}>
                 <td className="mono">{c.token_no}</td>
                 <td>{c.name}</td>
@@ -116,7 +134,7 @@ export default function FloorMonitor() {
                 <td>{c.checked_in_at ? 'Yes' : '—'}</td>
               </tr>
             ))}
-            {recent && !recent.length && (
+            {recentScoped && !recentScoped.length && (
               <tr><td colSpan={5} className="save-note">No candidates registered yet.</td></tr>
             )}
           </tbody>

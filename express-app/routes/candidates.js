@@ -23,13 +23,20 @@ router.post('/register', authenticateJWT, requireRole('admin', 'registration_sta
 
 // Staff (any role): candidate directory — feeds the Candidate tab's list
 // (filtered client-side by name/token) and FloorMonitor's batch roster
-// (grouped client-side by batch_id).
-router.get('/candidates', authenticateJWT, asyncHandler(async (_req, res) => {
+// (grouped client-side by batch_id). Optional ?date= (added alongside
+// FloorMonitor's Day dropdown) scopes to one registration day — filtered in
+// SQL via registered_at::date rather than client-side ISO-string slicing, so
+// it agrees with lib/floorStats.js/lib/insights.js's day grouping instead of
+// drifting a day near midnight IST the way a UTC ISO-string slice would.
+// Omitted entirely for every other caller, so their behavior is unchanged.
+router.get('/candidates', authenticateJWT, asyncHandler(async (req, res) => {
   const result = await pool.query(
     `SELECT id, token_no, name, qualification, checked_in_at, batch_id, registered_at
      FROM candidates
      WHERE deleted_at IS NULL
-     ORDER BY registered_at DESC`
+       AND ($1::date IS NULL OR registered_at::date = $1::date)
+     ORDER BY registered_at DESC`,
+    [req.query.date || null]
   );
   res.json(result.rows);
 }));

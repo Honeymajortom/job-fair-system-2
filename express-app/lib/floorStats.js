@@ -28,24 +28,70 @@ async function getClosingTime() {
   return new Date(new Date(start).getTime() + fair_hours * 60 * 60 * 1000);
 }
 
-async function computeFloorStats() {
-  const [registeredRes, atDeskRes, completedRes, waitlistedRes, companiesRes, closingTime, travelBuffer] = await Promise.all([
-    pool.query(`SELECT COUNT(*)::int AS n FROM candidates WHERE deleted_at IS NULL`),
-    pool.query(`SELECT COUNT(*)::int AS n FROM candidate_company_status WHERE status = 'Dispatched' AND deleted_at IS NULL`),
-    pool.query(`SELECT COUNT(*)::int AS n FROM candidate_company_status WHERE status IN ('Selected','Rejected','Shortlisted','Hold') AND deleted_at IS NULL`),
-    pool.query(`SELECT COUNT(*)::int AS n FROM candidate_company_status WHERE status = 'Waitlisted' AND deleted_at IS NULL`),
+// date (optional, 'YYYY-MM-DD'): scopes registered/at_desk/completed/waitlisted
+// and the per-company on_hand/remaining counts to one registration day — same
+// semantics and same registered_at::date grouping as lib/insights.js, so
+// Floor and Insights agree on what "day-wise" means. now_serving/alerts/
+// minutesToClose stay unfiltered regardless — Redis desk locks and the
+// close-time projection only ever describe the current moment, there's no
+// historical record of "who was at a desk" to scope by day.
+async function computeFloorStats({ date } = {}) {
+  const dateFilter = date || null;
+  const [registeredRes, atDeskRes, completedRes, waitlistedRes, companiesRes, availableDatesRes, closingTime, travelBuffer] = await Promise.all([
+    pool.query(
+      `SELECT COUNT(*)::int AS n FROM candidates
+       WHERE deleted_at IS NULL AND ($1::date IS NULL OR registered_at::date = $1::date)`,
+      [dateFilter]
+    ),
+    pool.query(
+      `SELECT COUNT(*)::int AS n FROM candidate_company_status ccs
+       JOIN candidates cd ON cd.id = ccs.candidate_id AND cd.deleted_at IS NULL
+       WHERE ccs.status = 'Dispatched' AND ccs.deleted_at IS NULL
+         AND ($1::date IS NULL OR cd.registered_at::date = $1::date)`,
+      [dateFilter]
+    ),
+    pool.query(
+      `SELECT COUNT(*)::int AS n FROM candidate_company_status ccs
+       JOIN candidates cd ON cd.id = ccs.candidate_id AND cd.deleted_at IS NULL
+       WHERE ccs.status IN ('Selected','Rejected','Shortlisted','Hold') AND ccs.deleted_at IS NULL
+         AND ($1::date IS NULL OR cd.registered_at::date = $1::date)`,
+      [dateFilter]
+    ),
+    pool.query(
+      `SELECT COUNT(*)::int AS n FROM candidate_company_status ccs
+       JOIN candidates cd ON cd.id = ccs.candidate_id AND cd.deleted_at IS NULL
+       WHERE ccs.status = 'Waitlisted' AND ccs.deleted_at IS NULL
+         AND ($1::date IS NULL OR cd.registered_at::date = $1::date)`,
+      [dateFilter]
+    ),
     // on_hand (approximation #2): checked-in + still Pending for this company.
     // remaining (approximation #4): everyone not yet at a terminal outcome.
+    // Date-scoping happens in the ccs_scoped CTE (not a bare WHERE after the
+    // LEFT JOIN) so a company with zero matching candidates on that day still
+    // shows up with on_hand/remaining = 0 instead of disappearing — same
+    // fan-out-avoidance shape as lib/insights.js's `cand` CTE.
     pool.query(`
+      WITH ccs_scoped AS (
+        SELECT ccs.company_id, ccs.status, cd.checked_in_at
+        FROM candidate_company_status ccs
+        JOIN candidates cd ON cd.id = ccs.candidate_id AND cd.deleted_at IS NULL
+        WHERE ccs.deleted_at IS NULL
+          AND ($1::date IS NULL OR cd.registered_at::date = $1::date)
+      )
       SELECT c.id, c.company_name, c.seats, c.interview_minutes,
-             COUNT(*) FILTER (WHERE ccs.status = 'Pending' AND cd.checked_in_at IS NOT NULL)::int AS on_hand,
+             COUNT(*) FILTER (WHERE ccs.status = 'Pending' AND ccs.checked_in_at IS NOT NULL)::int AS on_hand,
              COUNT(*) FILTER (WHERE ccs.status IN ('Pending','Waitlisted','Dispatched'))::int AS remaining
       FROM companies c
-      LEFT JOIN candidate_company_status ccs ON ccs.company_id = c.id AND ccs.deleted_at IS NULL
-      LEFT JOIN candidates cd ON cd.id = ccs.candidate_id AND cd.deleted_at IS NULL
+      LEFT JOIN ccs_scoped ccs ON ccs.company_id = c.id
       GROUP BY c.id
       ORDER BY c.company_name
-    `),
+    `, [dateFilter]),
+    // Same text-cast reasoning as lib/insights.js: avoid node-pg's local-time
+    // Date round trip silently shifting the day back by one.
+    pool.query(
+      `SELECT DISTINCT (registered_at::date)::text AS day FROM candidates
+        WHERE deleted_at IS NULL ORDER BY day DESC`
+    ),
     getClosingTime(),
     getTravelBuffer(),
   ]);
@@ -93,6 +139,8 @@ async function computeFloorStats() {
   }
 
   return {
+    date: dateFilter,
+    available_dates: availableDatesRes.rows.map((r) => r.day),
     registered: registeredRes.rows[0].n,
     at_desk: atDeskRes.rows[0].n,
     completed: completedRes.rows[0].n,
