@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { useAuth } from './AuthContext';
+import CandidateAdmin from './CandidateAdmin';
 
 const ROLES = ['admin', 'registration_staff', 'floor_manager', 'company_hr', 'volunteer'];
 
@@ -28,11 +29,16 @@ export default function UserAdmin() {
     api.getUsers().then(setRoster).catch((err) => showToast(err.message, true));
   }
 
-  useEffect(() => { loadRoster(); }, []);
+  // Widened to registration_staff 2026-07-25 for the Candidates section below
+  // — the staff-account roster itself stays admin-only, so skip fetching it
+  // (and the company list it needs) entirely for a role that can't see it, to
+  // avoid a guaranteed-403 request on page load.
+  const isAdmin = user.role === 'admin';
+  useEffect(() => { if (isAdmin) loadRoster(); }, [isAdmin]);
   // Needed for the Company HR company picker (both the add-staff form and the
   // roster's Company column) — same roster-fetching endpoint CompanyManagement
   // already uses.
-  useEffect(() => { api.getCompanies().then(setCompanies).catch(() => {}); }, []);
+  useEffect(() => { if (isAdmin) api.getCompanies().then(setCompanies).catch(() => {}); }, [isAdmin]);
 
   function companyName(id) {
     const c = companies.find((c) => c.id === id);
@@ -116,7 +122,10 @@ export default function UserAdmin() {
 
   return (
     <div className="s-body">
-      <h2 className="screen-title">Staff</h2>
+      <h2 className="screen-title">Users</h2>
+      {isAdmin && (
+      <>
+      <div className="sec-label" style={{ marginBottom: 10 }}>Staff accounts</div>
       <div className="table-wrap">
         <table className="data-table">
           <thead>
@@ -224,6 +233,10 @@ export default function UserAdmin() {
       </form>
 
       {toast && <div className={`toast${toast.isErr ? ' err' : ''}`}>{toast.text}</div>}
+      </>
+      )}
+
+      <CandidateAdmin />
     </div>
   );
 }

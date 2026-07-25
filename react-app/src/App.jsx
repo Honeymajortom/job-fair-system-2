@@ -1,7 +1,6 @@
 import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import QRLanding from './public/QRLanding.jsx';
-import CompanyTiles from './public/CompanyTiles.jsx';
 import DetailsForm from './public/DetailsForm.jsx';
 import RecoverToken from './public/RecoverToken.jsx';
 import LivePosition from './public/LivePosition.jsx';
@@ -19,7 +18,11 @@ export default function App() {
     <Routes>
       <Route path="/" element={<QRLanding />} />
       <Route path="/qr" element={<QRLanding />} />
-      <Route path="/register" element={<CompanyTiles />} />
+      {/* Company selection no longer happens before Details — it moved to
+          after Gate check-in (SelectCompanies.jsx, rendered inline by
+          LivePosition.jsx once the candidate's checked in). /register
+          redirects straight to the details form now. */}
+      <Route path="/register" element={<Navigate to="/register/details" replace />} />
       <Route path="/register/details" element={<DetailsForm />} />
       <Route path="/recover" element={<RecoverToken />} />
       {/* LivePosition replaces the old ScheduleCard/LiveSchedule — same URLs,

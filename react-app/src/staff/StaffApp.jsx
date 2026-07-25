@@ -19,7 +19,11 @@ const NAV_LINKS = [
   { to: '/staff/floor', label: 'Floor', roles: ['admin', 'floor_manager'] },
   { to: '/staff/gate', label: 'Gate', roles: ['admin', 'registration_staff'] },
   { to: '/staff/desk', label: 'Desk', roles: ['admin', 'floor_manager', 'company_hr'] },
-  { to: '/staff/users', label: 'Staff', roles: ['admin'] },
+  // Widened to registration_staff 2026-07-25 (was admin-only) — the tab now
+  // also holds the Candidates section (manual registration + company
+  // reassignment), which registration_staff needs; the staff-account roster
+  // itself stays gated internally to admin (see UserAdmin.jsx).
+  { to: '/staff/users', label: 'Users', roles: ['admin', 'registration_staff'] },
   { to: '/staff/companies', label: 'Companies', roles: ['admin'] },
   { to: '/staff/reports', label: 'Reports', roles: ['admin'] },
   { to: '/staff/insights', label: 'Insights', roles: ['admin'] },
@@ -122,7 +126,7 @@ function Shell() {
                 <Route path="gate" element={<Gate roles={['admin', 'registration_staff']}><GateCheckIn /></Gate>} />
                 <Route path="desk" element={<DeskPicker />} />
                 <Route path="desk/:companyId/:deskId" element={<DeskTablet />} />
-                <Route path="users" element={<Gate roles={['admin']}><UserAdmin /></Gate>} />
+                <Route path="users" element={<Gate roles={['admin', 'registration_staff']}><UserAdmin /></Gate>} />
                 <Route path="companies" element={<Gate roles={['admin']}><CompanyManagement /></Gate>} />
                 <Route path="reports" element={<Gate roles={['admin']}><Reports /></Gate>} />
                 <Route path="insights" element={<Gate roles={['admin']}><Insights /></Gate>} />

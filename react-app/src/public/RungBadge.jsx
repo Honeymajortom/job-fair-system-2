@@ -11,13 +11,17 @@ const LABELS = {
   waitlisted: 'WAITLISTED',
 };
 
-// Overrides LABELS.done with the actual outcome once the result is in — a
-// bare "DONE" badge doesn't tell the candidate whether that was good news.
+// Overrides LABELS.done once the result is in. As of 2026-07-25, Selected/
+// Shortlisted/Hold/Rejected are deliberately NOT distinguished here — staff
+// tell candidates their real result manually, so the badge only ever says
+// "INTERVIEW DONE" regardless of which of those four it actually was.
+// No_Show is exempt: it's process feedback about a missed call, not a
+// selection result, so it keeps its own distinct label.
 const OUTCOME_LABELS = {
-  Selected: 'SELECTED 🎉',
-  Shortlisted: 'SHORTLISTED',
-  Hold: 'ON HOLD',
-  Rejected: 'NOT SELECTED',
+  Selected: 'INTERVIEW DONE',
+  Shortlisted: 'INTERVIEW DONE',
+  Hold: 'INTERVIEW DONE',
+  Rejected: 'INTERVIEW DONE',
   No_Show: 'MARKED NO-SHOW',
 };
 
@@ -31,12 +35,15 @@ const MODIFIERS = {
   waitlisted: 'waitlisted',
 };
 
-// status only matters for rung 'done' — Rejected/No_Show shouldn't wear the
-// same green "success" styling as Selected/Shortlisted/Hold. Shared by both
-// RungBadge and PosCard's card modifier so the badge and card border never
-// disagree on tone.
+// status only matters for rung 'done'. As of 2026-07-25 a real outcome
+// (Selected/Shortlisted/Hold/Rejected) always wears the same neutral 'done'
+// styling — coloring it red-for-Rejected/green-for-Selected would leak the
+// hidden result just as much as the label would. No_Show keeps its own
+// distinct (muted/alert) styling since it's a process notice, not a result.
+// Shared by both RungBadge and PosCard's card modifier so the badge and card
+// border never disagree on tone.
 export function cardModifier(rung, status) {
-  if (rung === 'done') return status === 'Rejected' || status === 'No_Show' ? 'rejected' : 'done';
+  if (rung === 'done') return status === 'No_Show' ? 'rejected' : 'done';
   return MODIFIERS[rung] || '';
 }
 

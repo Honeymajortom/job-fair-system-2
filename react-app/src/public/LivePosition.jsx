@@ -5,6 +5,7 @@ import QRCode from 'qrcode';
 import { api } from '../api';
 import RungBadge, { cardModifier } from './RungBadge';
 import FeedbackForm from './FeedbackForm';
+import SelectCompanies from './SelectCompanies';
 import SiteCredit from './SiteCredit.jsx';
 
 const POLL_MS = 5000; // server caches the route for 15s, so most polls are cache hits
@@ -33,13 +34,17 @@ function mostUrgentSlot(slots) {
   return best;
 }
 
-// Card-body copy for a settled outcome (rung 'done') — a bare "position 0"
-// or generic "DONE" doesn't tell the candidate whether that was good news.
+// Card-body copy for a settled outcome (rung 'done'). As of 2026-07-25,
+// Selected/Shortlisted/Hold/Rejected deliberately share one neutral message —
+// staff tell candidates their actual result manually, so this page never
+// reveals which of those four it was (see RungBadge.jsx's matching change).
+// No_Show is exempt: it's a real notice about a missed call, not a hidden
+// selection outcome, so it keeps its own message.
 const OUTCOME_NOTES = {
-  Selected: "🎉 Congratulations — you've been selected!",
-  Shortlisted: "You've been shortlisted — you'll hear back soon.",
-  Hold: 'Your result is on hold — check back later or ask at the desk.',
-  Rejected: 'Not selected this time. Thanks for interviewing with us!',
+  Selected: "Interview done — we'll be in touch with your result soon.",
+  Shortlisted: "Interview done — we'll be in touch with your result soon.",
+  Hold: "Interview done — we'll be in touch with your result soon.",
+  Rejected: "Interview done — we'll be in touch with your result soon.",
   No_Show: "You were marked as a no-show for this company's interview.",
 };
 // Demo values in new_architecture_uiux_spec.html (§01 ping-ladder replay: pos
@@ -247,7 +252,7 @@ export default function LivePosition() {
       const settledTitle = document.title;
       let flashes = 0;
       outcomeTitleTimer = setInterval(() => {
-        document.title = flashes % 2 === 0 ? '🔔 Result posted' : settledTitle;
+        document.title = flashes % 2 === 0 ? '🔔 Interview update' : settledTitle;
         flashes += 1;
         if (flashes >= 6) { clearInterval(outcomeTitleTimer); document.title = settledTitle; }
       }, 700);
@@ -273,9 +278,14 @@ export default function LivePosition() {
     const qr = data && localStorage.getItem(`checkin_qr_${token}`);
     if (!qr) { setQrDataUrl(null); return; }
     // Before check-in, this QR *is* the point of the page — that's what Gate
-    // staff scan. After check-in, only show it again once the queue itself
-    // needs it (gate/staging/desk_call), matching the previous behavior.
-    const shouldShow = data.checked_in ? data.slots.some((s) => QR_ELIGIBLE_RUNGS.includes(s.rung)) : true;
+    // staff scan. After check-in, show it again once the queue itself needs
+    // it (gate/staging/desk_call) — and, separately, once every booking has
+    // settled AND feedback is submitted, this same QR is what gets scanned to
+    // *exit* (POST /candidates/exit accepts the identical signed value).
+    const realSlots = data.checked_in ? data.slots.filter((s) => s.rung !== undefined) : [];
+    const allSettled = realSlots.length > 0 && realSlots.every((s) => s.rung === 'done');
+    const shouldShow = !data.checked_in
+      || (allSettled ? data.feedback_submitted : data.slots.some((s) => QR_ELIGIBLE_RUNGS.includes(s.rung)));
     if (!shouldShow) { setQrDataUrl(null); return; }
     QRCode.toDataURL(qr, { margin: 1, width: 168 }).then(setQrDataUrl).catch(() => setQrDataUrl(null));
   }, [data, token]);
@@ -319,6 +329,20 @@ export default function LivePosition() {
               </div>
             )}
           </>
+        ) : data.slots.length === 0 ? (
+          // Checked in, but hasn't picked companies yet — the new candidate
+          // journey (Gate check-in happens before company selection, not
+          // after). Queue booking/waitlisting only happens once they submit
+          // a pick here.
+          <SelectCompanies
+            qr={localStorage.getItem(`checkin_qr_${token}`)}
+            onDone={async () => {
+              // Refresh immediately rather than waiting up to POLL_MS for the
+              // next scheduled poll to pick up the new candidate_company_status
+              // rows this call just created.
+              try { setData(await api.qrSchedule(token)); } catch { /* next poll will pick it up */ }
+            }}
+          />
         ) : allSettled ? (
           // Every booking has a final result — this is the last screen a
           // candidate needs, so it replaces the ladder rather than sitting
@@ -330,7 +354,15 @@ export default function LivePosition() {
               We hope today went well. One last thing before you go:
             </p>
             {data.feedback_submitted ? (
-              <p className="desk-call-note calm" style={{ marginTop: 16 }}>✅ Feedback received — thank you!</p>
+              <>
+                <p className="desk-call-note calm" style={{ marginTop: 16 }}>✅ Feedback received — thank you!</p>
+                {qrDataUrl && (
+                  <div className="qr-wrap">
+                    <img src={qrDataUrl} alt="Exit QR" width={168} height={168} />
+                    <div className="save-note">Show this at the Gate to exit</div>
+                  </div>
+                )}
+              </>
             ) : (
               <FeedbackForm token={token} onSubmitted={() => setData((d) => ({ ...d, feedback_submitted: true }))} />
             )}

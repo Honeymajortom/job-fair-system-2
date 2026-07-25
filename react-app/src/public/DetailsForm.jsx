@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { Navigate, useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import SiteCredit from './SiteCredit.jsx';
 
@@ -10,14 +10,15 @@ function formatBytes(n) {
   return n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// new_architecture_uiux_spec.html §01 step 3. travel_time_minutes is the one
-// field this form has that v1's DetailsForm didn't — it's what lets the ping
-// ladder (Phase 4) ever reach the "come now" rung instead of only position-
-// based staging/gate.
+// new_architecture_uiux_spec.html §01 step 3, since revised: company
+// selection no longer happens here — it moved to after Gate check-in (see
+// SelectCompanies.jsx, rendered inline by LivePosition.jsx). This form now
+// only collects personal details; travel_time_minutes is the one field this
+// form has that v1's DetailsForm didn't — it's what lets the ping ladder
+// (Phase 4) ever reach the "come now" rung instead of only position-based
+// staging/gate.
 export default function DetailsForm() {
-  const location = useLocation();
   const navigate = useNavigate();
-  const companyIds = location.state?.company_ids || [];
 
   const [form, setForm] = useState({ name: '', mobile: '', age: '', qualification: '', travel_time_minutes: '', gender: '', is_sdc: '' });
   const [resumeFile, setResumeFile] = useState(null);
@@ -65,10 +66,6 @@ export default function DetailsForm() {
 
   async function submit(e) {
     e.preventDefault();
-    if (!companyIds.length) {
-      setError('No companies selected — go back and pick at least one.');
-      return;
-    }
     setSubmitting(true);
     setError(null);
     try {
@@ -82,7 +79,6 @@ export default function DetailsForm() {
         travel_time_minutes: form.travel_time_minutes ? Number(form.travel_time_minutes) : undefined,
         gender: form.gender || undefined,
         is_sdc: form.is_sdc === '' ? undefined : form.is_sdc === 'yes',
-        company_ids: companyIds,
       });
       // The check-in QR is only ever handed out here, at registration — the
       // live schedule endpoint deliberately won't echo it back (red-team
@@ -90,7 +86,7 @@ export default function DetailsForm() {
       // poll would leak the gate check-in bypass to anyone who guesses it).
       if (result.qr) localStorage.setItem(`checkin_qr_${result.token}`, result.qr);
       // Second line of defense alongside LivePosition's history trap — see
-      // the guard near the top of this component and CompanyTiles.jsx.
+      // the guard near the top of this component.
       sessionStorage.setItem('registered_token', result.token);
       // Resume is optional and orthogonal to registration — a failed upload
       // should never block a candidate who's already registered, so this is

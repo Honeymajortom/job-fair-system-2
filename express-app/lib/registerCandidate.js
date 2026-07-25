@@ -2,11 +2,11 @@ const pool = require('../db');
 const { signToken } = require('./checkinSig');
 const queueStore = require('./queueStore');
 const { getOrCreateAvailableBatch } = require('./batchAssignment');
+const { assignCompanies, MAX_COMPANIES } = require('./companyAssignment');
 const { normalizeMobile, isValidMobile } = require('./mobile');
 const { emit } = require('./events');
 const { DONE_STATUSES } = require('./pingLadder');
 
-const MAX_COMPANIES = 3;
 const EMPLOYMENT_STATUSES = ['Studying', 'Working', 'Fresher', 'Other'];
 const GENDERS = ['Male', 'Female', 'Other'];
 
@@ -20,10 +20,14 @@ const GENDERS = ['Male', 'Female', 'Other'];
 // Returns { status, body } — the caller just forwards it to res.
 async function registerCandidate({ name, mobile, age, qualification, field, employment_status, company_ids, travel_time_minutes, gender, is_sdc }) {
   if (!name || !name.trim()) return { status: 400, body: { error: 'name is required' } };
-  if (!Array.isArray(company_ids) || company_ids.length === 0) {
-    return { status: 400, body: { error: 'Select at least one company' } };
-  }
-  if (company_ids.length > MAX_COMPANIES) {
+  // Company selection is optional at registration time (new_architecture.md's
+  // Gate-flow candidate journey: pick companies after checking in at the Gate,
+  // not before) — an omitted/empty list just means Gate 2 below is skipped and
+  // the candidate picks later via POST /qr/select-companies/:qr. Staff manual
+  // registration (or any caller that still wants to pick up front) keeps
+  // working unchanged if it passes company_ids.
+  const companyIds = Array.isArray(company_ids) ? company_ids : [];
+  if (companyIds.length > MAX_COMPANIES) {
     return { status: 400, body: { error: `Select at most ${MAX_COMPANIES} companies` } };
   }
   // Mobile is optional here (staff manual entry, flow D, can omit it) but if
@@ -114,61 +118,17 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
     );
     candidateId = candidateRes.rows[0].id;
 
-    // Gate 2 replacement (new_architecture.md §3.1/§4): a booking cap per
-    // company — 90% of the day's capacity_j = seats * (60/interview_minutes)
-    // * fair_hours — replaces per-slot-time capacity. A pick past the cap
-    // doesn't fail the whole registration; it's recorded as Waitlisted (real
-    // inventory for Phase 5's fall-through) instead of Pending, and never
-    // reaches the live Redis queue.
-    //
-    // Advisory locks are acquired for every requested company up front, in a
-    // fixed ascending-id order, before any booking work below — so two
-    // candidates registering for the same two companies in opposite
-    // preference order can never deadlock waiting on each other's locks.
+    // Gate 2 (new_architecture.md §3.1/§4), skipped entirely when no companies
+    // were picked at registration time (the new Gate-flow candidate journey —
+    // see the companyIds comment above). lib/companyAssignment.js's
+    // assignCompanies() is the same booking-cap logic POST
+    // /qr/select-companies/:qr runs later, standalone, once the candidate
+    // does pick.
     const fairHours = fair ? Number(fair.fair_hours) : 8;
-
-    const lockOrder = [...new Set(company_ids.map(Number))].sort((a, b) => a - b);
-    for (const cid of lockOrder) {
-      await client.query('SELECT pg_advisory_xact_lock($1)', [cid]);
-    }
-
-    for (const companyId of company_ids) {
-      const companyRes = await client.query(
-        'SELECT id, company_name, location, seats, interview_minutes FROM companies WHERE id = $1',
-        [companyId]
-      );
-      if (!companyRes.rows.length) continue;
-      const company = companyRes.rows[0];
-
-      const capacity = company.seats * (60 / company.interview_minutes) * fairHours;
-      const capSold = Math.floor(0.9 * capacity);
-
-      const bookedRes = await client.query(
-        `SELECT COUNT(*)::int AS n FROM candidate_company_status
-         WHERE company_id = $1 AND status != 'Waitlisted' AND deleted_at IS NULL`,
-        [companyId]
-      );
-      const isWaitlisted = bookedRes.rows[0].n >= capSold;
-      const serial = isWaitlisted ? null : bookedRes.rows[0].n + 1;
-
-      const ccsRes = await client.query(
-        `INSERT INTO candidate_company_status (candidate_id, company_id, status, serial)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (candidate_id, company_id) DO NOTHING
-         RETURNING id`,
-        [candidateId, companyId, isWaitlisted ? 'Waitlisted' : 'Pending', serial]
-      );
-      if (!ccsRes.rows.length) continue; // conflict — duplicate company id in the request
-
-      const entry = {
-        ccs_id: ccsRes.rows[0].id,
-        company_id: companyId,
-        company_name: company.company_name,
-        location: company.location,
-        serial,
-      };
-      if (isWaitlisted) waitlisted.push(entry);
-      else assigned.push(entry);
+    if (companyIds.length) {
+      const result = await assignCompanies(client, { candidateId, company_ids: companyIds, fairHours });
+      assigned.push(...result.assigned);
+      waitlisted.push(...result.waitlisted);
     }
 
     await client.query('COMMIT');

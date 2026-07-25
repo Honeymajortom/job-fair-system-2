@@ -45,6 +45,9 @@ export const api = {
     return uploadFile(`/qr/resume/${encodeURIComponent(qr)}`, formData);
   },
   qrSchedule: (token) => request(`/qr/schedule/${token}`),
+  // qr here is the signed "{token_no}.{HMAC}" string, same as uploadResume/
+  // submitFeedback — not the bare token, since this is a write endpoint.
+  selectCompanies: (qr, company_ids) => request(`/qr/select-companies/${encodeURIComponent(qr)}`, { method: 'POST', body: JSON.stringify({ company_ids }) }),
   recoverToken: (payload) => request('/qr/recover', { method: 'POST', body: JSON.stringify(payload) }),
   // qr here is the same signed "{token_no}.{HMAC}" string uploadResume uses,
   // not the bare token — see routes/public.js POST /qr/feedback/:qr.
@@ -71,6 +74,8 @@ export const api = {
   register: (payload) => request('/register', { method: 'POST', body: JSON.stringify(payload) }),
   listCandidates: (date) => request(`/candidates${date ? `?date=${date}` : ''}`),
   getCandidate: (token) => request(`/candidates/${token}`),
+  addCandidateCompanies: (id, company_ids) => request(`/candidates/${id}/companies`, { method: 'POST', body: JSON.stringify({ company_ids }) }),
+  removeCandidateCompany: (id, companyId) => request(`/candidates/${id}/companies/${companyId}`, { method: 'DELETE' }),
   rescheduleBatch: (id, batch_id) => request(`/candidates/${id}/batch`, { method: 'PUT', body: JSON.stringify({ batch_id }) }),
   getQueue: (companyId) => request(`/queue/${companyId}`),
   submitResult: (payload) => request('/interview-result', { method: 'PUT', body: JSON.stringify(payload) }),

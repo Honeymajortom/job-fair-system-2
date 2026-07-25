@@ -10,6 +10,7 @@ const { verifyQr } = require('../lib/checkinSig');
 const queueStore = require('../lib/queueStore');
 const { emit } = require('../lib/events');
 const { RESUME_DIR } = require('../lib/resumeStorage');
+const { assignCompanies, MAX_COMPANIES } = require('../lib/companyAssignment');
 
 const router = express.Router();
 
@@ -64,6 +65,123 @@ router.get('/candidates/:token', authenticateJWT, asyncHandler(async (req, res) 
   );
 
   res.json({ ...candidate, companies: statusRes.rows });
+}));
+
+// Admin / Registration Staff: manual company reassignment — the staff-side
+// override for the new one-shot candidate self-service pick (public.js's
+// POST /qr/select-companies/:qr). Covers walk-ups who registered manually
+// (no phone to self-serve with) and mistakes/swaps for anyone else. Only
+// Pending/Waitlisted bookings are touchable — a Dispatched/in-interview or
+// already-decided one is left alone (could corrupt live queue/desk state or
+// erase a real recorded outcome).
+router.post('/candidates/:id/companies', authenticateJWT, requireRole('admin', 'registration_staff'), asyncHandler(async (req, res) => {
+  const companyIds = req.body.company_ids;
+  if (!Array.isArray(companyIds) || companyIds.length === 0) {
+    return res.status(400).json({ error: 'Select at least one company' });
+  }
+
+  const candRes = await pool.query('SELECT id FROM candidates WHERE id = $1 AND deleted_at IS NULL', [req.params.id]);
+  if (!candRes.rows.length) return res.status(404).json({ error: 'Candidate not found' });
+  const candidateId = candRes.rows[0].id;
+
+  const currentRes = await pool.query(
+    'SELECT COUNT(*)::int AS n FROM candidate_company_status WHERE candidate_id = $1 AND deleted_at IS NULL',
+    [candidateId]
+  );
+  if (currentRes.rows[0].n + companyIds.length > MAX_COMPANIES) {
+    return res.status(400).json({ error: `A candidate can have at most ${MAX_COMPANIES} companies` });
+  }
+
+  const fairRes = await pool.query(
+    `SELECT fair_hours FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1`
+  );
+  const fairHours = fairRes.rows.length ? Number(fairRes.rows[0].fair_hours) : 8;
+
+  const client = await pool.connect();
+  let assigned, waitlisted;
+  try {
+    await client.query('BEGIN');
+    ({ assigned, waitlisted } = await assignCompanies(client, { candidateId, company_ids: companyIds, fairHours }));
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  // Same post-commit ordering as registerCandidate.js/select-companies — a
+  // Redis outage must never undo an already-committed booking. Deliberately
+  // doesn't require checked_in_at (unlike the candidate self-service route) —
+  // this is a staff override and may run before the candidate arrives.
+  for (const a of assigned) {
+    try {
+      await queueStore.enqueue(a.company_id, candidateId, a.serial);
+    } catch (err) {
+      console.error(`[candidates/:id/companies] queue enqueue failed for candidate ${candidateId} company ${a.company_id}:`, err.message);
+    }
+  }
+  if (assigned.length) {
+    emit('queue_joined', {
+      companies: assigned.map((a) => ({ company_id: a.company_id, company_name: a.company_name, serial: a.serial })),
+      statsDelta: { queued: assigned.length },
+    });
+  }
+  if (waitlisted.length) {
+    emit('candidate_waitlisted', {
+      companies: waitlisted.map((a) => ({ company_id: a.company_id, company_name: a.company_name })),
+      statsDelta: { waitlisted: waitlisted.length },
+    });
+  }
+
+  res.status(201).json({
+    assigned: assigned.map(({ ccs_id, ...rest }) => rest),
+    waitlisted: waitlisted.map(({ ccs_id, ...rest }) => rest),
+  });
+}));
+
+// Admin / Registration Staff: remove one company booking for a candidate —
+// the other half of the manual reassignment tool above. Only Pending/
+// Waitlisted, same reasoning as the route above.
+router.delete('/candidates/:id/companies/:companyId', authenticateJWT, requireRole('admin', 'registration_staff'), asyncHandler(async (req, res) => {
+  const client = await pool.connect();
+  let status;
+  try {
+    await client.query('BEGIN');
+    const ccsRes = await client.query(
+      `SELECT id, status FROM candidate_company_status
+       WHERE candidate_id = $1 AND company_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+      [req.params.id, req.params.companyId]
+    );
+    if (!ccsRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'No active booking for that candidate/company' });
+    }
+    status = ccsRes.rows[0].status;
+    if (status !== 'Pending' && status !== 'Waitlisted') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Can only remove a company before the candidate has been called for it' });
+    }
+    await client.query('UPDATE candidate_company_status SET deleted_at = now() WHERE id = $1', [ccsRes.rows[0].id]);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  // Waitlisted rows were never enqueued — only a Pending one needs its Redis
+  // queue entry cleared.
+  if (status === 'Pending') {
+    try {
+      await queueStore.remove(Number(req.params.companyId), Number(req.params.id));
+    } catch (err) {
+      console.error(`[candidates/:id/companies delete] queue remove failed for candidate ${req.params.id} company ${req.params.companyId}:`, err.message);
+    }
+  }
+
+  res.json({ ok: true });
 }));
 
 // Admin / Floor Manager / Company HR: serve an uploaded resume — inline, not

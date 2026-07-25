@@ -9,12 +9,14 @@ const requireRole = require('../middleware/requireRole');
 const rateLimit = require('../middleware/rateLimit');
 const redisCache = require('../middleware/redisCache');
 const registerCandidate = require('../lib/registerCandidate');
+const { assignCompanies, MAX_COMPANIES } = require('../lib/companyAssignment');
 const { normalizeMobile, isValidMobile } = require('../lib/mobile');
 const store = require('../lib/queueStore');
 const { resolveRung } = require('../lib/pingLadder');
 const { computeGateStatus } = require('../lib/gateStatus');
 const { RESUME_DIR } = require('../lib/resumeStorage');
 const { verifyQr } = require('../lib/checkinSig');
+const { emit } = require('../lib/events');
 
 const router = express.Router();
 
@@ -69,6 +71,12 @@ const resumeUploadLimit = rateLimit({ prefix: 'resume-upload', windowSec: 600, m
 // Feedback: same 5/10min-per-verified-token budget as resume upload — a
 // couple of resubmits (fixed a misclick) is normal, more than that is noise.
 const feedbackLimit = rateLimit({ prefix: 'feedback', windowSec: 600, max: 5, key: (req) => verifyQr(req.params.qr) });
+
+// Company selection: same 5/10min-per-verified-token budget as feedback/resume
+// — one real submission plus a couple of retries (flaky connection) is
+// normal; the route itself is one-shot anyway (see below), so this is really
+// just a backstop against hammering.
+const selectCompaniesLimit = rateLimit({ prefix: 'select-companies', windowSec: 600, max: 5, key: (req) => verifyQr(req.params.qr) });
 
 // PDF-only (mimetype + extension check, no magic-byte sniffing — matches
 // this project's minimal-dependency style), 5MB cap. Filename is always
@@ -266,6 +274,93 @@ router.post('/qr/feedback/:qr', feedbackLimit, asyncHandler(async (req, res) => 
   );
 
   res.json({ ok: true });
+}));
+
+// Public: pick companies after checking in at the Gate — the new candidate
+// journey (Registration -> Details -> Gate check-in -> *here* -> live
+// position), replacing the old registration-time company_ids requirement.
+// Same signed-qr write pattern as /qr/resume/:qr and /qr/feedback/:qr above:
+// bare token_no is guessable, so this can't be a "the token IS the
+// capability" route. One-shot (like registration's own company pick) — a
+// candidate who wants to add more companies later isn't supported here.
+router.post('/qr/select-companies/:qr', selectCompaniesLimit, asyncHandler(async (req, res) => {
+  const tokenNo = verifyQr(req.params.qr);
+  if (!tokenNo) return res.status(401).json({ error: 'Invalid or forged link' });
+
+  const candRes = await pool.query(
+    'SELECT id, checked_in_at FROM candidates WHERE token_no = $1 AND deleted_at IS NULL',
+    [tokenNo]
+  );
+  if (!candRes.rows.length) return res.status(404).json({ error: 'Candidate not found' });
+  const candidate = candRes.rows[0];
+
+  if (!candidate.checked_in_at) {
+    return res.status(403).json({ error: 'Check in at the Gate before choosing companies' });
+  }
+
+  const existingRes = await pool.query(
+    'SELECT 1 FROM candidate_company_status WHERE candidate_id = $1 AND deleted_at IS NULL LIMIT 1',
+    [candidate.id]
+  );
+  if (existingRes.rows.length) {
+    return res.status(409).json({ error: 'You have already selected your companies' });
+  }
+
+  const companyIds = req.body.company_ids;
+  if (!Array.isArray(companyIds) || companyIds.length === 0) {
+    return res.status(400).json({ error: 'Select at least one company' });
+  }
+  if (companyIds.length > MAX_COMPANIES) {
+    return res.status(400).json({ error: `Select at most ${MAX_COMPANIES} companies` });
+  }
+
+  const fairRes = await pool.query(
+    `SELECT fair_hours FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1`
+  );
+  const fairHours = fairRes.rows.length ? Number(fairRes.rows[0].fair_hours) : 8;
+
+  const client = await pool.connect();
+  let assigned, waitlisted;
+  try {
+    await client.query('BEGIN');
+    ({ assigned, waitlisted } = await assignCompanies(client, { candidateId: candidate.id, company_ids: companyIds, fairHours }));
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  // Same post-commit ordering as registerCandidate.js — a Redis outage must
+  // never undo an already-committed booking.
+  for (const a of assigned) {
+    try {
+      await store.enqueue(a.company_id, candidate.id, a.serial);
+    } catch (err) {
+      console.error(`[select-companies] queue enqueue failed for candidate ${candidate.id} company ${a.company_id}:`, err.message);
+    }
+  }
+
+  if (assigned.length) {
+    emit('queue_joined', {
+      token: tokenNo,
+      companies: assigned.map((a) => ({ company_id: a.company_id, company_name: a.company_name, serial: a.serial })),
+      statsDelta: { queued: assigned.length },
+    });
+  }
+  if (waitlisted.length) {
+    emit('candidate_waitlisted', {
+      token: tokenNo,
+      companies: waitlisted.map((a) => ({ company_id: a.company_id, company_name: a.company_name })),
+      statsDelta: { waitlisted: waitlisted.length },
+    });
+  }
+
+  res.status(201).json({
+    assigned: assigned.map(({ ccs_id, ...rest }) => rest),
+    waitlisted: waitlisted.map(({ ccs_id, ...rest }) => rest),
+  });
 }));
 
 // Public: recover a lost token page by mobile number (candidate closed the

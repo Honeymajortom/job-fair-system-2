@@ -5,8 +5,8 @@ import SiteCredit from './SiteCredit.jsx';
 
 // Public entry point (v1's flow A, kept per new_architecture_uiux_spec.html
 // §01 step 1 — only steps underneath it change). `/qr?token=` stashes the
-// fair-QR JWT minted at the entrance so /register's POST can prove it scanned
-// a real gate code, not a screenshot passed hand to hand.
+// fair-QR JWT minted at the entrance so DetailsForm's POST /qr/register can
+// prove it scanned a real gate code, not a screenshot passed hand to hand.
 export default function QRLanding() {
   const [params] = useSearchParams();
 
@@ -33,13 +33,13 @@ export default function QRLanding() {
         </div>
         <ol style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 10, marginTop: 20 }}>
           <li className="slot-row"><span className="c"><b>① Fill your details once</b></span></li>
-          <li className="slot-row"><span className="c"><b>② Pick up to 3 companies</b></span></li>
-          <li className="slot-row"><span className="c"><b>③ Track your live position</b></span></li>
+          <li className="slot-row"><span className="c"><b>② Check in at the Gate</b></span></li>
+          <li className="slot-row"><span className="c"><b>③ Pick up to 3 companies &amp; track your live position</b></span></li>
         </ol>
         <p className="save-note" style={{ marginTop: 16 }}>No fixed time · come when we call you</p>
       </m.div>
       <div className="sticky-cta" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <Link className="btn" to="/register">Start registration</Link>
+        <Link className="btn" to="/register/details">Start registration</Link>
         <Link className="btn ghost" to="/recover">Already registered? Find my queue</Link>
       </div>
       <SiteCredit />
