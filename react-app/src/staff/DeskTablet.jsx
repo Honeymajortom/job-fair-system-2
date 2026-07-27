@@ -6,6 +6,7 @@ import { useSocket, useSocketEvent } from './SocketContext';
 import IncomingCard from './IncomingCard';
 import CountdownRing from './CountdownRing';
 import InterviewTimer from './InterviewTimer';
+import OfflineBanner from '../common/OfflineBanner';
 
 // lib/queueDispatcher.js arms the timer at one of these two durations
 // depending on resolveSameFloor()'s companies.floor_number comparison; the
@@ -38,12 +39,17 @@ export default function DeskTablet() {
   const [isOpen, setIsOpen] = useState(null); // null while unknown — company_hr's own desk-open status
   const [togglingOpen, setTogglingOpen] = useState(false);
   const [incoming, setIncoming] = useState(null); // { candidateId, ccsId, expiresAt, interviewStartedAt, details }
+  const [acknowledged, setAcknowledged] = useState(false); // candidate tapped "I'm on my way" (LivePosition.jsx)
   const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(false);
   const [paused, setPaused] = useState(false);
   const [pausedRemainingMs, setPausedRemainingMs] = useState(null);
   const [pausing, setPausing] = useState(false);
   const [skipping, setSkipping] = useState(false);
+  const [upNext, setUpNext] = useState(null);
+  const [completedToday, setCompletedToday] = useState(null);
+  const [showUpNext, setShowUpNext] = useState(false);
+  const [showCompleted, setShowCompleted] = useState(false);
 
   useEffect(() => {
     joinDesk({ companyId, deskId });
@@ -55,6 +61,24 @@ export default function DeskTablet() {
       setIsOpen(c.is_open);
     }).catch(() => {});
   }, [companyId]);
+
+  // Read-only context panels, collapsed by default so they don't compete for
+  // attention with the live IncomingCard above them — GET /queue/:companyId
+  // already returns the full Pending queue for the company (reused as-is),
+  // GET /queue/:companyId/completed is the one new endpoint this adds.
+  function loadUpNext() {
+    api.getQueue(companyId).then(setUpNext).catch(() => {});
+  }
+  function loadCompleted() {
+    api.getCompletedToday(companyId).then(setCompletedToday).catch(() => {});
+  }
+  useEffect(() => {
+    loadUpNext();
+    loadCompleted();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyId]);
+  useSocketEvent('desk_incoming', () => loadUpNext());
+  useSocketEvent('queue_miss', () => loadUpNext());
 
   function showToast(text, isErr) {
     setToast({ text, isErr });
@@ -80,6 +104,7 @@ export default function DeskTablet() {
     const comingFrom = sameFloor ? 'Same floor' : 'Different floor';
     setPaused(false);
     setPausedRemainingMs(null);
+    setAcknowledged(false);
     try {
       const details = await fetchCandidateDetails(token, companyId);
       setIncoming({ candidateId, ccsId, expiresAt, sameFloor, interviewStartedAt, details: { ...details, comingFrom } });
@@ -101,6 +126,17 @@ export default function DeskTablet() {
     if (payload.companyId === companyId && payload.deskId === String(deskId)) {
       applyIncoming({ candidateId: payload.candidateId, ccsId: payload.ccsId, token: payload.token, expiresAt: payload.expiresAt, sameFloor: payload.sameFloor });
     }
+  });
+
+  // Candidate tapped "I'm on my way" on LivePosition.jsx — routes/public.js's
+  // POST /qr/acknowledge/:qr, a pure notification with no DB write behind it.
+  useSocketEvent('candidate_acknowledged', (payload) => {
+    setIncoming((cur) => {
+      if (cur && cur.candidateId === payload.candidateId && payload.companyId === companyId) {
+        setAcknowledged(true);
+      }
+      return cur;
+    });
   });
 
   // queue_miss carries candidateId only, no token (see lib/queueDispatcher.js /
@@ -173,6 +209,7 @@ export default function DeskTablet() {
       await api.markNoShow({ token: incoming.details.token, company_id: companyId });
       showToast(`${incoming.details.token} — skipped`);
       setIncoming(null);
+      loadUpNext();
       await callNext();
     } catch (err) {
       showToast(err.message, true);
@@ -215,6 +252,7 @@ export default function DeskTablet() {
       setIncoming(null);
       setPaused(false);
       setPausedRemainingMs(null);
+      loadCompleted();
       await callNext();
     } catch (err) {
       showToast(err.message, true);
@@ -223,6 +261,7 @@ export default function DeskTablet() {
 
   return (
     <div className="s-body">
+      <OfflineBanner />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
         <h2 className="screen-title">Desk {deskId}</h2>
         {isOpen !== null && (
@@ -246,6 +285,7 @@ export default function DeskTablet() {
               companyId={companyId}
               ratingParameters={ratingParameters}
               interviewStartedAt={incoming.interviewStartedAt}
+              acknowledged={acknowledged}
               onStartInterview={handleStartInterview}
               onDone={handleDone}
             />
@@ -281,6 +321,69 @@ export default function DeskTablet() {
           />
         )}
       </div>
+
+      {/* Read-only context, collapsed by default — additive to the live
+          IncomingCard above, not a replacement for it. */}
+      <div style={{ marginTop: 18 }}>
+        <button
+          type="button"
+          className="sec-label"
+          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'block' }}
+          onClick={() => setShowUpNext((s) => !s)}
+        >
+          {showUpNext ? '▾' : '▸'} Up next ({upNext ? upNext.length : '…'})
+        </button>
+        {showUpNext && (
+          <div className="table-wrap" style={{ marginTop: 8 }}>
+            <table className="data-table">
+              <thead><tr><th>Token</th><th>Name</th><th>Qualification</th></tr></thead>
+              <tbody>
+                {upNext && upNext.slice(0, 10).map((c) => (
+                  <tr key={c.ccs_id}>
+                    <td className="mono">{c.token_no}</td>
+                    <td>{c.name}</td>
+                    <td>{c.qualification || '—'}</td>
+                  </tr>
+                ))}
+                {upNext && !upNext.length && (
+                  <tr><td colSpan={3} className="save-note">No one waiting in the queue.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 14 }}>
+        <button
+          type="button"
+          className="sec-label"
+          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'block' }}
+          onClick={() => setShowCompleted((s) => !s)}
+        >
+          {showCompleted ? '▾' : '▸'} Completed today ({completedToday ? completedToday.length : '…'})
+        </button>
+        {showCompleted && (
+          <div className="table-wrap" style={{ marginTop: 8 }}>
+            <table className="data-table">
+              <thead><tr><th>Token</th><th>Name</th><th>Status</th></tr></thead>
+              <tbody>
+                {completedToday && completedToday.map((c) => (
+                  <tr key={c.ccs_id}>
+                    <td className="mono">{c.token_no}</td>
+                    <td>{c.name}</td>
+                    <td><span className="role-chip">{c.status}</span></td>
+                  </tr>
+                ))}
+                {completedToday && !completedToday.length && (
+                  <tr><td colSpan={3} className="save-note">Nothing completed at this desk yet today.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       {toast && <div className={`toast${toast.isErr ? ' err' : ''}`}>{toast.text}</div>}
     </div>
   );

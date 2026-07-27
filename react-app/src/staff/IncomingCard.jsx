@@ -15,7 +15,7 @@ const OUTCOMES = ['Selected', 'Rejected', 'Shortlisted', 'Hold'];
 // different moments — an interview can run well past the arrival timer's
 // 90s/180s window, and without an explicit start tap the no-show timer had
 // no way to know the candidate had shown up.
-export default function IncomingCard({ candidate, companyId, ratingParameters, interviewStartedAt, onStartInterview, onDone }) {
+export default function IncomingCard({ candidate, companyId, ratingParameters, interviewStartedAt, acknowledged, onStartInterview, onDone }) {
   const [starting, setStarting] = useState(false);
   const [pickingOutcome, setPickingOutcome] = useState(false);
   const [status, setStatus] = useState(null);
@@ -55,7 +55,9 @@ export default function IncomingCard({ candidate, companyId, ratingParameters, i
       animate={{ opacity: 1, x: 0 }}
       transition={{ duration: 0.35, ease: [0.25, 1, 0.5, 1] }}
     >
-      <div className="tag">{interviewStartedAt ? 'Interviewing now' : 'On their way to you'}</div>
+      <div className="tag">
+        {interviewStartedAt ? 'Interviewing now' : acknowledged ? '✅ Confirmed — on the way' : 'On their way to you'}
+      </div>
       <div className="tk">{candidate.token}</div>
       <dl className="cand-card" style={{ border: 'none', padding: 0 }}>
         <dt>Name</dt><dd>{candidate.name}</dd>

@@ -24,8 +24,14 @@ async function assignCompanies(client, { candidateId, company_ids, fairHours }) 
   }
 
   for (const companyId of company_ids) {
+    // Company lookup + booked-count merged into one round trip (was two
+    // sequential queries) — cuts the time spent under this company's
+    // advisory lock roughly in half per requested company.
     const companyRes = await client.query(
-      'SELECT id, company_name, location, seats, interview_minutes FROM companies WHERE id = $1',
+      `SELECT c.id, c.company_name, c.location, c.seats, c.interview_minutes,
+              (SELECT COUNT(*)::int FROM candidate_company_status ccs
+                WHERE ccs.company_id = c.id AND ccs.status != 'Waitlisted' AND ccs.deleted_at IS NULL) AS booked
+       FROM companies c WHERE c.id = $1`,
       [companyId]
     );
     if (!companyRes.rows.length) continue;
@@ -34,13 +40,8 @@ async function assignCompanies(client, { candidateId, company_ids, fairHours }) 
     const capacity = company.seats * (60 / company.interview_minutes) * fairHours;
     const capSold = Math.floor(0.9 * capacity);
 
-    const bookedRes = await client.query(
-      `SELECT COUNT(*)::int AS n FROM candidate_company_status
-       WHERE company_id = $1 AND status != 'Waitlisted' AND deleted_at IS NULL`,
-      [companyId]
-    );
-    const isWaitlisted = bookedRes.rows[0].n >= capSold;
-    const serial = isWaitlisted ? null : bookedRes.rows[0].n + 1;
+    const isWaitlisted = company.booked >= capSold;
+    const serial = isWaitlisted ? null : company.booked + 1;
 
     // ON CONFLICT is an upsert, not a plain skip, so a company a staff member
     // previously removed for this candidate (routes/candidates.js's DELETE

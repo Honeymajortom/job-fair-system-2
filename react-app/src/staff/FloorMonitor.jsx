@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { useSocketEvent } from './SocketContext';
+import OfflineBanner from '../common/OfflineBanner';
+import Spinner from '../common/Spinner';
+import EmptyState from '../common/EmptyState';
 
 const POLL_MS = 20000;
 const RECENT_LIMIT = 20;
@@ -14,16 +17,30 @@ function fmtDate(iso) {
 }
 
 export default function FloorMonitor() {
-  const [date, setDate] = useState(''); // '' = all time, same convention as Insights
+  // Each fair day is its own fresh session now — '' means "nothing picked
+  // yet", not "all time" (that all-time aggregate used to be the default
+  // view, which read as stale/misleading once multiple fair days piled up).
+  const [date, setDate] = useState('');
   const [stats, setStats] = useState(null);
   const [recent, setRecent] = useState(null);
+  const [availableDates, setAvailableDates] = useState([]);
 
   function load(d) {
+    if (!d) { setStats(null); setRecent(null); return; }
     api.getFloorStats(d).then(setStats).catch(() => {});
     api.listCandidates(d).then(setRecent).catch(() => {});
   }
 
+  // GET /floor-stats returns available_dates alongside the all-time numbers
+  // regardless of ?date= — fetched once, unscoped, purely to populate the Day
+  // dropdown's option list; the all-time numbers themselves are discarded,
+  // never assigned to `stats`, so nothing renders from this call.
   useEffect(() => {
+    api.getFloorStats().then((s) => setAvailableDates(s.available_dates || [])).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!date) return undefined;
     load(date);
     const t = setInterval(() => load(date), POLL_MS);
     return () => clearInterval(t);
@@ -31,6 +48,7 @@ export default function FloorMonitor() {
 
   // Live-ish without full local delta application (v1's FloorMonitor did
   // that; this pass just re-fetches on the events that would move a number).
+  // A no-op while date is blank — load() itself guards that.
   useSocketEvent('candidate_registered', () => load(date));
   useSocketEvent('candidate_dispatched', () => load(date));
   useSocketEvent('interview_processed', () => load(date));
@@ -43,15 +61,19 @@ export default function FloorMonitor() {
 
   return (
     <div className="s-body">
+      <OfflineBanner />
       <h2 className="screen-title">Floor</h2>
 
       <div className="field" style={{ maxWidth: 260, marginBottom: 16 }}>
         <label>Day</label>
         <select value={date} onChange={(e) => setDate(e.target.value)}>
-          <option value="">All time</option>
-          {stats && stats.available_dates.map((d) => <option key={d} value={d}>{fmtDate(d)}</option>)}
+          <option value="">Select a day…</option>
+          {availableDates.map((d) => <option key={d} value={d}>{fmtDate(d)}</option>)}
         </select>
       </div>
+
+      {!date && <EmptyState icon="📅" title="No day selected" hint="Pick a day above to see Floor data." />}
+      {date && !stats && <Spinner label="Loading Floor data…" />}
 
       {stats && (
         <>
@@ -119,27 +141,33 @@ export default function FloorMonitor() {
       )}
 
       <div className="sec-label" style={{ margin: '18px 0 10px' }}>Recent registrations</div>
-      <div className="table-wrap">
-        <table className="data-table">
-          <thead>
-            <tr><th>Token</th><th>Name</th><th>Qualification</th><th>Registered at</th><th>Checked in</th></tr>
-          </thead>
-          <tbody>
-            {recentScoped && recentScoped.map((c) => (
-              <tr key={c.id}>
-                <td className="mono">{c.token_no}</td>
-                <td>{c.name}</td>
-                <td>{c.qualification || '—'}</td>
-                <td className="mono">{new Date(c.registered_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
-                <td>{c.checked_in_at ? 'Yes' : '—'}</td>
-              </tr>
-            ))}
-            {recentScoped && !recentScoped.length && (
-              <tr><td colSpan={5} className="save-note">No candidates registered yet.</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      {recentScoped ? (
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr><th>Token</th><th>Name</th><th>Qualification</th><th>Registered at</th><th>Checked in</th></tr>
+            </thead>
+            <tbody>
+              {recentScoped.map((c) => (
+                <tr key={c.id}>
+                  <td className="mono">{c.token_no}</td>
+                  <td>{c.name}</td>
+                  <td>{c.qualification || '—'}</td>
+                  <td className="mono">{new Date(c.registered_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+                  <td>{c.checked_in_at ? 'Yes' : '—'}</td>
+                </tr>
+              ))}
+              {!recentScoped.length && (
+                <tr><td colSpan={5} className="save-note">No candidates registered yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      ) : date ? (
+        <Spinner label="Loading recent registrations…" />
+      ) : (
+        <EmptyState icon="📅" hint="Pick a day above to see recent registrations." />
+      )}
     </div>
   );
 }

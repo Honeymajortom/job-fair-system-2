@@ -55,7 +55,7 @@ async function main() {
   try {
     console.log('--- booking 5 candidates against a company with cap_sold=5 ---');
     for (let i = 1; i <= 5; i++) {
-      const r = await registerCandidate({ name: `__test cap ${i}`, mobile: `9${String(9000000 + i)}`, company_ids: [companyId] });
+      const r = await registerCandidate({ name: `__test cap ${i}`, mobile: `9${String(900000000 + i).padStart(9, '0')}`, company_ids: [companyId] });
       created.push(r.body.token);
       check(`candidate ${i} booked as Pending with serial ${i}`, r.status === 201 && r.body.assigned.length === 1 && r.body.assigned[0].serial === i, JSON.stringify(r.body));
     }
@@ -64,7 +64,7 @@ async function main() {
     check('all 5 pushed onto the live Redis queue in serial order', queueAfter5.length === 5, queueAfter5.join(','));
 
     console.log('\n--- 6th candidate exceeds cap_sold=5 -> waitlisted, not queued ---');
-    const r6 = await registerCandidate({ name: '__test cap 6', mobile: '9999906', company_ids: [companyId] });
+    const r6 = await registerCandidate({ name: '__test cap 6', mobile: '9999999906', company_ids: [companyId] });
     created.push(r6.body.token);
     check('6th candidate waitlisted, not assigned', r6.body.assigned.length === 0 && r6.body.waitlisted.length === 1, JSON.stringify(r6.body));
     const queueAfter6 = await store.topCandidates(companyId, 10);
@@ -72,7 +72,7 @@ async function main() {
 
     console.log('\n--- mixed booking: one company at cap, one with room ---');
     const r7 = await registerCandidate({
-      name: '__test cap 7', mobile: '9999907',
+      name: '__test cap 7', mobile: '9999999907',
       company_ids: [companyId, sideCompanyId],
     });
     created.push(r7.body.token);

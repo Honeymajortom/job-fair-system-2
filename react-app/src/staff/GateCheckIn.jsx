@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import { api } from '../api';
 import { useAuth } from './AuthContext';
+import CandidateLookup from './CandidateLookup';
 
 // Camera itself just needs getUserMedia — decoding falls back to jsQR
 // (pure JS, works everywhere) when the native BarcodeDetector API isn't
@@ -337,6 +338,12 @@ export default function GateCheckIn() {
           <option value="exit">Exit</option>
         </select>
       </div>
+
+      {canManageGate && (
+        <div className="field" style={{ marginBottom: 16 }}>
+          <CandidateLookup />
+        </div>
+      )}
 
       {!exitMode && (
         <>

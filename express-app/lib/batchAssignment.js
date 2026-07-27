@@ -11,20 +11,23 @@ async function getOrCreateAvailableBatch(client, fair) {
   const { fair_date: fairDate, batch_size: batchSize, batch_interval_minutes: intervalMinutes } = fair;
   await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`batch-assign:${fairDate}`]);
 
+  // Occupancy for every open batch in one round trip (a correlated subquery
+  // per row, not a join, so FOR UPDATE still locks exactly the fair_batches
+  // rows it always did) instead of a sequential per-batch COUNT(*) loop —
+  // that loop used to run entirely while holding both this advisory lock and
+  // the row lock below, serializing every concurrent registration on the
+  // same fair-date through it.
   const batchesRes = await client.query(
-    `SELECT id, arrival_time, capacity FROM fair_batches
-     WHERE fair_date = $1 AND status != 'closed'
-     ORDER BY arrival_time ASC
+    `SELECT fb.id, fb.arrival_time, fb.capacity,
+            (SELECT COUNT(*)::int FROM candidates c WHERE c.batch_id = fb.id AND c.deleted_at IS NULL) AS occupied
+     FROM fair_batches fb
+     WHERE fb.fair_date = $1 AND fb.status != 'closed'
+     ORDER BY fb.arrival_time ASC
      FOR UPDATE`,
     [fairDate]
   );
-  for (const b of batchesRes.rows) {
-    const occ = await client.query(
-      'SELECT COUNT(*)::int AS n FROM candidates WHERE batch_id = $1 AND deleted_at IS NULL',
-      [b.id]
-    );
-    if (occ.rows[0].n < b.capacity) return b;
-  }
+  const available = batchesRes.rows.find((b) => b.occupied < b.capacity);
+  if (available) return available;
 
   const lastRes = await client.query(
     'SELECT batch_number, arrival_time FROM fair_batches WHERE fair_date = $1 ORDER BY batch_number DESC LIMIT 1',

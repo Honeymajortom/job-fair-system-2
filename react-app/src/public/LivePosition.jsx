@@ -7,6 +7,9 @@ import RungBadge, { cardModifier } from './RungBadge';
 import FeedbackForm from './FeedbackForm';
 import SelectCompanies from './SelectCompanies';
 import SiteCredit from './SiteCredit.jsx';
+import OfflineBanner from '../common/OfflineBanner';
+import Spinner from '../common/Spinner';
+import ErrorBanner from '../common/ErrorBanner';
 
 const POLL_MS = 5000; // server caches the route for 15s, so most polls are cache hits
 const QR_ELIGIBLE_RUNGS = ['gate', 'staging', 'desk_call'];
@@ -98,7 +101,7 @@ function WaitingDirective({ slots, waitingRooms }) {
   return null;
 }
 
-function PosCard({ slot }) {
+function PosCard({ slot, token }) {
   const isWaitlisted = slot.rung === undefined;
   const rung = isWaitlisted ? 'waitlisted' : slot.rung;
   const isCalled = rung === 'desk_call';
@@ -107,6 +110,8 @@ function PosCard({ slot }) {
   const modifier = isWaitlisted ? '' : cardModifier(rung, slot.status);
   const prevRung = useRef(rung);
   const [pulsing, setPulsing] = useState(false);
+  const [acking, setAcking] = useState(false);
+  const [acked, setAcked] = useState(false);
 
   useEffect(() => {
     if (prevRung.current !== 'warm' && rung === 'warm') {
@@ -116,6 +121,30 @@ function PosCard({ slot }) {
     }
     prevRung.current = rung;
   }, [rung]);
+
+  // Reset once this call is no longer live — a fresh call later (e.g. after
+  // a missed-call rank decay puts them back in the queue and they get called
+  // again) should show the button again, not stay silently acknowledged.
+  useEffect(() => {
+    if (rung !== 'desk_call') setAcked(false);
+  }, [rung]);
+
+  // Pure notification to Company HR's desk tablet — best-effort, no retry:
+  // the queue/no-show-timer state this candidate actually depends on never
+  // reads this, so a failed request here just means the tap silently didn't
+  // reach the desk, not a broken candidate flow.
+  async function acknowledge() {
+    setAcking(true);
+    try {
+      const qr = localStorage.getItem(`checkin_qr_${token}`);
+      if (qr) await api.acknowledgeArrival(qr);
+      setAcked(true);
+    } catch {
+      // best-effort — see comment above
+    } finally {
+      setAcking(false);
+    }
+  }
 
   return (
     <m.div
@@ -142,7 +171,16 @@ function PosCard({ slot }) {
         // candidate right now — a bare "0" position number reads as noise at
         // exactly the moment it matters most, so this replaces the numeric
         // display with an explicit call to action instead.
-        <p className="desk-call-note">🔔 Your turn — go to {describeLocation(slot) || 'the desk'} now</p>
+        <>
+          <p className="desk-call-note">🔔 Your turn — go to {describeLocation(slot) || 'the desk'} now</p>
+          {acked ? (
+            <p className="save-note" style={{ marginTop: 8, textAlign: 'left' }}>✅ We told them you're on the way</p>
+          ) : (
+            <button className="btn ok" style={{ marginTop: 8 }} disabled={acking} onClick={acknowledge}>
+              {acking ? 'Letting them know…' : "✅ I'm on my way"}
+            </button>
+          )}
+        </>
       ) : isInInterview ? (
         // interview_started_at is set (confirm-arrival) but status is still
         // 'Dispatched' — the candidate is already at the desk, so the blinking
@@ -290,8 +328,8 @@ export default function LivePosition() {
     QRCode.toDataURL(qr, { margin: 1, width: 168 }).then(setQrDataUrl).catch(() => setQrDataUrl(null));
   }, [data, token]);
 
-  if (error) return <div className="m-shell"><div className="m-body"><div className="error-note">{error}</div></div></div>;
-  if (!data) return <div className="m-shell"><div className="m-body"><div className="save-note">Loading your position…</div></div></div>;
+  if (error) return <div className="m-shell"><OfflineBanner /><div className="m-body"><ErrorBanner message={error} /></div></div>;
+  if (!data) return <div className="m-shell"><OfflineBanner /><div className="m-body"><Spinner label="Loading your position…" /></div></div>;
 
   // Waitlisted bookings (rung undefined — never entered the live queue) never
   // had an interview to settle, so they're excluded here rather than
@@ -301,6 +339,7 @@ export default function LivePosition() {
 
   return (
     <div className="m-shell">
+      <OfflineBanner />
       <div className="app-head">
         <div className="fair">{data.name}'s queues</div>
         <div className="token-hero">{data.token}</div>
@@ -371,7 +410,7 @@ export default function LivePosition() {
           <>
             <WaitingDirective slots={data.slots} waitingRooms={data.waiting_rooms || []} />
             <div className="ladder">
-              {data.slots.map((slot, i) => <PosCard key={`${slot.company}-${i}`} slot={slot} />)}
+              {data.slots.map((slot, i) => <PosCard key={`${slot.company}-${i}`} slot={slot} token={token} />)}
             </div>
             {qrDataUrl && (
               <div className="qr-wrap">

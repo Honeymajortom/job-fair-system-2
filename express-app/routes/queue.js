@@ -33,6 +33,25 @@ router.get('/queue/:companyId', authenticateJWT, requireRole('admin', 'floor_man
   res.json(result.rows);
 }));
 
+// Company HR (+ Admin / Floor Manager oversight): today's settled candidates
+// for a desk to glance back at — DeskTablet.jsx's "Completed today" panel.
+// Scoped to today (processed_at::date = current_date) rather than all-time,
+// same "fresh session per fair day" reasoning as Floor/Insights' Day filter.
+router.get('/queue/:companyId/completed', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), requireCompanyScope((req) => req.params.companyId), asyncHandler(async (req, res) => {
+  const result = await pool.query(
+    `SELECT ccs.id AS ccs_id, ccs.status, ccs.processed_at,
+            cd.token_no, cd.name, cd.qualification
+     FROM candidate_company_status ccs
+     JOIN candidates cd ON cd.id = ccs.candidate_id
+     WHERE ccs.company_id = $1 AND ccs.deleted_at IS NULL
+       AND ccs.status NOT IN ('Pending', 'Dispatched')
+       AND ccs.processed_at::date = CURRENT_DATE
+     ORDER BY ccs.processed_at DESC`,
+    [req.params.companyId]
+  );
+  res.json(result.rows);
+}));
+
 // Admin / Floor Manager: quick fair-wide stats — the dashboards' 30s reconcile
 // poll. Cached 20s (v3.0 §0 #4): deltas keep screens live, this corrects drift.
 router.get('/stats', authenticateJWT, requireRole('admin', 'floor_manager'), redisCache(20), asyncHandler(async (_req, res) => {

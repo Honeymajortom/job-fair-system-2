@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import SiteCredit from './SiteCredit.jsx';
+import OfflineBanner from '../common/OfflineBanner';
+import Spinner from '../common/Spinner';
 
 // Entrance Gate + Staging board (new_architecture_uiux_spec.html §03) — meant
 // for a monitor mounted at the venue entrance, not a candidate's own phone,
@@ -22,10 +24,13 @@ export default function GateBoard() {
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: '32px 24px', minHeight: '100dvh' }}>
+      <OfflineBanner />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 28 }}>
         <div style={{ fontFamily: 'var(--disp)', fontWeight: 800, fontStretch: '85%', fontSize: 30 }}>SDC Job Fair — Entrance</div>
         <span className="live-tag"><span className="pulse-dot live" />LIVE</span>
       </div>
+
+      {!status && <Spinner label="Loading gate status…" />}
 
       {status && (
         <div className="gate-strip">

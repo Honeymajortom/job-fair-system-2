@@ -16,7 +16,7 @@ const { resolveRung } = require('../lib/pingLadder');
 const { computeGateStatus } = require('../lib/gateStatus');
 const { RESUME_DIR } = require('../lib/resumeStorage');
 const { verifyQr } = require('../lib/checkinSig');
-const { emit } = require('../lib/events');
+const { emit, emitToRoom } = require('../lib/events');
 
 const router = express.Router();
 
@@ -77,6 +77,12 @@ const feedbackLimit = rateLimit({ prefix: 'feedback', windowSec: 600, max: 5, ke
 // normal; the route itself is one-shot anyway (see below), so this is really
 // just a backstop against hammering.
 const selectCompaniesLimit = rateLimit({ prefix: 'select-companies', windowSec: 600, max: 5, key: (req) => verifyQr(req.params.qr) });
+
+// Candidate "I'm on my way" acknowledgment: same 5/10min-per-verified-token
+// budget as feedback/resume/select-companies above — a couple of taps (retry
+// after a flaky connection) is normal, this is just a backstop against
+// hammering.
+const acknowledgeLimit = rateLimit({ prefix: 'acknowledge', windowSec: 600, max: 5, key: (req) => verifyQr(req.params.qr) });
 
 // PDF-only (mimetype + extension check, no magic-byte sniffing — matches
 // this project's minimal-dependency style), 5MB cap. Filename is always
@@ -361,6 +367,43 @@ router.post('/qr/select-companies/:qr', selectCompaniesLimit, asyncHandler(async
     assigned: assigned.map(({ ccs_id, ...rest }) => rest),
     waitlisted: waitlisted.map(({ ccs_id, ...rest }) => rest),
   });
+}));
+
+// Public: candidate confirms they're on their way once called to a desk —
+// notifies Company HR's tablet ahead of the candidate actually arriving/being
+// scanned in. Pure notification, no DB write: the state that actually governs
+// dispatch (Dispatched status, the no-show timer, misses) is untouched here,
+// so a candidate tapping this (or not) can never desync the queue itself —
+// it's purely informational for the desk. Same signed-qr pattern as the other
+// post-registration public writes above.
+router.post('/qr/acknowledge/:qr', acknowledgeLimit, asyncHandler(async (req, res) => {
+  const tokenNo = verifyQr(req.params.qr);
+  if (!tokenNo) return res.status(401).json({ error: 'Invalid or forged link' });
+
+  const candRes = await pool.query(
+    'SELECT id FROM candidates WHERE token_no = $1 AND deleted_at IS NULL',
+    [tokenNo]
+  );
+  if (!candRes.rows.length) return res.status(404).json({ error: 'Candidate not found' });
+  const candidateId = candRes.rows[0].id;
+
+  const dispatchedRes = await pool.query(
+    `SELECT company_id FROM candidate_company_status
+     WHERE candidate_id = $1 AND status = 'Dispatched' AND deleted_at IS NULL
+     LIMIT 1`,
+    [candidateId]
+  );
+  if (!dispatchedRes.rows.length) {
+    return res.status(409).json({ error: 'You have not been called to a desk yet' });
+  }
+  const companyId = dispatchedRes.rows[0].company_id;
+
+  const deskId = await store.getLockDesk(candidateId);
+  if (deskId) {
+    emitToRoom(`desk:${companyId}:${deskId}`, 'candidate_acknowledged', { candidateId, companyId });
+  }
+
+  res.json({ ok: true });
 }));
 
 // Public: recover a lost token page by mobile number (candidate closed the

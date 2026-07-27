@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import SiteCredit from './SiteCredit.jsx';
+import OfflineBanner from '../common/OfflineBanner';
 
 const TRAVEL_PRESETS = [10, 25, 45, 60];
 const RESUME_MAX_BYTES = 5 * 1024 * 1024; // matches the server's multer limit — catch it client-side first
@@ -108,6 +109,7 @@ export default function DetailsForm() {
 
   return (
     <div className="m-shell">
+      <OfflineBanner />
       <div className="app-head">
         <div className="fair">Candidate Registration</div>
         <div className="sub">Please fill in your information to get started</div>
@@ -139,16 +141,16 @@ export default function DetailsForm() {
         </div>
         <div className="field">
           <label>Age</label>
-          <input type="number" value={form.age} onChange={(e) => set('age', e.target.value)} />
+          <input required type="number" value={form.age} onChange={(e) => set('age', e.target.value)} />
         </div>
         <div className="field">
           <label>Qualification</label>
-          <input value={form.qualification} onChange={(e) => set('qualification', e.target.value)} />
+          <input required value={form.qualification} onChange={(e) => set('qualification', e.target.value)} />
         </div>
         <div className="field">
           <label>Gender</label>
-          <select value={form.gender} onChange={(e) => set('gender', e.target.value)}>
-            <option value="">Prefer not to say</option>
+          <select required value={form.gender} onChange={(e) => set('gender', e.target.value)}>
+            <option value="" disabled>Select…</option>
             <option value="Male">Male</option>
             <option value="Female">Female</option>
             <option value="Other">Other</option>
@@ -156,8 +158,8 @@ export default function DetailsForm() {
         </div>
         <div className="field">
           <label>SDC candidate?</label>
-          <select value={form.is_sdc} onChange={(e) => set('is_sdc', e.target.value)}>
-            <option value="">Not sure</option>
+          <select required value={form.is_sdc} onChange={(e) => set('is_sdc', e.target.value)}>
+            <option value="" disabled>Select…</option>
             <option value="yes">Yes — enrolled in the SDC program</option>
             <option value="no">No — general candidate</option>
           </select>

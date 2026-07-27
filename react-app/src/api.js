@@ -1,5 +1,27 @@
 import { io } from 'socket.io-client';
 
+// Session-expired (mid-use 401, not the initial /me check AuthContext.jsx
+// already handles, and not the public candidate paths below which have no
+// session to expire) — AuthContext.jsx registers a callback here so a 401
+// anywhere in the staff app can drop `user` back to null and let StaffApp's
+// existing Gate redirect to /staff/login do the rest, instead of every
+// staff screen needing its own 401-handling logic.
+let onUnauthorized = null;
+export function setOnUnauthorized(fn) { onUnauthorized = fn; }
+
+// /login's own 401 is a wrong-password result, not a session expiring —
+// redirecting from the login screen back to itself would be silly. /me's
+// 401 on cold load is the normal "not logged in yet" case, already handled
+// by AuthContext's checkSession. /qr/* and /gate-status are the public
+// candidate/kiosk paths, which never carry a staff session to expire.
+function isAuthExempt(path) {
+  return path === '/login' || path === '/me' || path === '/gate-status' || path.startsWith('/qr/');
+}
+
+function handleUnauthorized(path, status) {
+  if (status === 401 && onUnauthorized && !isAuthExempt(path)) onUnauthorized();
+}
+
 // All calls go through the Vite dev proxy (or Nginx in prod), so paths are
 // relative and the HttpOnly session cookie rides along automatically.
 async function request(path, options = {}) {
@@ -10,6 +32,7 @@ async function request(path, options = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    handleUnauthorized(path, res.status);
     const err = new Error(data.error || `Request failed (${res.status})`);
     err.status = res.status;
     throw err;
@@ -25,6 +48,7 @@ async function uploadFile(path, formData) {
   const res = await fetch(`/api${path}`, { method: 'POST', credentials: 'include', body: formData });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    handleUnauthorized(path, res.status);
     const err = new Error(data.error || `Request failed (${res.status})`);
     err.status = res.status;
     throw err;
@@ -48,6 +72,10 @@ export const api = {
   // qr here is the signed "{token_no}.{HMAC}" string, same as uploadResume/
   // submitFeedback — not the bare token, since this is a write endpoint.
   selectCompanies: (qr, company_ids) => request(`/qr/select-companies/${encodeURIComponent(qr)}`, { method: 'POST', body: JSON.stringify({ company_ids }) }),
+  // qr here is the same signed "{token_no}.{HMAC}" string as the writes
+  // above — see routes/public.js POST /qr/acknowledge/:qr. Notifies Company
+  // HR's desk tablet that the candidate is on their way, purely informational.
+  acknowledgeArrival: (qr) => request(`/qr/acknowledge/${encodeURIComponent(qr)}`, { method: 'POST' }),
   recoverToken: (payload) => request('/qr/recover', { method: 'POST', body: JSON.stringify(payload) }),
   // qr here is the same signed "{token_no}.{HMAC}" string uploadResume uses,
   // not the bare token — see routes/public.js POST /qr/feedback/:qr.
@@ -78,6 +106,7 @@ export const api = {
   removeCandidateCompany: (id, companyId) => request(`/candidates/${id}/companies/${companyId}`, { method: 'DELETE' }),
   rescheduleBatch: (id, batch_id) => request(`/candidates/${id}/batch`, { method: 'PUT', body: JSON.stringify({ batch_id }) }),
   getQueue: (companyId) => request(`/queue/${companyId}`),
+  getCompletedToday: (companyId) => request(`/queue/${companyId}/completed`),
   submitResult: (payload) => request('/interview-result', { method: 'PUT', body: JSON.stringify(payload) }),
   markNoShow: (payload) => request('/no-show', { method: 'POST', body: JSON.stringify(payload) }),
   // queue-system Phase 3/4 — desk tablet

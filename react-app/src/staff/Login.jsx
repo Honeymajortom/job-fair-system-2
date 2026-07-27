@@ -9,6 +9,14 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  // Set by api.js's onUnauthorized callback (AuthContext.jsx) when a staff
+  // action 401s mid-session — a one-shot flag so this reads once, then
+  // clears, rather than reappearing on every future visit to this screen.
+  const [expired] = useState(() => {
+    const flag = sessionStorage.getItem('session_expired');
+    if (flag) sessionStorage.removeItem('session_expired');
+    return !!flag;
+  });
 
   async function submit(e) {
     e.preventDefault();
@@ -28,6 +36,7 @@ export default function Login() {
     <div className="s-shell">
       <div className="s-body" style={{ maxWidth: 360 }}>
         <h2 className="screen-title">Staff login</h2>
+        {expired && <div className="error-note" style={{ marginBottom: 8 }}>Your session expired — please sign in again.</div>}
         <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div className="field">
             <label>Username</label>

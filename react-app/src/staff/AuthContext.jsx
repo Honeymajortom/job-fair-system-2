@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { api } from '../api';
+import { api, setOnUnauthorized } from '../api';
 
 const AuthContext = createContext(null);
 
@@ -33,6 +33,19 @@ export function AuthProvider({ children }) {
   }, []);
 
   useEffect(() => { checkSession(); }, [checkSession]);
+
+  // Session-expired mid-use: api.js calls this on any staff-route 401 that
+  // isn't the initial /me check above. Flagging session_expired lets
+  // Login.jsx show a distinct message instead of a bare login form, since
+  // "your session ran out" and "here's a fresh login screen" read very
+  // differently to someone who didn't choose to log out.
+  useEffect(() => {
+    setOnUnauthorized(() => {
+      sessionStorage.setItem('session_expired', '1');
+      setUser(null);
+    });
+    return () => setOnUnauthorized(null);
+  }, []);
 
   async function login(username, password) {
     const me = await api.login(username, password);

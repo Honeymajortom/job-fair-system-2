@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import OfflineBanner from '../common/OfflineBanner';
+import Spinner from '../common/Spinner';
+import EmptyState from '../common/EmptyState';
 
 // Cross-cutting inference over registration + interview-outcome data — not a
 // live-ops control surface like Floor, a computed summary (lib/insights.js)
@@ -109,14 +112,28 @@ function DonutBlock({ title, segments }) {
 }
 
 export default function Insights() {
-  const [date, setDate] = useState(''); // '' = all time
+  // Each fair day is its own fresh session now — '' means "nothing picked
+  // yet", not "all time" (an all-time aggregate by default read as stale
+  // once multiple fair days piled up).
+  const [date, setDate] = useState('');
   const [data, setData] = useState(null);
+  const [availableDates, setAvailableDates] = useState([]);
 
   function load(d) {
-    api.getInsights(d || undefined).then(setData).catch(() => {});
+    if (!d) { setData(null); return; }
+    api.getInsights(d).then(setData).catch(() => {});
   }
 
+  // GET /insights returns available_dates alongside the all-time totals
+  // regardless of ?date= — fetched once, unscoped, purely to populate the Day
+  // dropdown's option list; the all-time totals themselves are discarded,
+  // never assigned to `data`, so nothing renders from this call.
   useEffect(() => {
+    api.getInsights().then((d) => setAvailableDates(d.available_dates || [])).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!date) return undefined;
     load(date);
     const t = setInterval(() => load(date), POLL_MS);
     return () => clearInterval(t);
@@ -129,15 +146,19 @@ export default function Insights() {
 
   return (
     <div className="s-body">
+      <OfflineBanner />
       <h2 className="screen-title">Insights</h2>
 
       <div className="field" style={{ maxWidth: 260, marginBottom: 16 }}>
         <label>Day</label>
         <select value={date} onChange={(e) => setDate(e.target.value)}>
-          <option value="">All time</option>
-          {data && data.available_dates.map((d) => <option key={d} value={d}>{fmtDate(d)}</option>)}
+          <option value="">Select a day…</option>
+          {availableDates.map((d) => <option key={d} value={d}>{fmtDate(d)}</option>)}
         </select>
       </div>
+
+      {!date && <EmptyState icon="📅" title="No day selected" hint="Pick a day above to see Insights data." />}
+      {date && !t && <Spinner label="Loading Insights data…" />}
 
       {t && (
         <>
@@ -187,64 +208,72 @@ export default function Insights() {
       )}
 
       <div className="sec-label" style={{ margin: '18px 0 10px' }}>Per company — vacancies &amp; outcomes</div>
-      <div className="table-wrap">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Company</th><th>Vacancies</th><th>Assigned</th><th>Done</th>
-              <th>Selected</th><th>Shortlist</th><th>Hold</th><th>Rejected</th><th>Pending</th><th>Fill rate</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data && data.companies.map((c) => (
-              <tr key={c.id}>
-                <td>{c.company_name}</td>
-                <td className="mono">{c.vacancies}</td>
-                <td className="mono">{c.assigned}</td>
-                <td className="mono">{c.done}</td>
-                <td className="mono" style={{ color: 'var(--st-selected)' }}>{c.selected}</td>
-                <td className="mono" style={{ color: 'var(--st-short)' }}>{c.shortlisted}</td>
-                <td className="mono" style={{ color: 'var(--st-hold)' }}>{c.hold}</td>
-                <td className="mono" style={{ color: 'var(--st-rejected)' }}>{c.rejected}</td>
-                <td className="mono" style={{ color: 'var(--st-pending)' }}>{c.pending}</td>
-                <td className="mono">{c.fill_rate === null ? '—' : `${c.fill_rate}%`}</td>
+      {data ? (
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Company</th><th>Vacancies</th><th>Assigned</th><th>Done</th>
+                <th>Selected</th><th>Shortlist</th><th>Hold</th><th>Rejected</th><th>Pending</th><th>Fill rate</th>
               </tr>
-            ))}
-            {data && !data.companies.length && (
-              <tr><td colSpan={10} className="save-note">No companies yet.</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {data.companies.map((c) => (
+                <tr key={c.id}>
+                  <td>{c.company_name}</td>
+                  <td className="mono">{c.vacancies}</td>
+                  <td className="mono">{c.assigned}</td>
+                  <td className="mono">{c.done}</td>
+                  <td className="mono" style={{ color: 'var(--st-selected)' }}>{c.selected}</td>
+                  <td className="mono" style={{ color: 'var(--st-short)' }}>{c.shortlisted}</td>
+                  <td className="mono" style={{ color: 'var(--st-hold)' }}>{c.hold}</td>
+                  <td className="mono" style={{ color: 'var(--st-rejected)' }}>{c.rejected}</td>
+                  <td className="mono" style={{ color: 'var(--st-pending)' }}>{c.pending}</td>
+                  <td className="mono">{c.fill_rate === null ? '—' : `${c.fill_rate}%`}</td>
+                </tr>
+              ))}
+              {!data.companies.length && (
+                <tr><td colSpan={10} className="save-note">No companies yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        date ? <Spinner label="Loading…" /> : <EmptyState icon="📅" hint="Pick a day above to see this table." />
+      )}
 
       <div className="sec-label" style={{ margin: '18px 0 10px' }}>Per company — demographics</div>
-      <div className="table-wrap">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Company</th><th>Male</th><th>Female</th><th>Other</th><th>Gender unknown</th>
-              <th>SDC</th><th>Non-SDC</th><th>SDC unknown</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data && data.companies.map((c) => (
-              <tr key={c.id}>
-                <td>{c.company_name}</td>
-                <td className="mono">{c.male}</td>
-                <td className="mono">{c.female}</td>
-                <td className="mono">{c.other_gender}</td>
-                <td className="mono">{c.gender_unknown}</td>
-                <td className="mono">{c.sdc}</td>
-                <td className="mono">{c.non_sdc}</td>
-                <td className="mono">{c.sdc_unknown}</td>
+      {data ? (
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Company</th><th>Male</th><th>Female</th><th>Other</th><th>Gender unknown</th>
+                <th>SDC</th><th>Non-SDC</th><th>SDC unknown</th>
               </tr>
-            ))}
-            {data && !data.companies.length && (
-              <tr><td colSpan={8} className="save-note">No companies yet.</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {data.companies.map((c) => (
+                <tr key={c.id}>
+                  <td>{c.company_name}</td>
+                  <td className="mono">{c.male}</td>
+                  <td className="mono">{c.female}</td>
+                  <td className="mono">{c.other_gender}</td>
+                  <td className="mono">{c.gender_unknown}</td>
+                  <td className="mono">{c.sdc}</td>
+                  <td className="mono">{c.non_sdc}</td>
+                  <td className="mono">{c.sdc_unknown}</td>
+                </tr>
+              ))}
+              {!data.companies.length && (
+                <tr><td colSpan={8} className="save-note">No companies yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        date ? <Spinner label="Loading…" /> : <EmptyState icon="📅" hint="Pick a day above to see this table." />
+      )}
     </div>
   );
 }

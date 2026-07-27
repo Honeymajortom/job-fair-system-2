@@ -399,3 +399,31 @@ h2.screen-title { font-family: var(--disp); font-weight: 800; font-stretch: 85%;
 @media (prefers-reduced-motion: reduce) {
   .ins-hbar-fill, .ins-stack-track { transition: none; }
 }
+
+/* --- Shared UI states (src/common/) — empty/loading/offline/permission,
+   2026-07-26. Reuses existing tokens, no new palette. --- */
+.spinner {
+  width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0;
+  border: 3px solid var(--line); border-top-color: var(--system);
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-row { display: flex; align-items: center; gap: 10px; padding: 16px 0; color: var(--ink-60); font-size: 13px; }
+
+.empty-state { text-align: center; padding: 26px 16px; color: var(--ink-60); }
+.empty-state .ic { font-size: 24px; display: block; margin-bottom: 8px; }
+.empty-state .title { font-weight: 600; color: var(--ink); margin-bottom: 4px; }
+.empty-state .hint { font-size: 12.5px; }
+
+.offline-banner {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 200;
+  background: var(--st-rejected); color: #fff; text-align: center;
+  font-family: var(--mono); font-size: 12px; padding: 8px 12px;
+}
+
+.permission-denied { text-align: center; padding: 26px 16px; color: var(--st-rejected); }
+.permission-denied .ic { font-size: 24px; display: block; margin-bottom: 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; border-top-color: var(--line); }
+}
