@@ -6,6 +6,15 @@ function fmtDate(iso) {
   return new Date(`${iso}T00:00:00`).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
+// Local date parts, not toISOString() — the same UTC-round-trip shift
+// lib/floorStats.js/lib/insights.js's own comments warn about (this session
+// runs IST, +5:30; toISOString() would silently report yesterday for part of
+// the day). Staff are physically at the venue, same timezone as the server.
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 const REPORTS = [
   { path: '/candidate-summary', slug: 'candidate-summary', title: 'Candidate summary', desc: 'One row per candidate — companies assigned, interviews done, selections, no-shows.' },
   { path: '/master-report', slug: 'master-report', title: 'Master report', desc: 'Full export — one row per candidate × company assignment, with ratings and feedback.' },
@@ -56,6 +65,20 @@ export default function Reports() {
         </select>
       </div>
       <div className="report-grid">
+        <div className="report-card" style={{ borderColor: 'var(--system)' }}>
+          <div>
+            <h3>Today's Master Data</h3>
+            <p>Master report for today only — one click, regardless of whatever the Day filter above is set to.</p>
+          </div>
+          <a
+            className="dl-btn"
+            href={`/api/master-report?format=csv${effectiveCenterId ? `&center_id=${effectiveCenterId}` : ''}&date=${todayStr()}`}
+            download={`master-report-${todayStr()}.csv`}
+          >
+            <DownloadIcon />
+            Download CSV
+          </a>
+        </div>
         {REPORTS.map((r) => (
           <div key={r.slug} className="report-card">
             <div>

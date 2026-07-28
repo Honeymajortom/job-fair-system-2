@@ -40,13 +40,27 @@ async function getClosingTime(centerId) {
   return new Date(new Date(start).getTime() + fair_hours * 60 * 60 * 1000);
 }
 
-// date (optional, 'YYYY-MM-DD'): scopes registered/at_desk/completed/waitlisted
+// date (optional, 'YYYY-MM-DD'): scopes registered/at_desk/outcome/waitlisted
 // and the per-company on_hand/remaining counts to one registration day — same
 // semantics and same registered_at::date grouping as lib/insights.js, so
 // Floor and Insights agree on what "day-wise" means. now_serving/alerts/
 // minutesToClose stay unfiltered regardless — Redis desk locks and the
 // close-time projection only ever describe the current moment, there's no
 // historical record of "who was at a desk" to scope by day.
+//
+// Historical vs. live-state deleted_at filtering: candidates.deleted_at (and
+// the matching candidate_company_status.deleted_at) gets set by TWO things —
+// a genuine exit-scan (POST /candidates/exit, "done for the day, on their way
+// out") and an explicit staff correction (DELETE /candidates/:id, the Delete
+// Candidate tool). Either way, "registered today" and a real outcome
+// (Selected/Rejected/Hold/Shortlisted) already happened and stays true
+// regardless of whether the candidate later left — filtering those on
+// deleted_at made "Registered"/"Completed" visibly shrink through the day as
+// people exited, which reads as data loss even though nothing was lost.
+// registered/selected/rejected/hold/shortlisted/completed below are
+// therefore historical (no deleted_at filter). at_desk/waitlisted/on_hand/
+// remaining/now_serving describe the current moment, not history, so those
+// keep excluding exited/deleted candidates.
 // centerId (optional, fair_cycle_isolation_plan.md Phase 4): scopes companies
 // (direct companies.center_id) and the fair-wide candidate counts (via
 // candidates.fair_settings_id -> fair_settings.center_id — a LEFT JOIN, not
@@ -57,11 +71,13 @@ async function getClosingTime(centerId) {
 async function computeFloorStats({ date, centerId } = {}) {
   const dateFilter = date || null;
   const centerFilter = centerId || null;
-  const [registeredRes, atDeskRes, completedRes, waitlistedRes, companiesRes, availableDatesRes, activeFairRes, closingTime, travelBuffer] = await Promise.all([
+  const [registeredRes, atDeskRes, outcomesRes, waitlistedRes, companiesRes, availableDatesRes, activeFairRes, closingTime, travelBuffer] = await Promise.all([
+    // Historical: how many registered today, full stop — see the deleted_at
+    // note above.
     pool.query(
       `SELECT COUNT(*)::int AS n FROM candidates cd
        LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
-       WHERE cd.deleted_at IS NULL AND ($1::date IS NULL OR cd.registered_at::date = $1::date)
+       WHERE ($1::date IS NULL OR cd.registered_at::date = $1::date)
          AND ($2::int IS NULL OR fs.center_id = $2)`,
       [dateFilter, centerFilter]
     ),
@@ -74,12 +90,19 @@ async function computeFloorStats({ date, centerId } = {}) {
          AND ($2::int IS NULL OR fs.center_id = $2)`,
       [dateFilter, centerFilter]
     ),
+    // Historical outcome breakdown — Selected/Rejected/Hold/Shortlisted each
+    // get their own tile on Floor now, not just a combined "Completed".
     pool.query(
-      `SELECT COUNT(*)::int AS n FROM candidate_company_status ccs
-       JOIN candidates cd ON cd.id = ccs.candidate_id AND cd.deleted_at IS NULL
+      `SELECT
+         COUNT(*) FILTER (WHERE ccs.status = 'Selected')::int AS selected,
+         COUNT(*) FILTER (WHERE ccs.status = 'Rejected')::int AS rejected,
+         COUNT(*) FILTER (WHERE ccs.status = 'Hold')::int AS hold,
+         COUNT(*) FILTER (WHERE ccs.status = 'Shortlisted')::int AS shortlisted,
+         COUNT(*) FILTER (WHERE ccs.status IN ('Selected','Rejected','Shortlisted','Hold'))::int AS completed
+       FROM candidate_company_status ccs
+       JOIN candidates cd ON cd.id = ccs.candidate_id
        LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
-       WHERE ccs.status IN ('Selected','Rejected','Shortlisted','Hold') AND ccs.deleted_at IS NULL
-         AND ($1::date IS NULL OR cd.registered_at::date = $1::date)
+       WHERE ($1::date IS NULL OR cd.registered_at::date = $1::date)
          AND ($2::int IS NULL OR fs.center_id = $2)`,
       [dateFilter, centerFilter]
     ),
@@ -94,7 +117,7 @@ async function computeFloorStats({ date, centerId } = {}) {
     ),
     // on_hand (approximation #2): checked-in + still Pending for this company.
     // remaining (approximation #4): everyone not yet at a terminal outcome.
-    // completed: same terminal-status set as the fair-wide `completedRes`
+    // completed: same terminal-status set as the fair-wide `outcomesRes`
     // above, just grouped per company — added for the Floor tile redesign's
     // per-company "done" counter and pace ("falling behind") signal.
     // Date-scoping happens in the ccs_scoped CTE (not a bare WHERE after the
@@ -105,15 +128,20 @@ async function computeFloorStats({ date, centerId } = {}) {
     // counts fall out correctly for free since they're grouped by company id.
     pool.query(`
       WITH ccs_scoped AS (
-        SELECT ccs.company_id, ccs.status, ccs.serial, cd.checked_in_at, cd.token_no
+        -- deleted_at carried through, not pre-filtered, so on_hand/remaining
+        -- (live-state) and completed (historical outcome) can each apply the
+        -- right rule — see the deleted_at note above this function.
+        SELECT ccs.company_id, ccs.status, ccs.serial, cd.checked_in_at, cd.token_no,
+               ccs.deleted_at AS ccs_deleted_at, cd.deleted_at AS cd_deleted_at
         FROM candidate_company_status ccs
-        JOIN candidates cd ON cd.id = ccs.candidate_id AND cd.deleted_at IS NULL
-        WHERE ccs.deleted_at IS NULL
-          AND ($1::date IS NULL OR cd.registered_at::date = $1::date)
+        JOIN candidates cd ON cd.id = ccs.candidate_id
+        WHERE ($1::date IS NULL OR cd.registered_at::date = $1::date)
       )
       SELECT c.id, c.company_name, c.seats, c.interview_minutes,
-             COUNT(*) FILTER (WHERE ccs.status = 'Pending' AND ccs.checked_in_at IS NOT NULL)::int AS on_hand,
-             COUNT(*) FILTER (WHERE ccs.status IN ('Pending','Waitlisted','Dispatched'))::int AS remaining,
+             COUNT(*) FILTER (WHERE ccs.status = 'Pending' AND ccs.checked_in_at IS NOT NULL
+               AND ccs.ccs_deleted_at IS NULL AND ccs.cd_deleted_at IS NULL)::int AS on_hand,
+             COUNT(*) FILTER (WHERE ccs.status IN ('Pending','Waitlisted','Dispatched')
+               AND ccs.ccs_deleted_at IS NULL AND ccs.cd_deleted_at IS NULL)::int AS remaining,
              COUNT(*) FILTER (WHERE ccs.status IN ('Selected','Rejected','Shortlisted','Hold'))::int AS completed,
              -- Floor tile redesign: the "Queue" squares show the actual next-
              -- up token numbers (serial order = call order), not placeholder
@@ -122,6 +150,7 @@ async function computeFloorStats({ date, centerId } = {}) {
              (SELECT array_agg(t.token_no ORDER BY t.serial ASC) FROM (
                 SELECT token_no, serial FROM ccs_scoped s2
                  WHERE s2.company_id = c.id AND s2.status = 'Pending' AND s2.checked_in_at IS NOT NULL
+                   AND s2.ccs_deleted_at IS NULL AND s2.cd_deleted_at IS NULL
                  ORDER BY serial ASC LIMIT 6
               ) t) AS on_hand_tokens
       FROM companies c
@@ -216,7 +245,11 @@ async function computeFloorStats({ date, centerId } = {}) {
     active_fair_date: activeFairDate,
     registered: registeredRes.rows[0].n,
     at_desk: atDeskRes.rows[0].n,
-    completed: completedRes.rows[0].n,
+    completed: outcomesRes.rows[0].completed,
+    selected: outcomesRes.rows[0].selected,
+    rejected: outcomesRes.rows[0].rejected,
+    hold: outcomesRes.rows[0].hold,
+    shortlisted: outcomesRes.rows[0].shortlisted,
     waitlisted: waitlistedRes.rows[0].n,
     needs_attention: alerts.length,
     companies,

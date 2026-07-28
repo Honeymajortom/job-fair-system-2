@@ -45,19 +45,25 @@ router.get('/company-stats', asyncHandler(async (req, res) => {
   // would silently turn this into an INNER JOIN for date matching, making a
   // company with zero candidates *that day* vanish from the report instead
   // of correctly showing zeros.
+  // Historical vs. live-state deleted_at filtering (same reasoning as
+  // lib/floorStats.js/lib/insights.js): assigned/completed/selected/no_shows
+  // are historical facts that stay true after a candidate exits or gets
+  // soft-deleted — excluding them made these reports under-count anyone who'd
+  // already left by the time the report was pulled. pending/at_desk describe
+  // the moment, not history, so those keep excluding exited/deleted rows.
   const result = await pool.query(
     `WITH ccs_scoped AS (
-       SELECT ccs.* FROM candidate_company_status ccs
-       JOIN candidates cd ON cd.id = ccs.candidate_id AND cd.deleted_at IS NULL
+       SELECT ccs.*, cd.deleted_at AS cd_deleted_at FROM candidate_company_status ccs
+       JOIN candidates cd ON cd.id = ccs.candidate_id
        WHERE ($2::date IS NULL OR cd.registered_at::date = $2::date)
      )
      SELECT c.id, c.company_name, c.location, c.floor_number,
-            COUNT(ccs.id) FILTER (WHERE ccs.deleted_at IS NULL)::int AS assigned,
-            COUNT(*) FILTER (WHERE ccs.status = 'Pending' AND ccs.deleted_at IS NULL)::int AS pending,
-            COUNT(*) FILTER (WHERE ccs.status = 'Dispatched' AND ccs.deleted_at IS NULL)::int AS at_desk,
-            COUNT(*) FILTER (WHERE ccs.status IN ('Selected','Rejected','Shortlisted','Hold') AND ccs.deleted_at IS NULL)::int AS completed,
-            COUNT(*) FILTER (WHERE ccs.status = 'Selected' AND ccs.deleted_at IS NULL)::int AS selected,
-            COUNT(*) FILTER (WHERE ccs.status = 'No_Show' AND ccs.deleted_at IS NULL)::int AS no_shows
+            COUNT(ccs.id)::int AS assigned,
+            COUNT(*) FILTER (WHERE ccs.status = 'Pending' AND ccs.deleted_at IS NULL AND ccs.cd_deleted_at IS NULL)::int AS pending,
+            COUNT(*) FILTER (WHERE ccs.status = 'Dispatched' AND ccs.deleted_at IS NULL AND ccs.cd_deleted_at IS NULL)::int AS at_desk,
+            COUNT(*) FILTER (WHERE ccs.status IN ('Selected','Rejected','Shortlisted','Hold'))::int AS completed,
+            COUNT(*) FILTER (WHERE ccs.status = 'Selected')::int AS selected,
+            COUNT(*) FILTER (WHERE ccs.status = 'No_Show')::int AS no_shows
      FROM companies c
      LEFT JOIN ccs_scoped ccs ON ccs.company_id = c.id
      WHERE ($1::int IS NULL OR c.center_id = $1)
@@ -75,11 +81,14 @@ router.get('/qual-distribution', asyncHandler(async (req, res) => {
   const centerId = resolveCenterFilter(req);
   const dateFilter = parseDateFilter(req, res);
   if (dateFilter === undefined) return;
+  // Historical: qualification is a fact about the candidate, unaffected by
+  // whether they later exited or were soft-deleted — see reasoning above
+  // company-stats.
   const result = await pool.query(
     `SELECT COALESCE(NULLIF(TRIM(cd.qualification), ''), 'Unknown') AS qualification, COUNT(*)::int AS count
      FROM candidates cd
      LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
-     WHERE cd.deleted_at IS NULL AND ($1::int IS NULL OR fs.center_id = $1)
+     WHERE ($1::int IS NULL OR fs.center_id = $1)
        AND ($2::date IS NULL OR cd.registered_at::date = $2::date)
      GROUP BY 1 ORDER BY count DESC, qualification`,
     [centerId || null, dateFilter]
@@ -94,11 +103,12 @@ router.get('/field-distribution', asyncHandler(async (req, res) => {
   const centerId = resolveCenterFilter(req);
   const dateFilter = parseDateFilter(req, res);
   if (dateFilter === undefined) return;
+  // Historical: same reasoning as qual-distribution above.
   const result = await pool.query(
     `SELECT COALESCE(NULLIF(TRIM(cd.field), ''), 'Unknown') AS field, COUNT(*)::int AS count
      FROM candidates cd
      LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
-     WHERE cd.deleted_at IS NULL AND ($1::int IS NULL OR fs.center_id = $1)
+     WHERE ($1::int IS NULL OR fs.center_id = $1)
        AND ($2::date IS NULL OR cd.registered_at::date = $2::date)
      GROUP BY 1 ORDER BY count DESC, field`,
     [centerId || null, dateFilter]
@@ -114,18 +124,22 @@ router.get('/master-report', asyncHandler(async (req, res) => {
   const centerId = resolveCenterFilter(req);
   const dateFilter = parseDateFilter(req, res);
   if (dateFilter === undefined) return;
+  // Historical: the definitive per-candidate record — a booking's real
+  // outcome stays true whether or not the candidate has since exited the
+  // venue or been soft-deleted (see reasoning above company-stats). This is
+  // the one report where under-counting would be most visible/damaging.
   const result = await pool.query(
     `SELECT cd.token_no, cd.name, cd.mobile, cd.qualification, cd.field, cd.employment_status,
             b.batch_number, cd.checked_in_at IS NOT NULL AS checked_in,
             c.company_name, s.slot_start, ccs.status, ccs.ratings, ccs.feedback_text,
             u.username AS feedback_by, ccs.processed_at
      FROM candidate_company_status ccs
-     JOIN candidates cd ON cd.id = ccs.candidate_id AND cd.deleted_at IS NULL
+     JOIN candidates cd ON cd.id = ccs.candidate_id
      JOIN companies c ON c.id = ccs.company_id
      LEFT JOIN interview_slots s ON s.id = ccs.slot_id
      LEFT JOIN fair_batches b ON b.id = cd.batch_id
      LEFT JOIN users u ON u.id = ccs.feedback_by
-     WHERE ccs.deleted_at IS NULL AND ($1::int IS NULL OR c.center_id = $1)
+     WHERE ($1::int IS NULL OR c.center_id = $1)
        AND ($2::date IS NULL OR cd.registered_at::date = $2::date)
      ORDER BY cd.token_no, s.slot_start ASC NULLS LAST`,
     [centerId || null, dateFilter]
@@ -141,18 +155,20 @@ router.get('/candidate-summary', asyncHandler(async (req, res) => {
   const centerId = resolveCenterFilter(req);
   const dateFilter = parseDateFilter(req, res);
   if (dateFilter === undefined) return;
+  // Historical: same reasoning as master-report above — this rollup should
+  // still include a candidate (and their real outcomes) after they exit.
   const result = await pool.query(
     `SELECT cd.token_no, cd.name, cd.qualification, cd.field,
             b.batch_number, cd.checked_in_at IS NOT NULL AS checked_in,
-            COUNT(ccs.id) FILTER (WHERE ccs.deleted_at IS NULL)::int AS companies_assigned,
-            COUNT(*) FILTER (WHERE ccs.status IN ('Selected','Rejected','Shortlisted','Hold') AND ccs.deleted_at IS NULL)::int AS interviews_done,
-            COUNT(*) FILTER (WHERE ccs.status = 'Selected' AND ccs.deleted_at IS NULL)::int AS selections,
-            COUNT(*) FILTER (WHERE ccs.status = 'No_Show' AND ccs.deleted_at IS NULL)::int AS no_shows
+            COUNT(ccs.id)::int AS companies_assigned,
+            COUNT(*) FILTER (WHERE ccs.status IN ('Selected','Rejected','Shortlisted','Hold'))::int AS interviews_done,
+            COUNT(*) FILTER (WHERE ccs.status = 'Selected')::int AS selections,
+            COUNT(*) FILTER (WHERE ccs.status = 'No_Show')::int AS no_shows
      FROM candidates cd
      LEFT JOIN candidate_company_status ccs ON ccs.candidate_id = cd.id
      LEFT JOIN fair_batches b ON b.id = cd.batch_id
      LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
-     WHERE cd.deleted_at IS NULL AND ($1::int IS NULL OR fs.center_id = $1)
+     WHERE ($1::int IS NULL OR fs.center_id = $1)
        AND ($2::date IS NULL OR cd.registered_at::date = $2::date)
      GROUP BY cd.id, b.batch_number
      ORDER BY cd.token_no`,
@@ -169,15 +185,17 @@ router.get('/rating-report', asyncHandler(async (req, res) => {
   const centerId = resolveCenterFilter(req);
   const dateFilter = parseDateFilter(req, res);
   if (dateFilter === undefined) return;
+  // Historical: a rating that was actually given stays valid regardless of
+  // whether the candidate has since exited or been soft-deleted.
   const result = await pool.query(
     `SELECT c.company_name, r.key AS parameter,
             ROUND(AVG(r.value::numeric), 2)::float AS avg_rating,
             COUNT(*)::int AS ratings_count
      FROM candidate_company_status ccs
      JOIN companies c ON c.id = ccs.company_id
-     JOIN candidates cd ON cd.id = ccs.candidate_id AND cd.deleted_at IS NULL
+     JOIN candidates cd ON cd.id = ccs.candidate_id
      CROSS JOIN LATERAL jsonb_each_text(ccs.ratings) AS r(key, value)
-     WHERE ccs.ratings IS NOT NULL AND ccs.deleted_at IS NULL AND ($1::int IS NULL OR c.center_id = $1)
+     WHERE ccs.ratings IS NOT NULL AND ($1::int IS NULL OR c.center_id = $1)
        AND ($2::date IS NULL OR cd.registered_at::date = $2::date)
      GROUP BY c.company_name, r.key
      ORDER BY c.company_name, r.key`,

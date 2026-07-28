@@ -13,11 +13,20 @@ const pool = require('../db');
 // (direct companies.center_id) — the cand CTE's counts fall out correctly for
 // free since they're grouped by company id and the outer query filters the
 // companies list itself, same shape as lib/floorStats.js's per-company query.
+//
+// Historical vs. live-state deleted_at filtering (same reasoning as
+// lib/floorStats.js): registered/assigned/done/selected/shortlisted/hold/
+// rejected/no_show/the demographic breakdowns are historical facts about
+// today and stay true even after a candidate exits or gets soft-deleted —
+// filtering those on deleted_at made them visibly shrink through the day as
+// people exited, which reads as data loss even though nothing was lost.
+// Only pending/dispatched/waitlisted describe the current moment, so those
+// keep excluding exited/deleted candidates.
 async function computeInsights({ date, centerId } = {}) {
   const dateFilter = date || null;
   const centerFilter = centerId || null;
 
-  const [availableDatesRes, rowsRes] = await Promise.all([
+  const [availableDatesRes, registeredRes, rowsRes] = await Promise.all([
     // Cast to text in SQL, not JS: node-pg parses a DATE column into a JS
     // Date via `new Date(y, m, d)` (local time), and .toISOString() on that
     // is UTC — the round trip silently shifts the date back a day whenever
@@ -31,17 +40,28 @@ async function computeInsights({ date, centerId } = {}) {
         ORDER BY day DESC`,
       [centerFilter]
     ),
+    // Historical: how many registered today, full stop — mirrors
+    // lib/floorStats.js's own registered count so Floor and Insights agree.
+    pool.query(
+      `SELECT COUNT(*)::int AS n FROM candidates cd
+        LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
+       WHERE ($1::date IS NULL OR cd.registered_at::date = $1::date)
+         AND ($2::int IS NULL OR fs.center_id = $2)`,
+      [dateFilter, centerFilter]
+    ),
     pool.query(
       `WITH vac AS (
          SELECT company_id, COALESCE(SUM(vacancies), 0)::int AS vacancies
          FROM company_posts GROUP BY company_id
        ),
        cand AS (
-         SELECT ccs.company_id, ccs.status, cd.gender, cd.is_sdc
+         -- deleted_at carried through, not pre-filtered — historical outcome
+         -- counts below don't filter on it, live-state ones do.
+         SELECT ccs.company_id, ccs.status, cd.gender, cd.is_sdc,
+                ccs.deleted_at AS ccs_deleted_at, cd.deleted_at AS cd_deleted_at
          FROM candidate_company_status ccs
-         JOIN candidates cd ON cd.id = ccs.candidate_id AND cd.deleted_at IS NULL
-         WHERE ccs.deleted_at IS NULL
-           AND ($1::date IS NULL OR cd.registered_at::date = $1::date)
+         JOIN candidates cd ON cd.id = ccs.candidate_id
+         WHERE ($1::date IS NULL OR cd.registered_at::date = $1::date)
        )
        SELECT
          c.id, c.company_name,
@@ -52,9 +72,9 @@ async function computeInsights({ date, centerId } = {}) {
          COUNT(*) FILTER (WHERE cand.status = 'Shortlisted')::int AS shortlisted,
          COUNT(*) FILTER (WHERE cand.status = 'Hold')::int AS hold,
          COUNT(*) FILTER (WHERE cand.status = 'Rejected')::int AS rejected,
-         COUNT(*) FILTER (WHERE cand.status = 'Pending')::int AS pending,
-         COUNT(*) FILTER (WHERE cand.status = 'Dispatched')::int AS dispatched,
-         COUNT(*) FILTER (WHERE cand.status = 'Waitlisted')::int AS waitlisted,
+         COUNT(*) FILTER (WHERE cand.status = 'Pending' AND cand.ccs_deleted_at IS NULL AND cand.cd_deleted_at IS NULL)::int AS pending,
+         COUNT(*) FILTER (WHERE cand.status = 'Dispatched' AND cand.ccs_deleted_at IS NULL AND cand.cd_deleted_at IS NULL)::int AS dispatched,
+         COUNT(*) FILTER (WHERE cand.status = 'Waitlisted' AND cand.ccs_deleted_at IS NULL AND cand.cd_deleted_at IS NULL)::int AS waitlisted,
          COUNT(*) FILTER (WHERE cand.status = 'No_Show')::int AS no_show,
          COUNT(*) FILTER (WHERE cand.gender = 'Male')::int AS male,
          COUNT(*) FILTER (WHERE cand.gender = 'Female')::int AS female,
@@ -98,6 +118,7 @@ async function computeInsights({ date, centerId } = {}) {
     date: dateFilter,
     center_id: centerFilter,
     available_dates: availableDatesRes.rows.map((r) => r.day),
+    registered: registeredRes.rows[0].n,
     totals,
     companies,
   };

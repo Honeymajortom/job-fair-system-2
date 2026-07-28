@@ -167,10 +167,14 @@ export default function Insights() {
       {t && (
         <>
           <div className="stats-row">
+            <div className="stat"><div className="n">{data.registered}</div><div className="l">Total registered</div></div>
             <div className="stat"><div className="n">{t.vacancies}</div><div className="l">Vacancies</div></div>
             <div className="stat"><div className="n">{t.assigned}</div><div className="l">Assigned</div></div>
-            <div className="stat"><div className="n">{t.done}</div><div className="l">Done</div></div>
+            <div className="stat"><div className="n">{t.done}</div><div className="l">Completed (all outcomes)</div></div>
             <div className="stat"><div className="n" style={{ color: 'var(--st-selected)' }}>{t.selected}</div><div className="l">Selected</div></div>
+            <div className="stat"><div className="n" style={{ color: 'var(--st-short)' }}>{t.shortlisted}</div><div className="l">Shortlisted</div></div>
+            <div className="stat"><div className="n" style={{ color: 'var(--st-hold)' }}>{t.hold}</div><div className="l">Hold</div></div>
+            <div className="stat"><div className="n" style={{ color: 'var(--st-rejected)' }}>{t.rejected}</div><div className="l">Rejected</div></div>
             <div className="stat hot"><div className="n">{t.fill_rate === null ? '—' : `${t.fill_rate}%`}</div><div className="l">Fill rate</div></div>
           </div>
 

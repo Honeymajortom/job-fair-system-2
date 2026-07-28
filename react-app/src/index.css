@@ -179,8 +179,7 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
 @keyframes pulse { from { transform: scale(1); opacity: 1; } to { transform: scale(1.55); opacity: .35; } }
 .pulse-dot.off { background: var(--ink-30); }
 
-.stats-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 14px; }
-@media (max-width: 760px) { .stats-row { grid-template-columns: repeat(2, 1fr); } }
+.stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-bottom: 14px; }
 .stat { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: #FBFBFD; }
 .stat .n { font-family: var(--mono); font-weight: 600; font-size: 24px; }
 .stat.hot .n { color: var(--live); }

@@ -112,11 +112,15 @@ export default function FloorMonitor() {
 
           {stats && (
             <div className="pill-row">
-              <div className="stat pill"><span className="n">{stats.registered}</span><span className="l">Registered</span></div>
+              <div className="stat pill"><span className="n">{stats.registered}</span><span className="l">Total registered</span></div>
               <div className="stat pill hot"><span className="n">{stats.at_desk}</span><span className="l">At desk now</span></div>
-              <div className="stat pill"><span className="n">{stats.completed}</span><span className="l">Completed</span></div>
-              <div className="stat pill"><span className="n">{stats.waitlisted}</span><span className="l">On the waitlist</span></div>
+              <div className="stat pill"><span className="n">{stats.waitlisted}</span><span className="l">Currently waitlisted</span></div>
               <div className="stat pill hot"><span className="n">{stats.needs_attention}</span><span className="l">Needs attention</span></div>
+              <div className="stat pill"><span className="n" style={{ color: 'var(--st-selected)' }}>{stats.selected}</span><span className="l">Selected</span></div>
+              <div className="stat pill"><span className="n" style={{ color: 'var(--st-short)' }}>{stats.shortlisted}</span><span className="l">Shortlisted</span></div>
+              <div className="stat pill"><span className="n" style={{ color: 'var(--st-hold)' }}>{stats.hold}</span><span className="l">Hold</span></div>
+              <div className="stat pill"><span className="n" style={{ color: 'var(--st-rejected)' }}>{stats.rejected}</span><span className="l">Rejected</span></div>
+              <div className="stat pill"><span className="n">{stats.completed}</span><span className="l">Completed (all outcomes)</span></div>
             </div>
           )}
         </div>
