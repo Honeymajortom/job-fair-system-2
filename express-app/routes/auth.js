@@ -51,7 +51,7 @@ router.post('/login', loginUserLimit, loginIpLimit, asyncHandler(async (req, res
     secure: process.env.NODE_ENV === 'production',
     maxAge: SESSION_HOURS * 60 * 60 * 1000,
   });
-  res.json({ id: user.id, username: user.username, role: user.role, company_id: user.company_id, token });
+  res.json({ id: user.id, username: user.username, role: user.role, company_id: user.company_id, center_id: user.center_id, token });
 }));
 
 // authenticateJWT already re-reads the live user row (and rejects a revoked

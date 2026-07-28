@@ -9,8 +9,13 @@ const pool = require('../db');
 // against company_posts would fan out (N posts x M candidates per company)
 // and inflate every count. See lib/floorStats.js's on_hand query for the
 // same fan-out trap in a different join.
-async function computeInsights({ date } = {}) {
+// centerId (optional, fair_cycle_isolation_plan.md Phase 4): scopes companies
+// (direct companies.center_id) — the cand CTE's counts fall out correctly for
+// free since they're grouped by company id and the outer query filters the
+// companies list itself, same shape as lib/floorStats.js's per-company query.
+async function computeInsights({ date, centerId } = {}) {
   const dateFilter = date || null;
+  const centerFilter = centerId || null;
 
   const [availableDatesRes, rowsRes] = await Promise.all([
     // Cast to text in SQL, not JS: node-pg parses a DATE column into a JS
@@ -20,8 +25,11 @@ async function computeInsights({ date } = {}) {
     // Asia/Calcutta, +5:30 — every date would be one day early). Returning
     // text keeps Postgres's own YYYY-MM-DD, no JS Date involved.
     pool.query(
-      `SELECT DISTINCT (registered_at::date)::text AS day FROM candidates
-        WHERE deleted_at IS NULL ORDER BY day DESC`
+      `SELECT DISTINCT (cd.registered_at::date)::text AS day FROM candidates cd
+        LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
+        WHERE cd.deleted_at IS NULL AND ($1::int IS NULL OR fs.center_id = $1)
+        ORDER BY day DESC`,
+      [centerFilter]
     ),
     pool.query(
       `WITH vac AS (
@@ -64,9 +72,10 @@ async function computeInsights({ date } = {}) {
        FROM companies c
        LEFT JOIN vac v ON v.company_id = c.id
        LEFT JOIN cand ON cand.company_id = c.id
+       WHERE ($2::int IS NULL OR c.center_id = $2)
        GROUP BY c.id, c.company_name, v.vacancies
        ORDER BY c.company_name`,
-      [dateFilter]
+      [dateFilter, centerFilter]
     ),
   ]);
 
@@ -87,6 +96,7 @@ async function computeInsights({ date } = {}) {
 
   return {
     date: dateFilter,
+    center_id: centerFilter,
     available_dates: availableDatesRes.rows.map((r) => r.day),
     totals,
     companies,

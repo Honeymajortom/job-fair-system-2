@@ -4,6 +4,7 @@ const asyncHandler = require('../asyncHandler');
 const { authenticateJWT } = require('../middleware/auth');
 const requireRole = require('../middleware/requireRole');
 const requireCompanyScope = require('../middleware/requireCompanyScope');
+const { resolveCenterFilter } = require('../lib/centerScope');
 
 const router = express.Router();
 
@@ -21,11 +22,17 @@ const DEFAULT_RATING_PARAMETERS = [
 
 // Staff (any role): list companies with open-slot counts, for tiles and admin
 // list. The public tile view arrives in stage 4 as GET /qr/companies.
-router.get('/companies', authenticateJWT, asyncHandler(async (_req, res) => {
+// centerId (fair_cycle_isolation_plan.md Phase 4): admin optionally narrows
+// via ?center_id=; every other role is pinned to its own center (a company
+// belongs to exactly one center permanently, so this also naturally narrows
+// the Desk tab's company picker for floor_manager/registration_staff/
+// volunteer, and still includes company_hr's own company either way).
+router.get('/companies', authenticateJWT, asyncHandler(async (req, res) => {
+  const centerId = resolveCenterFilter(req);
   const result = await pool.query(`
     SELECT
       c.id, c.company_name, c.description, c.location, c.floor_number, c.is_open, c.field, c.job_type,
-      c.min_qualification, c.max_qualification, c.max_queue_limit,
+      c.min_qualification, c.max_qualification, c.max_queue_limit, c.center_id,
       COUNT(s.id) FILTER (WHERE s.id IS NOT NULL) AS total_slots,
       COUNT(s.id) FILTER (
         WHERE s.id IS NOT NULL
@@ -34,9 +41,10 @@ router.get('/companies', authenticateJWT, asyncHandler(async (_req, res) => {
       ) AS open_slots
     FROM companies c
     LEFT JOIN interview_slots s ON s.company_id = c.id
+    WHERE ($1::int IS NULL OR c.center_id = $1)
     GROUP BY c.id
     ORDER BY c.company_name
-  `);
+  `, [centerId || null]);
   res.json(result.rows);
 }));
 
@@ -69,7 +77,7 @@ router.get('/companies/:id', authenticateJWT, asyncHandler(async (req, res) => {
 // interviews (sim's baseline) so an unconfigured company still gets a
 // sane, non-zero cap instead of silently waitlisting everyone.
 router.post('/companies', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
-  const { company_name, description, location, floor_number, field, job_type, min_qualification, max_qualification, max_queue_limit, seats, interview_minutes } = req.body;
+  const { company_name, description, location, floor_number, field, job_type, min_qualification, max_qualification, max_queue_limit, seats, interview_minutes, center_id } = req.body;
   if (!company_name) return res.status(400).json({ error: 'company_name is required' });
   // Red-team L3: interview_minutes feeds `60 / interview_minutes` in the
   // booking-cap math (registerCandidate.js) — 0 or negative breaks that
@@ -87,10 +95,14 @@ router.post('/companies', authenticateJWT, requireRole('admin'), asyncHandler(as
   }
 
   try {
+    // center_id defaults to the sole seeded Center — fair_cycle_isolation_
+    // plan.md Phase 0 (a company is tied to exactly one Center permanently).
+    // Optional body param accepted now for forward-compat with Phase 4's
+    // real picker; nothing sends it yet.
     const result = await pool.query(
-      `INSERT INTO companies (company_name, description, location, floor_number, field, job_type, min_qualification, max_qualification, max_queue_limit, seats, interview_minutes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8, COALESCE($9, 7), COALESCE($10, 1), COALESCE($11, 6)) RETURNING *`,
-      [company_name, description || null, location || null, floor_number != null ? floor_number : null, field || null, job_type || null, min_qualification || null, max_qualification || null, max_queue_limit || null, seats || null, interview_minutes || null]
+      `INSERT INTO companies (company_name, description, location, floor_number, field, job_type, min_qualification, max_qualification, max_queue_limit, seats, interview_minutes, center_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8, COALESCE($9, 7), COALESCE($10, 1), COALESCE($11, 6), COALESCE($12, (SELECT id FROM centers ORDER BY id LIMIT 1))) RETURNING *`,
+      [company_name, description || null, location || null, floor_number != null ? floor_number : null, field || null, job_type || null, min_qualification || null, max_qualification || null, max_queue_limit || null, seats || null, interview_minutes || null, center_id || null]
     );
     const company = result.rows[0];
 

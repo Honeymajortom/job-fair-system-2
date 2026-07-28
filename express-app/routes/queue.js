@@ -12,6 +12,7 @@ const { clearNoShowTimer, pauseNoShowTimer, resumeNoShowTimer } = require('../li
 const store = require('../lib/queueStore');
 const redis = require('../lib/redisClient');
 const { computeFloorStats } = require('../lib/floorStats');
+const { resolveCenterFilter } = require('../lib/centerScope');
 
 const router = express.Router();
 
@@ -74,8 +75,8 @@ router.get('/stats', authenticateJWT, requireRole('admin', 'floor_manager'), red
 // now-serving board, starvation alerts. 30s cache — matches §6.3's alert
 // recheck cadence closely enough while keeping the rest of the dashboard
 // reasonably fresh without a bespoke TTL per field.
-router.get('/floor-stats', authenticateJWT, requireRole('admin', 'floor_manager'), redisCache(30), asyncHandler(async (req, res) => {
-  res.json(await computeFloorStats({ date: req.query.date }));
+router.get('/floor-stats', authenticateJWT, requireRole('admin', 'floor_manager'), redisCache(30, (req) => req.user.role === 'admin' ? 'admin' : req.user.center_id), asyncHandler(async (req, res) => {
+  res.json(await computeFloorStats({ date: req.query.date, centerId: resolveCenterFilter(req) }));
 }));
 
 // Company HR (+ Admin): record interview result + ratings + feedback

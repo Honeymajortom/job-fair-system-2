@@ -111,10 +111,14 @@ async function partB_rungPrecedence() {
 async function partC_httpSchedule() {
   console.log('\n=== Part C: GET /api/qr/schedule/:token over a live server ===\n');
 
+  // is_open must be true — GET /qr/companies (checked below) filters on it,
+  // and it's defaulted false since the 2026-07-22 migration that added it,
+  // after this fixture was originally written (same class of staleness the
+  // mobile-format fix above addresses).
   const companyRes = await pool.query(
-    `INSERT INTO companies (company_name, location, seats, interview_minutes)
-     VALUES ('__test_sched_co', 'Test Hall', 1, 10)
-     ON CONFLICT (company_name) DO UPDATE SET seats = 1, interview_minutes = 10
+    `INSERT INTO companies (company_name, location, seats, interview_minutes, is_open)
+     VALUES ('__test_sched_co', 'Test Hall', 1, 10, true)
+     ON CONFLICT (company_name) DO UPDATE SET seats = 1, interview_minutes = 10, is_open = true
      RETURNING id`
   );
   const companyId = companyRes.rows[0].id;
@@ -128,11 +132,15 @@ async function partC_httpSchedule() {
   const created = [];
   try {
     console.log('--- register 5 to fill the cap, then a 6th to waitlist ---');
+    // 10-digit mobiles, not the previously-8-digit ones — lib/mobile.js's
+    // isValidMobile has required exactly 10 digits since the 2026-07-17
+    // red-team tightening; this fixture's own numbers were never updated to
+    // match (same class of staleness registrationCapacityFixture.js had).
     for (let i = 1; i <= 5; i++) {
-      const r = await registerCandidate({ name: `__test sched ${i}`, mobile: `9${8000000 + i}`, company_ids: [companyId], travel_time_minutes: 20 });
+      const r = await registerCandidate({ name: `__test sched ${i}`, mobile: `98${String(i).padStart(8, '0')}`, company_ids: [companyId], travel_time_minutes: 20 });
       created.push(r.body.token);
     }
-    const waitlistedReg = await registerCandidate({ name: '__test sched 6', mobile: '98000006', company_ids: [companyId], travel_time_minutes: 20 });
+    const waitlistedReg = await registerCandidate({ name: '__test sched 6', mobile: `98${String(6).padStart(8, '0')}`, company_ids: [companyId], travel_time_minutes: 20 });
     created.push(waitlistedReg.body.token);
     check('6th candidate landed on the waitlist', waitlistedReg.body.waitlisted.length === 1, JSON.stringify(waitlistedReg.body));
 

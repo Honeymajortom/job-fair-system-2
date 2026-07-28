@@ -6,6 +6,7 @@ const requireRole = require('../middleware/requireRole');
 const redisCache = require('../middleware/redisCache');
 const { toCsv } = require('../lib/csv');
 const { computeInsights } = require('../lib/insights');
+const { resolveCenterFilter } = require('../lib/centerScope');
 
 const router = express.Router();
 
@@ -16,7 +17,12 @@ router.use(['/company-stats', '/qual-distribution', '/field-distribution', '/mas
   authenticateJWT, requireRole('admin'), redisCache(20));
 
 // Per-company funnel — also feeds the FloorMonitor grid header counts.
+// centerId (fair_cycle_isolation_plan.md Phase 4, all six reports below):
+// every route in this file is admin-only (see router.use above), so the only
+// scoping source is the optional ?center_id= query param — no non-admin
+// pinning to reconcile, unlike the staff-facing endpoints elsewhere.
 router.get('/company-stats', asyncHandler(async (req, res) => {
+  const centerId = resolveCenterFilter(req);
   const result = await pool.query(
     `SELECT c.id, c.company_name, c.location, c.floor_number,
             COUNT(ccs.id) FILTER (WHERE ccs.deleted_at IS NULL)::int AS assigned,
@@ -27,8 +33,10 @@ router.get('/company-stats', asyncHandler(async (req, res) => {
             COUNT(*) FILTER (WHERE ccs.status = 'No_Show' AND ccs.deleted_at IS NULL)::int AS no_shows
      FROM companies c
      LEFT JOIN candidate_company_status ccs ON ccs.company_id = c.id
+     WHERE ($1::int IS NULL OR c.center_id = $1)
      GROUP BY c.id
-     ORDER BY c.company_name`
+     ORDER BY c.company_name`,
+    [centerId || null]
   );
   if (req.query.format === 'csv') {
     return res.type('text/csv').attachment('company-stats.csv').send(toCsv(result.rows));
@@ -37,10 +45,14 @@ router.get('/company-stats', asyncHandler(async (req, res) => {
 }));
 
 router.get('/qual-distribution', asyncHandler(async (req, res) => {
+  const centerId = resolveCenterFilter(req);
   const result = await pool.query(
-    `SELECT COALESCE(NULLIF(TRIM(qualification), ''), 'Unknown') AS qualification, COUNT(*)::int AS count
-     FROM candidates WHERE deleted_at IS NULL
-     GROUP BY 1 ORDER BY count DESC, qualification`
+    `SELECT COALESCE(NULLIF(TRIM(cd.qualification), ''), 'Unknown') AS qualification, COUNT(*)::int AS count
+     FROM candidates cd
+     LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
+     WHERE cd.deleted_at IS NULL AND ($1::int IS NULL OR fs.center_id = $1)
+     GROUP BY 1 ORDER BY count DESC, qualification`,
+    [centerId || null]
   );
   if (req.query.format === 'csv') {
     return res.type('text/csv').attachment('qual-distribution.csv').send(toCsv(result.rows));
@@ -49,10 +61,14 @@ router.get('/qual-distribution', asyncHandler(async (req, res) => {
 }));
 
 router.get('/field-distribution', asyncHandler(async (req, res) => {
+  const centerId = resolveCenterFilter(req);
   const result = await pool.query(
-    `SELECT COALESCE(NULLIF(TRIM(field), ''), 'Unknown') AS field, COUNT(*)::int AS count
-     FROM candidates WHERE deleted_at IS NULL
-     GROUP BY 1 ORDER BY count DESC, field`
+    `SELECT COALESCE(NULLIF(TRIM(cd.field), ''), 'Unknown') AS field, COUNT(*)::int AS count
+     FROM candidates cd
+     LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
+     WHERE cd.deleted_at IS NULL AND ($1::int IS NULL OR fs.center_id = $1)
+     GROUP BY 1 ORDER BY count DESC, field`,
+    [centerId || null]
   );
   if (req.query.format === 'csv') {
     return res.type('text/csv').attachment('field-distribution.csv').send(toCsv(result.rows));
@@ -62,6 +78,7 @@ router.get('/field-distribution', asyncHandler(async (req, res) => {
 
 // One row per (candidate, company) assignment — the full export.
 router.get('/master-report', asyncHandler(async (req, res) => {
+  const centerId = resolveCenterFilter(req);
   const result = await pool.query(
     `SELECT cd.token_no, cd.name, cd.mobile, cd.qualification, cd.field, cd.employment_status,
             b.batch_number, cd.checked_in_at IS NOT NULL AS checked_in,
@@ -73,8 +90,9 @@ router.get('/master-report', asyncHandler(async (req, res) => {
      LEFT JOIN interview_slots s ON s.id = ccs.slot_id
      LEFT JOIN fair_batches b ON b.id = cd.batch_id
      LEFT JOIN users u ON u.id = ccs.feedback_by
-     WHERE ccs.deleted_at IS NULL
-     ORDER BY cd.token_no, s.slot_start ASC NULLS LAST`
+     WHERE ccs.deleted_at IS NULL AND ($1::int IS NULL OR c.center_id = $1)
+     ORDER BY cd.token_no, s.slot_start ASC NULLS LAST`,
+    [centerId || null]
   );
   if (req.query.format === 'csv') {
     return res.type('text/csv').attachment('master-report.csv').send(toCsv(result.rows));
@@ -84,6 +102,7 @@ router.get('/master-report', asyncHandler(async (req, res) => {
 
 // One row per candidate — assignment/outcome rollup.
 router.get('/candidate-summary', asyncHandler(async (req, res) => {
+  const centerId = resolveCenterFilter(req);
   const result = await pool.query(
     `SELECT cd.token_no, cd.name, cd.qualification, cd.field,
             b.batch_number, cd.checked_in_at IS NOT NULL AS checked_in,
@@ -94,9 +113,11 @@ router.get('/candidate-summary', asyncHandler(async (req, res) => {
      FROM candidates cd
      LEFT JOIN candidate_company_status ccs ON ccs.candidate_id = cd.id
      LEFT JOIN fair_batches b ON b.id = cd.batch_id
-     WHERE cd.deleted_at IS NULL
+     LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
+     WHERE cd.deleted_at IS NULL AND ($1::int IS NULL OR fs.center_id = $1)
      GROUP BY cd.id, b.batch_number
-     ORDER BY cd.token_no`
+     ORDER BY cd.token_no`,
+    [centerId || null]
   );
   if (req.query.format === 'csv') {
     return res.type('text/csv').attachment('candidate-summary.csv').send(toCsv(result.rows));
@@ -106,6 +127,7 @@ router.get('/candidate-summary', asyncHandler(async (req, res) => {
 
 // Average rating per (company, parameter) from the ratings JSONB.
 router.get('/rating-report', asyncHandler(async (req, res) => {
+  const centerId = resolveCenterFilter(req);
   const result = await pool.query(
     `SELECT c.company_name, r.key AS parameter,
             ROUND(AVG(r.value::numeric), 2)::float AS avg_rating,
@@ -113,9 +135,10 @@ router.get('/rating-report', asyncHandler(async (req, res) => {
      FROM candidate_company_status ccs
      JOIN companies c ON c.id = ccs.company_id
      CROSS JOIN LATERAL jsonb_each_text(ccs.ratings) AS r(key, value)
-     WHERE ccs.ratings IS NOT NULL AND ccs.deleted_at IS NULL
+     WHERE ccs.ratings IS NOT NULL AND ccs.deleted_at IS NULL AND ($1::int IS NULL OR c.center_id = $1)
      GROUP BY c.company_name, r.key
-     ORDER BY c.company_name, r.key`
+     ORDER BY c.company_name, r.key`,
+    [centerId || null]
   );
   if (req.query.format === 'csv') {
     return res.type('text/csv').attachment('rating-report.csv').send(toCsv(result.rows));
@@ -124,15 +147,16 @@ router.get('/rating-report', asyncHandler(async (req, res) => {
 }));
 
 // Insights tab (admin) — per-company vacancy/outcome/demographic breakdown,
-// optionally scoped to one registration day (?date=YYYY-MM-DD). Distinct from
-// the reports above: those are flat CSV-shaped exports, this is a computed
-// summary (totals + per-company rows) meant for the dashboard, not a download.
+// optionally scoped to one registration day (?date=YYYY-MM-DD) and/or one
+// Center (?center_id=). Distinct from the reports above: those are flat
+// CSV-shaped exports, this is a computed summary (totals + per-company rows)
+// meant for the dashboard, not a download.
 router.get('/insights', asyncHandler(async (req, res) => {
   const { date } = req.query;
   if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
   }
-  res.json(await computeInsights({ date }));
+  res.json(await computeInsights({ date, centerId: resolveCenterFilter(req) }));
 }));
 
 module.exports = router;

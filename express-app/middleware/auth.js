@@ -38,14 +38,14 @@ async function authenticateJWT(req, res, next) {
 
   try {
     const result = await pool.query(
-      'SELECT id, username, role, company_id, token_version FROM users WHERE id = $1',
+      'SELECT id, username, role, company_id, center_id, token_version FROM users WHERE id = $1',
       [payload.id]
     );
     const user = result.rows[0];
     if (!user || user.token_version !== payload.tv) {
       return res.status(401).json({ error: 'Session revoked — please log in again' });
     }
-    req.user = { id: user.id, username: user.username, role: user.role, company_id: user.company_id };
+    req.user = { id: user.id, username: user.username, role: user.role, company_id: user.company_id, center_id: user.center_id };
   } catch (err) {
     return next(err);
   }

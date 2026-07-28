@@ -131,9 +131,25 @@ function ensureDeviceCookie(req, res, next) {
 // Admin / Registration Staff: mint the fair QR (flow A) — a signed 24h JWT
 // embedded in the QR URL printed at the entrance. Registration is only
 // accepted with a valid one (integrity fix #6: fake QR registrations).
-router.get('/qr/token', authenticateJWT, requireRole('admin', 'registration_staff'), asyncHandler(async (_req, res) => {
+// centerId (fair_cycle_isolation_plan.md Phase 5 follow-up): this is the one
+// place a candidate-facing registration ever gets a Center assigned — the QR
+// is printed at one physical entrance, so the mint step is exactly where
+// "which Center" has a real, unambiguous answer, not something to re-derive
+// later at each individual registration. registration_staff is pinned to
+// their own Center; admin may pass one explicitly, and must when more than
+// one Center currently has an active fair (otherwise this QR would silently
+// register everyone who scans it into an arbitrary one of them).
+router.get('/qr/token', authenticateJWT, requireRole('admin', 'registration_staff'), asyncHandler(async (req, res) => {
+  let centerId = req.user.role === 'admin' ? (req.query.center_id ? Number(req.query.center_id) : null) : req.user.center_id;
+  if (centerId == null) {
+    const activeCount = await pool.query('SELECT COUNT(*)::int AS n FROM fair_settings WHERE is_active = true');
+    if (activeCount.rows[0].n > 1) {
+      return res.status(400).json({ error: 'Multiple centers have an active fair — center_id is required' });
+    }
+  }
   const fair = await pool.query(
-    'SELECT fair_name, fair_date, fair_hours FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1'
+    'SELECT fair_name, fair_date, fair_hours FROM fair_settings WHERE is_active = true AND ($1::int IS NULL OR center_id = $1) ORDER BY fair_date DESC LIMIT 1',
+    [centerId]
   );
   if (!fair.rows.length) return res.status(404).json({ error: 'No active fair configured' });
 
@@ -145,7 +161,7 @@ router.get('/qr/token', authenticateJWT, requireRole('admin', 'registration_staf
   const ttlHours = Math.min(fairHours + 1, 16);
 
   const qrToken = jwt.sign(
-    { purpose: 'qr_registration', fair_date: fair.rows[0].fair_date },
+    { purpose: 'qr_registration', fair_date: fair.rows[0].fair_date, center_id: centerId },
     JWT_SECRET,
     { expiresIn: `${ttlHours}h` }
   );
@@ -190,9 +206,10 @@ router.get('/qr/companies', readIpLimit, ensureDeviceCookie, redisCache(60), asy
 // the same shared transaction as the staff path.
 router.post('/qr/register', l1Mobile, l2Device, l3Ip, asyncHandler(async (req, res) => {
   const { qr_token, mobile } = req.body;
+  let payload;
 
   try {
-    const payload = jwt.verify(qr_token, JWT_SECRET);
+    payload = jwt.verify(qr_token, JWT_SECRET);
     if (payload.purpose !== 'qr_registration') throw new Error('wrong purpose');
   } catch (_err) {
     return res.status(401).json({ error: 'Invalid or expired fair QR — please rescan the code at the entrance' });
@@ -207,7 +224,11 @@ router.post('/qr/register', l1Mobile, l2Device, l3Ip, asyncHandler(async (req, r
     return res.status(400).json({ error: 'Enter a valid 10-digit mobile number' });
   }
 
-  const result = await registerCandidate(req.body);
+  // centerId (fair_cycle_isolation_plan.md Phase 5 follow-up) rides in the
+  // fair-QR JWT itself, set once at GET /qr/token mint time — the candidate
+  // never supplies or sees it, so there's no way to spoof registering into a
+  // different Center than whichever entrance's QR was actually scanned.
+  const result = await registerCandidate({ ...req.body, centerId: payload.center_id });
   res.status(result.status).json(result.body);
 }));
 
@@ -416,9 +437,10 @@ router.post('/qr/acknowledge/:qr', acknowledgeLimit, asyncHandler(async (req, re
 // the gate check-in bypass here would be strictly worse.
 router.post('/qr/recover', recoverMobile, recoverIp, asyncHandler(async (req, res) => {
   const { qr_token, mobile } = req.body;
+  let payload;
 
   try {
-    const payload = jwt.verify(qr_token, JWT_SECRET);
+    payload = jwt.verify(qr_token, JWT_SECRET);
     if (payload.purpose !== 'qr_registration') throw new Error('wrong purpose');
   } catch (_err) {
     return res.status(401).json({ error: 'Invalid or expired fair QR — please rescan the code at the entrance' });
@@ -427,9 +449,21 @@ router.post('/qr/recover', recoverMobile, recoverIp, asyncHandler(async (req, re
   const normMobile = normalizeMobile(mobile);
   if (!normMobile) return res.status(400).json({ error: 'A valid mobile number is required' });
 
+  // fair_cycle_isolation_plan.md Phase 2 made the same mobile number valid
+  // across multiple fair cycles (and, since Phase 5's fixture confirmed it,
+  // across Centers too) — a bare `WHERE mobile = $1` can now match more than
+  // one candidate, and picking .rows[0] arbitrarily could hand back the
+  // wrong Center's token entirely. Scoped by this QR's own center_id (same
+  // token this route already verifies above, no extra trust required);
+  // falls back to "most recent registration" only for a token minted before
+  // this fix that has no center_id yet, still valid within its own TTL.
   const result = await pool.query(
-    'SELECT token_no, name FROM candidates WHERE mobile = $1 AND deleted_at IS NULL',
-    [normMobile]
+    `SELECT cd.token_no, cd.name FROM candidates cd
+     LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
+     WHERE cd.mobile = $1 AND cd.deleted_at IS NULL
+       AND ($2::int IS NULL OR fs.center_id = $2)
+     ORDER BY cd.registered_at DESC LIMIT 1`,
+    [normMobile, payload.center_id || null]
   );
   if (!result.rows.length) {
     return res.status(404).json({ error: "We couldn't find a registration for that number" });

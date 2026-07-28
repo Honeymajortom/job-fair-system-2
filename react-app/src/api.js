@@ -56,6 +56,15 @@ async function uploadFile(path, formData) {
   return data;
 }
 
+// Builds "?a=1&b=2" from an object, skipping undefined/null/'' values — used
+// wherever an endpoint takes more than one optional filter (date, center_id)
+// so callers can pass whichever ones they have without hand-building strings.
+function qs(params) {
+  const pairs = Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '');
+  if (!pairs.length) return '';
+  return `?${pairs.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')}`;
+}
+
 export const api = {
   // public candidate path
   qrCompanies: () => request('/qr/companies'),
@@ -88,7 +97,7 @@ export const api = {
   logout: () => request('/logout', { method: 'POST' }),
 
   // staff
-  getCompanies: () => request('/companies'),
+  getCompanies: (centerId) => request(`/companies${qs({ center_id: centerId })}`),
   getCompany: (id) => request(`/companies/${id}`),
   createCompany: (payload) => request('/companies', { method: 'POST', body: JSON.stringify(payload) }),
   updateCompany: (id, payload) => request(`/companies/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
@@ -100,7 +109,7 @@ export const api = {
   updateCompanyPost: (id, postId, payload) => request(`/companies/${id}/posts/${postId}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteCompanyPost: (id, postId) => request(`/companies/${id}/posts/${postId}`, { method: 'DELETE' }),
   register: (payload) => request('/register', { method: 'POST', body: JSON.stringify(payload) }),
-  listCandidates: (date) => request(`/candidates${date ? `?date=${date}` : ''}`),
+  listCandidates: (date, centerId) => request(`/candidates${qs({ date, center_id: centerId })}`),
   getCandidate: (token) => request(`/candidates/${token}`),
   addCandidateCompanies: (id, company_ids) => request(`/candidates/${id}/companies`, { method: 'POST', body: JSON.stringify({ company_ids }) }),
   removeCandidateCompany: (id, companyId) => request(`/candidates/${id}/companies/${companyId}`, { method: 'DELETE' }),
@@ -116,37 +125,42 @@ export const api = {
   pauseArrival: (payload) => request('/queue/pause-arrival', { method: 'POST', body: JSON.stringify(payload) }),
   resumeArrival: (payload) => request('/queue/resume-arrival', { method: 'POST', body: JSON.stringify(payload) }),
   getStats: () => request('/stats'),
-  getFloorStats: (date) => request(`/floor-stats${date ? `?date=${date}` : ''}`),
-  getBatches: () => request('/batches'),
+  getFloorStats: (date, centerId) => request(`/floor-stats${qs({ date, center_id: centerId })}`),
+  getBatches: (centerId) => request(`/batches${qs({ center_id: centerId })}`),
   setBatchStatus: (id, status) => request(`/batch/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
   checkIn: (payload) => request('/batch/check-in', { method: 'POST', body: JSON.stringify(payload) }),
   exitCandidate: (payload) => request('/candidates/exit', { method: 'POST', body: JSON.stringify(payload) }),
-  qrToken: () => request('/qr/token'),
+  qrToken: (centerId) => request(`/qr/token${qs({ center_id: centerId })}`),
 
   // fair config (admin)
-  getFairSettings: () => request('/fair-settings'),
+  getFairSettings: (centerId) => request(`/fair-settings${qs({ center_id: centerId })}`),
   createFairSettings: (payload) => request('/fair-settings', { method: 'POST', body: JSON.stringify(payload) }),
   updateFairSettings: (id, payload) => request(`/fair-settings/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   activateFair: (payload) => request('/fair-settings/activate', { method: 'POST', body: JSON.stringify(payload) }),
+  archiveFair: (id) => request(`/fair-settings/${id}/archive`, { method: 'POST' }),
   generateBatches: (payload) => request('/batches/generate', { method: 'POST', body: JSON.stringify(payload) }),
   getWaitingRooms: () => request('/waiting-rooms'),
   setWaitingRoom: (floor_number, location) => request('/waiting-rooms', { method: 'POST', body: JSON.stringify({ floor_number, location }) }),
   deleteWaitingRoom: (floorNumber) => request(`/waiting-rooms/${floorNumber}`, { method: 'DELETE' }),
 
   // users (admin)
-  getUsers: () => request('/users'),
+  getUsers: (centerId) => request(`/users${qs({ center_id: centerId })}`),
   createUser: (payload) => request('/users', { method: 'POST', body: JSON.stringify(payload) }),
   updateUser: (id, payload) => request(`/users/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteUser: (id) => request(`/users/${id}`, { method: 'DELETE' }),
 
   // reports (admin, cached 20s server-side)
-  companyStats: () => request('/company-stats'),
-  masterReport: () => request('/master-report'),
-  candidateSummary: () => request('/candidate-summary'),
-  ratingReport: () => request('/rating-report'),
-  qualDistribution: () => request('/qual-distribution'),
-  fieldDistribution: () => request('/field-distribution'),
-  getInsights: (date) => request(`/insights${date ? `?date=${date}` : ''}`),
+  companyStats: (centerId) => request(`/company-stats${qs({ center_id: centerId })}`),
+  masterReport: (centerId) => request(`/master-report${qs({ center_id: centerId })}`),
+  candidateSummary: (centerId) => request(`/candidate-summary${qs({ center_id: centerId })}`),
+  ratingReport: (centerId) => request(`/rating-report${qs({ center_id: centerId })}`),
+  qualDistribution: (centerId) => request(`/qual-distribution${qs({ center_id: centerId })}`),
+  fieldDistribution: (centerId) => request(`/field-distribution${qs({ center_id: centerId })}`),
+  getInsights: (date, centerId) => request(`/insights${qs({ date, center_id: centerId })}`),
+
+  // centers (fair_cycle_isolation_plan.md Phase 4)
+  getCenters: () => request('/centers'),
+  createCenter: (payload) => request('/centers', { method: 'POST', body: JSON.stringify(payload) }),
 };
 
 // Staff-only (lib/io.js rejects anonymous connections) — same-origin via the

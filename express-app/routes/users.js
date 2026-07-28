@@ -11,17 +11,32 @@ const ROLES = ['admin', 'registration_staff', 'floor_manager', 'company_hr', 'vo
 // name@sdc.com for a person, company-name@sdc.com for a company_hr account —
 // one consistent, recognizable format for every staff login.
 const USERNAME_FORMAT = /^[a-zA-Z0-9._-]+@sdc\.com$/;
+// fair_cycle_isolation_plan.md Phase 4: every non-admin role except
+// company_hr needs a Center picked directly (company_hr's is derived from
+// its company instead — a company is permanently tied to one Center, so
+// asking for both would just invite the two drifting apart).
+const CENTER_SCOPED_ROLES = ['registration_staff', 'floor_manager', 'volunteer'];
 
 // User management is Admin-only across the board (permission matrix).
 router.use('/users', authenticateJWT, requireRole('admin'));
 
-router.get('/users', asyncHandler(async (_req, res) => {
-  const result = await pool.query('SELECT id, username, role, company_id, created_at FROM users ORDER BY id');
+// centerId (fair_cycle_isolation_plan.md Phase 4, optional ?center_id=): this
+// whole router is admin-only already (see router.use above), so this is a
+// pure display convenience for admin's own switcher — not a security
+// boundary the way it is on staff-facing endpoints elsewhere.
+router.get('/users', asyncHandler(async (req, res) => {
+  const centerId = req.query.center_id ? Number(req.query.center_id) : null;
+  const result = await pool.query(
+    `SELECT id, username, role, company_id, center_id, created_at FROM users
+     WHERE ($1::int IS NULL OR center_id = $1)
+     ORDER BY id`,
+    [centerId]
+  );
   res.json(result.rows);
 }));
 
 router.post('/users', asyncHandler(async (req, res) => {
-  const { username, password, role, company_id } = req.body;
+  const { username, password, role, company_id, center_id } = req.body;
   if (!username || !username.trim()) return res.status(400).json({ error: 'username is required' });
   if (!USERNAME_FORMAT.test(username.trim())) {
     return res.status(400).json({ error: 'username must be in the form name@sdc.com (or company-name@sdc.com for Company HR)' });
@@ -33,24 +48,39 @@ router.post('/users', asyncHandler(async (req, res) => {
   if (role === 'company_hr' && !company_id) {
     return res.status(400).json({ error: 'company_id is required for the company_hr role' });
   }
+  // fair_cycle_isolation_plan.md Phase 4: the other three non-admin roles
+  // have no company to derive a Center from, so it must be picked directly.
+  if (CENTER_SCOPED_ROLES.includes(role) && !center_id) {
+    return res.status(400).json({ error: 'center_id is required for this role' });
+  }
 
   try {
+    // company_hr's center_id is derived from its company (a subquery, not the
+    // client-supplied value — company_hr never sends center_id at all) so the
+    // two can never be picked inconsistently.
     const result = await pool.query(
-      `INSERT INTO users (username, password_hash, role, company_id)
-       VALUES ($1,$2,$3,$4) RETURNING id, username, role, company_id, created_at`,
-      [username.trim(), bcrypt.hashSync(password, 10), role, role === 'company_hr' ? company_id : null]
+      `INSERT INTO users (username, password_hash, role, company_id, center_id)
+       VALUES (
+         $1, $2, $3, $4,
+         CASE
+           WHEN $3::varchar = 'company_hr' THEN (SELECT center_id FROM companies WHERE id = $4::int)
+           WHEN $3::varchar = ANY($6::varchar[]) THEN $5::int
+           ELSE NULL
+         END
+       ) RETURNING id, username, role, company_id, center_id, created_at`,
+      [username.trim(), bcrypt.hashSync(password, 10), role, role === 'company_hr' ? company_id : null, center_id || null, CENTER_SCOPED_ROLES]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'A user with that username already exists' });
-    if (err.code === '23503') return res.status(400).json({ error: 'No such company' });
+    if (err.code === '23503') return res.status(400).json({ error: 'No such company or center' });
     throw err;
   }
 }));
 
-// Update role, company_id and/or reset password
+// Update role, company_id, center_id and/or reset password
 router.put('/users/:id', asyncHandler(async (req, res) => {
-  const { password, role, company_id } = req.body;
+  const { password, role, company_id, center_id } = req.body;
   if (role !== undefined && !ROLES.includes(role)) {
     return res.status(400).json({ error: `role must be one of ${ROLES.join(', ')}` });
   }
@@ -63,15 +93,27 @@ router.put('/users/:id', asyncHandler(async (req, res) => {
   if (role === 'company_hr' && !company_id) {
     return res.status(400).json({ error: 'company_id is required when setting role to company_hr' });
   }
-  if (role === undefined && password === undefined && company_id === undefined) {
-    return res.status(400).json({ error: 'Nothing to update — provide role, company_id and/or password' });
+  // fair_cycle_isolation_plan.md Phase 4: same "always resend it on this
+  // exact call" rule as company_id above, for the other three scoped roles —
+  // this request can't tell whether a pre-existing center_id is still meant
+  // to apply when role is being *set* to one of these (as opposed to staying
+  // unchanged, where the SQL below keeps whatever was already on file).
+  if (CENTER_SCOPED_ROLES.includes(role) && !center_id) {
+    return res.status(400).json({ error: `center_id is required when setting role to ${role}` });
+  }
+  if (role === undefined && password === undefined && company_id === undefined && center_id === undefined) {
+    return res.status(400).json({ error: 'Nothing to update — provide role, company_id, center_id and/or password' });
   }
 
   try {
     // Red-team H2: bumping token_version on a password reset kills that user's
     // existing session(s) immediately instead of leaving a possibly-compromised
     // JWT valid for the rest of its 8h life. A role change to/from company_hr
-    // clears/sets company_id in the same statement so the two can't drift.
+    // clears/sets company_id in the same statement so the two can't drift;
+    // center_id mirrors that shape for the fair_cycle_isolation_plan.md Phase 4
+    // Center pin — `role` referenced bare in the ELSE branch reads the row's
+    // pre-update value (Postgres evaluates a SET clause's expressions against
+    // the old row), which is exactly "role wasn't touched by this call."
     const result = await pool.query(
       `UPDATE users
        SET role = COALESCE($1, role),
@@ -81,15 +123,25 @@ router.put('/users/:id', asyncHandler(async (req, res) => {
              WHEN $1::varchar = 'company_hr' THEN $4::int
              WHEN $1::varchar IS NOT NULL THEN NULL
              ELSE COALESCE($4::int, company_id)
+           END,
+           center_id = CASE
+             WHEN $1::varchar = 'company_hr' THEN (SELECT center_id FROM companies WHERE id = $4::int)
+             WHEN $1::varchar = ANY($7::varchar[]) THEN $6::int
+             WHEN $1::varchar IS NOT NULL THEN NULL
+             ELSE CASE
+               WHEN role = 'company_hr' AND $4::int IS NOT NULL THEN (SELECT center_id FROM companies WHERE id = $4::int)
+               WHEN role = ANY($7::varchar[]) THEN COALESCE($6::int, center_id)
+               ELSE center_id
+             END
            END
        WHERE id = $5
-       RETURNING id, username, role, company_id, created_at`,
-      [role || null, password ? bcrypt.hashSync(password, 10) : null, password ? 1 : 0, company_id || null, req.params.id]
+       RETURNING id, username, role, company_id, center_id, created_at`,
+      [role || null, password ? bcrypt.hashSync(password, 10) : null, password ? 1 : 0, company_id || null, req.params.id, center_id || null, CENTER_SCOPED_ROLES]
     );
     if (!result.rows.length) return res.status(404).json({ error: 'User not found' });
     res.json(result.rows[0]);
   } catch (err) {
-    if (err.code === '23503') return res.status(400).json({ error: 'No such company' });
+    if (err.code === '23503') return res.status(400).json({ error: 'No such company or center' });
     throw err;
   }
 }));

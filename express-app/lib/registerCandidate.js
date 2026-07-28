@@ -18,7 +18,17 @@ const GENDERS = ['Male', 'Female', 'Other'];
 // insert; successful bookings are pushed onto the live Redis queue only
 // after COMMIT.
 // Returns { status, body } — the caller just forwards it to res.
-async function registerCandidate({ name, mobile, age, qualification, field, employment_status, company_ids, travel_time_minutes, gender, is_sdc }) {
+// centerId (fair_cycle_isolation_plan.md Phase 5 follow-up, optional): which
+// Center's active fair to register into, when the caller actually knows —
+// routes/candidates.js's POST /register resolves it from the submitting
+// staff member's own center_id (or an admin-supplied one); routes/public.js's
+// POST /qr/register resolves it from the fair-QR JWT's own center_id, set at
+// GET /qr/token mint time. Left null (no caller passes one — none currently
+// should, but this keeps old behavior for anything that doesn't), the lookup
+// below picks arbitrarily among every active fair regardless of Center, the
+// same ambiguity Phase 0 first flagged and Phase 5's fixture confirmed still
+// existed in this function specifically.
+async function registerCandidate({ name, mobile, age, qualification, field, employment_status, company_ids, travel_time_minutes, gender, is_sdc, centerId }) {
   if (!name || !name.trim()) return { status: 400, body: { error: 'name is required' } };
   // Company selection is optional at registration time (new_architecture.md's
   // Gate-flow candidate journey: pick companies after checking in at the Gate,
@@ -69,11 +79,38 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
   try {
     await client.query('BEGIN');
 
+    // Moved above the mobile-dedup check (was below Gate 1 originally) so
+    // that check can scope by fair_settings_id — fair_cycle_isolation_plan.md
+    // Phase 2. id is selected alongside fair_date so getOrCreateAvailableBatch
+    // can key fair_batches off the real fair row instead of the bare date —
+    // Phase 0, needed now that fair_date alone stopped being globally unique.
+    const fairRes = await client.query(
+      `SELECT id, to_char(fair_date, 'YYYY-MM-DD') AS fair_date, fair_hours, batch_size, batch_interval_minutes
+       FROM fair_settings WHERE is_active = true AND ($1::int IS NULL OR center_id = $1) ORDER BY fair_date DESC LIMIT 1`,
+      [centerId || null]
+    );
+    const fair = fairRes.rows[0] || null;
+    const activeFairId = fair ? fair.id : null;
+
     if (normMobile) {
-      const dup = await client.query('SELECT id FROM candidates WHERE mobile = $1', [normMobile]);
+      // Scoped to the active fair cycle (fair_cycle_isolation_plan.md Phase
+      // 2) — the same person registering again in a *later* cycle is no
+      // longer blocked. `IS NOT DISTINCT FROM` (not `=`) so two no-active-
+      // fair registrations (activeFairId both NULL — a prototype-only edge
+      // case, see Gate 1's comment below) still dedupe against each other
+      // instead of `NULL = NULL` silently never matching. Note the DB-level
+      // backstop (idx_candidates_mobile) doesn't enforce that same NULL-vs-
+      // NULL case — Postgres's default unique-index semantics treat every
+      // NULL as distinct — so that one edge case relies on this app-level
+      // check alone; real operation always has an active fair, so this
+      // isn't reachable outside prototype/curl testing.
+      const dup = await client.query(
+        'SELECT id FROM candidates WHERE mobile = $1 AND fair_settings_id IS NOT DISTINCT FROM $2',
+        [normMobile, activeFairId]
+      );
       if (dup.rows.length) {
         await client.query('ROLLBACK');
-        // A repeat mobile is always blocked (idx_candidates_mobile), but the
+        // A repeat mobile *within the same cycle* is always blocked, but the
         // message should actually tell them what to do: if their prior visit
         // fully wrapped up (every booking settled) and they never submitted
         // feedback, that's the real reason, not "already registered".
@@ -102,19 +139,18 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
     // registration to keep working (see lib/batchAssignment.js). No active fair
     // configured at all → batch stays null and Gate 2 doesn't floor the slots
     // (prototype-friendly: stage 1/2 curl flows keep working).
-    const fairRes = await client.query(
-      `SELECT to_char(fair_date, 'YYYY-MM-DD') AS fair_date, fair_hours, batch_size, batch_interval_minutes
-       FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1`
-    );
-    const fair = fairRes.rows[0] || null;
     if (fair) {
       batch = await getOrCreateAvailableBatch(client, fair);
     }
 
+    // fair_settings_id (fair_cycle_isolation_plan.md Phase 1): the real
+    // fair-cycle key, set directly from the same active-fair lookup above
+    // rather than derived later via batch_id — stays null exactly when batch
+    // does (no active fair configured at registration time).
     const candidateRes = await client.query(
-      `INSERT INTO candidates (token_no, name, mobile, age, qualification, field, employment_status, batch_id, checkin_sig, travel_time_minutes, gender, is_sdc)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id, token_no`,
-      [tokenNo, name.trim(), normMobile, age || null, qualification || null, field || null, status, batch ? batch.id : null, signToken(tokenNo), travelTimeMinutes, genderValue, isSdc]
+      `INSERT INTO candidates (token_no, name, mobile, age, qualification, field, employment_status, batch_id, fair_settings_id, checkin_sig, travel_time_minutes, gender, is_sdc)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id, token_no`,
+      [tokenNo, name.trim(), normMobile, age || null, qualification || null, field || null, status, batch ? batch.id : null, activeFairId, signToken(tokenNo), travelTimeMinutes, genderValue, isSdc]
     );
     candidateId = candidateRes.rows[0].id;
 

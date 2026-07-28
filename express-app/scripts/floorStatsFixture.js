@@ -70,8 +70,8 @@ async function main() {
   // Arrived 90 min ago, fair_hours=2 -> closes in ~30 min from now.
   const arrival = new Date(Date.now() - 90 * 60 * 1000);
   const batchRes = await pool.query(
-    `INSERT INTO fair_batches (fair_date, batch_number, arrival_time, status) VALUES ($1, 1, $2, 'active') RETURNING id`,
-    [testFairDate, arrival]
+    `INSERT INTO fair_batches (fair_settings_id, fair_date, batch_number, arrival_time, status) VALUES ($1, $2, 1, $3, 'active') RETURNING id`,
+    [fairSettingsId, testFairDate, arrival]
   );
   const fairBatchId = batchRes.rows[0].id;
 

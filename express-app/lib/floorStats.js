@@ -13,15 +13,27 @@ const { getTravelBuffer } = require('./travelBuffer');
 
 // Approximation: fair_settings has no start/close timestamp, only a duration
 // (fair_hours). The earliest batch's arrival_time is the practical start.
-async function getClosingTime() {
+// centerId (fair_cycle_isolation_plan.md Phase 4): when scoped to one Center,
+// picks that Center's own active fair. Left null (the "all centers" admin
+// view), this still just grabs *an* active fair arbitrarily — accurate only
+// when a single fair is active system-wide, a known limitation carried
+// forward from Phase 0 (see that phase's own notes) rather than fixed here.
+async function getClosingTime(centerId) {
   const fairRes = await pool.query(
-    `SELECT fair_date, fair_hours FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1`
+    `SELECT id, fair_date, fair_hours FROM fair_settings
+     WHERE is_active = true AND ($1::int IS NULL OR center_id = $1)
+     ORDER BY fair_date DESC LIMIT 1`,
+    [centerId || null]
   );
   if (!fairRes.rows.length) return null;
-  const { fair_date, fair_hours } = fairRes.rows[0];
+  const { id: fairId, fair_date, fair_hours } = fairRes.rows[0];
+  // fair_settings_id, not fair_date, is the correct key now that two Centers
+  // can share a date (fair_cycle_isolation_plan.md Phase 0) — a bare
+  // fair_date lookup would blend another center's batches into this start-
+  // time estimate on a shared date.
   const batchRes = await pool.query(
-    `SELECT MIN(arrival_time) AS start FROM fair_batches WHERE fair_date = $1`,
-    [fair_date]
+    `SELECT MIN(arrival_time) AS start FROM fair_batches WHERE fair_settings_id = $1`,
+    [fairId]
   );
   const start = batchRes.rows[0].start;
   if (!start) return null;
@@ -35,41 +47,62 @@ async function getClosingTime() {
 // minutesToClose stay unfiltered regardless — Redis desk locks and the
 // close-time projection only ever describe the current moment, there's no
 // historical record of "who was at a desk" to scope by day.
-async function computeFloorStats({ date } = {}) {
+// centerId (optional, fair_cycle_isolation_plan.md Phase 4): scopes companies
+// (direct companies.center_id) and the fair-wide candidate counts (via
+// candidates.fair_settings_id -> fair_settings.center_id — a LEFT JOIN, not
+// INNER, so a legacy pre-Phase-1 candidate with no fair_settings_id doesn't
+// vanish from the unscoped/all-centers view; it's simply excluded once a
+// specific center is actually selected, same "no info = excluded when
+// scoped" tradeoff Phase 2's dedup fix already accepted).
+async function computeFloorStats({ date, centerId } = {}) {
   const dateFilter = date || null;
+  const centerFilter = centerId || null;
   const [registeredRes, atDeskRes, completedRes, waitlistedRes, companiesRes, availableDatesRes, closingTime, travelBuffer] = await Promise.all([
     pool.query(
-      `SELECT COUNT(*)::int AS n FROM candidates
-       WHERE deleted_at IS NULL AND ($1::date IS NULL OR registered_at::date = $1::date)`,
-      [dateFilter]
+      `SELECT COUNT(*)::int AS n FROM candidates cd
+       LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
+       WHERE cd.deleted_at IS NULL AND ($1::date IS NULL OR cd.registered_at::date = $1::date)
+         AND ($2::int IS NULL OR fs.center_id = $2)`,
+      [dateFilter, centerFilter]
     ),
     pool.query(
       `SELECT COUNT(*)::int AS n FROM candidate_company_status ccs
        JOIN candidates cd ON cd.id = ccs.candidate_id AND cd.deleted_at IS NULL
+       LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
        WHERE ccs.status = 'Dispatched' AND ccs.deleted_at IS NULL
-         AND ($1::date IS NULL OR cd.registered_at::date = $1::date)`,
-      [dateFilter]
+         AND ($1::date IS NULL OR cd.registered_at::date = $1::date)
+         AND ($2::int IS NULL OR fs.center_id = $2)`,
+      [dateFilter, centerFilter]
     ),
     pool.query(
       `SELECT COUNT(*)::int AS n FROM candidate_company_status ccs
        JOIN candidates cd ON cd.id = ccs.candidate_id AND cd.deleted_at IS NULL
+       LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
        WHERE ccs.status IN ('Selected','Rejected','Shortlisted','Hold') AND ccs.deleted_at IS NULL
-         AND ($1::date IS NULL OR cd.registered_at::date = $1::date)`,
-      [dateFilter]
+         AND ($1::date IS NULL OR cd.registered_at::date = $1::date)
+         AND ($2::int IS NULL OR fs.center_id = $2)`,
+      [dateFilter, centerFilter]
     ),
     pool.query(
       `SELECT COUNT(*)::int AS n FROM candidate_company_status ccs
        JOIN candidates cd ON cd.id = ccs.candidate_id AND cd.deleted_at IS NULL
+       LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
        WHERE ccs.status = 'Waitlisted' AND ccs.deleted_at IS NULL
-         AND ($1::date IS NULL OR cd.registered_at::date = $1::date)`,
-      [dateFilter]
+         AND ($1::date IS NULL OR cd.registered_at::date = $1::date)
+         AND ($2::int IS NULL OR fs.center_id = $2)`,
+      [dateFilter, centerFilter]
     ),
     // on_hand (approximation #2): checked-in + still Pending for this company.
     // remaining (approximation #4): everyone not yet at a terminal outcome.
+    // completed: same terminal-status set as the fair-wide `completedRes`
+    // above, just grouped per company — added for the Floor tile redesign's
+    // per-company "done" counter and pace ("falling behind") signal.
     // Date-scoping happens in the ccs_scoped CTE (not a bare WHERE after the
     // LEFT JOIN) so a company with zero matching candidates on that day still
     // shows up with on_hand/remaining = 0 instead of disappearing — same
-    // fan-out-avoidance shape as lib/insights.js's `cand` CTE.
+    // fan-out-avoidance shape as lib/insights.js's `cand` CTE. Center-scoping
+    // filters the companies list itself (c.center_id) — the per-company
+    // counts fall out correctly for free since they're grouped by company id.
     pool.query(`
       WITH ccs_scoped AS (
         SELECT ccs.company_id, ccs.status, cd.checked_in_at
@@ -80,19 +113,24 @@ async function computeFloorStats({ date } = {}) {
       )
       SELECT c.id, c.company_name, c.seats, c.interview_minutes,
              COUNT(*) FILTER (WHERE ccs.status = 'Pending' AND ccs.checked_in_at IS NOT NULL)::int AS on_hand,
-             COUNT(*) FILTER (WHERE ccs.status IN ('Pending','Waitlisted','Dispatched'))::int AS remaining
+             COUNT(*) FILTER (WHERE ccs.status IN ('Pending','Waitlisted','Dispatched'))::int AS remaining,
+             COUNT(*) FILTER (WHERE ccs.status IN ('Selected','Rejected','Shortlisted','Hold'))::int AS completed
       FROM companies c
       LEFT JOIN ccs_scoped ccs ON ccs.company_id = c.id
+      WHERE ($2::int IS NULL OR c.center_id = $2)
       GROUP BY c.id
       ORDER BY c.company_name
-    `, [dateFilter]),
+    `, [dateFilter, centerFilter]),
     // Same text-cast reasoning as lib/insights.js: avoid node-pg's local-time
     // Date round trip silently shifting the day back by one.
     pool.query(
-      `SELECT DISTINCT (registered_at::date)::text AS day FROM candidates
-        WHERE deleted_at IS NULL ORDER BY day DESC`
+      `SELECT DISTINCT (cd.registered_at::date)::text AS day FROM candidates cd
+        LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
+        WHERE cd.deleted_at IS NULL AND ($1::int IS NULL OR fs.center_id = $1)
+        ORDER BY day DESC`,
+      [centerFilter]
     ),
-    getClosingTime(),
+    getClosingTime(centerFilter),
     getTravelBuffer(),
   ]);
 
@@ -112,6 +150,8 @@ async function computeFloorStats({ date } = {}) {
       on_hand: row.on_hand,
       target,
       low: row.on_hand < target,
+      completed: row.completed,
+      remaining: row.remaining,
     });
 
     // Starvation projection, §6.3: p_ij > d_hat_j * (T_close - t).
@@ -123,23 +163,25 @@ async function computeFloorStats({ date } = {}) {
   // Now-serving board: Postgres has no desk_id column anywhere — the Redis
   // candidate lock (lock:{candidateId} -> deskId) is the only place it lives.
   const dispatchedRes = await pool.query(`
-    SELECT cd.id AS candidate_id, cd.token_no, c.company_name
+    SELECT cd.id AS candidate_id, cd.token_no, c.id AS company_id, c.company_name
     FROM candidate_company_status ccs
     JOIN candidates cd ON cd.id = ccs.candidate_id AND cd.deleted_at IS NULL
     JOIN companies c ON c.id = ccs.company_id
     WHERE ccs.status = 'Dispatched' AND ccs.deleted_at IS NULL
+      AND ($1::int IS NULL OR c.center_id = $1)
     ORDER BY ccs.dispatched_at ASC NULLS LAST
-  `);
+  `, [centerFilter]);
   let nowServing = [];
   if (dispatchedRes.rows.length) {
     const desks = await redis.mget(...dispatchedRes.rows.map((r) => `lock:${r.candidate_id}`));
     nowServing = dispatchedRes.rows
-      .map((r, i) => ({ token: r.token_no, company_name: r.company_name, desk_id: desks[i] || null }))
+      .map((r, i) => ({ token: r.token_no, company_id: r.company_id, company_name: r.company_name, desk_id: desks[i] || null }))
       .filter((r) => r.desk_id);
   }
 
   return {
     date: dateFilter,
+    center_id: centerFilter,
     available_dates: availableDatesRes.rows.map((r) => r.day),
     registered: registeredRes.rows[0].n,
     at_desk: atDeskRes.rows[0].n,

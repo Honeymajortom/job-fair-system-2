@@ -75,7 +75,7 @@ router.post('/batch/check-in', authenticateJWT, requireRole('admin', 'registrati
     let batchId = candidate.batch_id;
     if (!batchId) {
       const fairRes = await client.query(
-        `SELECT to_char(fair_date, 'YYYY-MM-DD') AS fair_date, batch_size, batch_interval_minutes
+        `SELECT id, to_char(fair_date, 'YYYY-MM-DD') AS fair_date, batch_size, batch_interval_minutes
          FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1`
       );
       if (fairRes.rows.length) {

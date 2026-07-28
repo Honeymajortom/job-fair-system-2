@@ -3,7 +3,11 @@
 -- stage 1 proved the core registration -> interview -> result loop;
 -- stage 2 adds fair_settings/fair_batches, users/auth and soft-delete;
 -- stage 3 adds checkin_sig (HMAC QR), per-candidate check-in and Dispatched status.
--- Still to come: fair_date scoping columns (fix #8), company_posts.
+-- company_posts (once listed here as "still to come") is done, further down
+-- this file. "fair_date scoping columns (fix #8)" is underway, not finished —
+-- Phase 0 of fair_cycle_isolation_plan.md added the Center concept fair_date
+-- scoping sits on top of; candidates itself gets its own fair-cycle key
+-- (fair_settings_id) in that plan's Phase 1, not yet done as of this comment.
 
 CREATE SEQUENCE IF NOT EXISTS token_seq START 1;
 
@@ -369,3 +373,145 @@ CREATE TABLE IF NOT EXISTS waiting_rooms (
   floor_number  INTEGER PRIMARY KEY CHECK (floor_number >= 0),
   location      VARCHAR NOT NULL
 );
+
+-- ---------------------------------------------------------------------------
+-- Center — fair_cycle_isolation_plan.md Phase 0. The org runs multiple
+-- physical Centers, each arranging its own multiple fair cycles over time —
+-- concurrently, not one at a time system-wide. That concurrency requirement
+-- is why this isn't just a new column: fair_settings.fair_date being
+-- globally UNIQUE and uq_fair_settings_one_active being a system-wide
+-- partial index (both pre-existing) directly forbid two centers each having
+-- their own active fair, so both are loosened to per-center here.
+--
+-- One row seeded up front ("Main Center") so every pre-existing company/
+-- fair_settings/user/waiting_room can backfill straight to it — real
+-- multi-center support (a picker, more rows, request-scoped resolution) is
+-- Phase 4's UI work, not this migration's job. Every place that still
+-- resolves "the active fair" via a bare `WHERE is_active = true` (without a
+-- center_id filter) is unaffected in practice as long as only one center
+-- exists; those callsites become genuinely ambiguous the moment a second
+-- center is created, which Phase 4 is responsible for fixing, not this pass.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS centers (
+  id          SERIAL PRIMARY KEY,
+  name        VARCHAR NOT NULL UNIQUE,
+  location    VARCHAR,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO centers (name) VALUES ('Main Center') ON CONFLICT (name) DO NOTHING;
+
+-- Dropped up front, before fair_settings' own fair_date unique constraint
+-- below — Postgres refuses to drop a UNIQUE constraint while a foreign key
+-- still depends on it, and fair_batches_fair_date_fkey (added in stage 2)
+-- references exactly that constraint.
+ALTER TABLE fair_batches DROP CONSTRAINT IF EXISTS fair_batches_fair_date_fkey;
+
+-- DEFAULT 1 (not a subquery — Postgres column defaults can't contain one):
+-- 'Main Center' is the very first row this migration ever inserts into a
+-- brand-new `centers` table, so its id is always 1 on a fresh run. Lets any
+-- INSERT that doesn't mention center_id (fixtures, older code, curl) keep
+-- working unchanged rather than needing every callsite updated by hand; real
+-- multi-center callers pass an explicit center_id and this default never
+-- applies to them.
+ALTER TABLE fair_settings ADD COLUMN IF NOT EXISTS center_id INTEGER REFERENCES centers(id);
+UPDATE fair_settings SET center_id = (SELECT id FROM centers WHERE name = 'Main Center') WHERE center_id IS NULL;
+ALTER TABLE fair_settings ALTER COLUMN center_id SET NOT NULL;
+ALTER TABLE fair_settings ALTER COLUMN center_id SET DEFAULT 1;
+
+-- fair_date alone was globally UNIQUE (one fair per date, system-wide) —
+-- replaced with UNIQUE(center_id, fair_date) so two centers can share a
+-- date; a center still can't double-book itself on one.
+ALTER TABLE fair_settings DROP CONSTRAINT IF EXISTS fair_settings_fair_date_key;
+-- Postgres has no ADD CONSTRAINT IF NOT EXISTS — db/migrate.js reruns this
+-- whole file every time (no migration-tracking table), so the new
+-- constraint's own name needs the same drop-then-add idempotency guard
+-- every ADD COLUMN above already gets for free from IF NOT EXISTS.
+ALTER TABLE fair_settings DROP CONSTRAINT IF EXISTS fair_settings_center_fair_date_key;
+ALTER TABLE fair_settings ADD CONSTRAINT fair_settings_center_fair_date_key UNIQUE (center_id, fair_date);
+
+-- uq_fair_settings_one_active was "at most one active fair, period" — now
+-- "at most one active fair per center."
+DROP INDEX IF EXISTS uq_fair_settings_one_active;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_fair_settings_one_active_per_center
+  ON fair_settings (center_id) WHERE is_active = true;
+
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS center_id INTEGER REFERENCES centers(id);
+UPDATE companies SET center_id = (SELECT id FROM centers WHERE name = 'Main Center') WHERE center_id IS NULL;
+ALTER TABLE companies ALTER COLUMN center_id SET NOT NULL;
+ALTER TABLE companies ALTER COLUMN center_id SET DEFAULT 1;
+
+-- Nullable — NULL is only ever valid for role='admin' (unscoped, sees every
+-- center); every non-admin role gets a real center_id. Enforced at the
+-- application layer (routes/users.js), same convention company_id already
+-- uses for company_hr — not a DB CHECK. Application-layer enforcement (the
+-- Users-tab form requiring a Center picker) is Phase 4's job; this column
+-- only exists so Phase 4 has somewhere to write to.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS center_id INTEGER REFERENCES centers(id);
+UPDATE users SET center_id = (SELECT id FROM centers WHERE name = 'Main Center') WHERE center_id IS NULL AND role != 'admin';
+
+-- fair_batches previously keyed off fair_date (a bare DATE, referencing
+-- fair_settings.fair_date) — now that fair_date alone isn't unique, that FK
+-- can no longer identify one fair (its constraint was already dropped up
+-- front, above, before fair_settings' own fair_date uniqueness was touched).
+-- fair_date itself is kept as a plain, unconstrained column (display/legacy
+-- convenience, same "kept not dropped" convention interview_slots/slot_id
+-- got during the queue-system cutover) — fair_settings_id is the new
+-- authoritative link.
+ALTER TABLE fair_batches ADD COLUMN IF NOT EXISTS fair_settings_id INTEGER REFERENCES fair_settings(id);
+UPDATE fair_batches fb SET fair_settings_id = fs.id
+  FROM fair_settings fs WHERE fb.fair_date = fs.fair_date AND fb.fair_settings_id IS NULL;
+ALTER TABLE fair_batches ALTER COLUMN fair_settings_id SET NOT NULL;
+
+-- UNIQUE(fair_date, batch_number) had the same latent bug as the FK above —
+-- two centers sharing a date could collide on batch_number. Rescoped to the
+-- real fair row.
+ALTER TABLE fair_batches DROP CONSTRAINT IF EXISTS fair_batches_fair_date_batch_number_key;
+ALTER TABLE fair_batches DROP CONSTRAINT IF EXISTS fair_batches_fair_settings_batch_number_key;
+ALTER TABLE fair_batches ADD CONSTRAINT fair_batches_fair_settings_batch_number_key UNIQUE (fair_settings_id, batch_number);
+
+-- waiting_rooms' natural key was floor_number alone — meaningless once two
+-- centers can each have their own "Floor 2." Composite PK matches each
+-- floor to its own building.
+ALTER TABLE waiting_rooms ADD COLUMN IF NOT EXISTS center_id INTEGER REFERENCES centers(id);
+UPDATE waiting_rooms SET center_id = (SELECT id FROM centers WHERE name = 'Main Center') WHERE center_id IS NULL;
+ALTER TABLE waiting_rooms ALTER COLUMN center_id SET NOT NULL;
+ALTER TABLE waiting_rooms ALTER COLUMN center_id SET DEFAULT 1;
+ALTER TABLE waiting_rooms DROP CONSTRAINT IF EXISTS waiting_rooms_pkey;
+ALTER TABLE waiting_rooms ADD CONSTRAINT waiting_rooms_pkey PRIMARY KEY (center_id, floor_number);
+
+-- ---------------------------------------------------------------------------
+-- fair_cycle_isolation_plan.md Phase 1 — candidates get a real fair-cycle
+-- key. Previously the only path back to "which cycle (and center) does this
+-- candidate belong to" was indirect: candidates.batch_id -> fair_batches.id
+-- -> fair_batches.fair_settings_id (itself only added in Phase 0). That
+-- chain breaks for any candidate with no batch (no active fair at
+-- registration time, or a future no-batch flow) — fair_settings_id is a
+-- direct link instead.
+--
+-- Nullable, same as batch_id itself — a candidate registered with no active
+-- fair configured (the prototype-friendly fallback lib/registerCandidate.js
+-- already has) still gets created, just with no fair-cycle key, same as it
+-- gets no batch today.
+-- ---------------------------------------------------------------------------
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS fair_settings_id INTEGER REFERENCES fair_settings(id);
+UPDATE candidates c SET fair_settings_id = fb.fair_settings_id
+  FROM fair_batches fb WHERE c.batch_id = fb.id AND c.fair_settings_id IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- fair_cycle_isolation_plan.md Phase 2 — scope the mobile-dedup guard to the
+-- fair cycle instead of blocking a repeat mobile forever. idx_candidates_
+-- mobile (defined near the top of this file, before fair_settings_id
+-- existed — can't be edited in place, the column it needs to reference
+-- didn't exist yet at that point in the script) is dropped and recreated
+-- here as a composite. Postgres's default unique-index semantics treat every
+-- NULL as distinct from every other NULL, so two candidates with the same
+-- mobile and both a NULL fair_settings_id (the no-active-fair edge case)
+-- don't violate this index — lib/registerCandidate.js's own dedup check
+-- (IS NOT DISTINCT FROM) is what actually catches that one case; real
+-- operation always has an active fair, so it's a prototype-only gap, not a
+-- production one.
+-- ---------------------------------------------------------------------------
+DROP INDEX IF EXISTS idx_candidates_mobile;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_candidates_mobile
+  ON candidates(mobile, fair_settings_id)
+  WHERE mobile IS NOT NULL AND mobile != '';

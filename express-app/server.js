@@ -15,6 +15,7 @@ const queueRoutes = require('./routes/queue');
 const batchesRoutes = require('./routes/batches');
 const publicRoutes = require('./routes/public');
 const reportsRoutes = require('./routes/reports');
+const centersRoutes = require('./routes/centers');
 
 // @socket.io/redis-adapter fires an internal (p)subscribe on the sub client
 // at construction/reconnect time without awaiting or catching it; if Redis is
@@ -47,6 +48,7 @@ app.use('/api', queueRoutes);
 app.use('/api', batchesRoutes);
 app.use('/api', publicRoutes);
 app.use('/api', reportsRoutes);
+app.use('/api', centersRoutes);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 

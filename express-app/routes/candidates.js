@@ -11,14 +11,29 @@ const queueStore = require('../lib/queueStore');
 const { emit } = require('../lib/events');
 const { RESUME_DIR } = require('../lib/resumeStorage');
 const { assignCompanies, MAX_COMPANIES } = require('../lib/companyAssignment');
+const { resolveCenterFilter } = require('../lib/centerScope');
 
 const router = express.Router();
 
 // Manual registration (Admin / Registration Staff, per permission matrix) —
 // exception path for QR failures (flow D). Same transaction as the public
 // path: lib/registerCandidate.js.
+// centerId (fair_cycle_isolation_plan.md Phase 5 follow-up): registration_
+// staff is pinned to their own Center regardless of the request body; admin
+// may pass one explicitly (mirrors every other admin-only create — Companies/
+// Users/fair-settings all work the same way), and is required to when more
+// than one Center currently has an active fair, since registerCandidate()'s
+// "which fair" lookup would otherwise be genuinely ambiguous, not just
+// defaulting sensibly.
 router.post('/register', authenticateJWT, requireRole('admin', 'registration_staff'), asyncHandler(async (req, res) => {
-  const result = await registerCandidate(req.body);
+  let centerId = req.user.role === 'admin' ? (req.body.center_id ? Number(req.body.center_id) : null) : req.user.center_id;
+  if (centerId == null) {
+    const activeCount = await pool.query('SELECT COUNT(*)::int AS n FROM fair_settings WHERE is_active = true');
+    if (activeCount.rows[0].n > 1) {
+      return res.status(400).json({ error: 'Multiple centers have an active fair — center_id is required' });
+    }
+  }
+  const result = await registerCandidate({ ...req.body, centerId });
   res.status(result.status).json(result.body);
 }));
 
@@ -30,14 +45,22 @@ router.post('/register', authenticateJWT, requireRole('admin', 'registration_sta
 // it agrees with lib/floorStats.js/lib/insights.js's day grouping instead of
 // drifting a day near midnight IST the way a UTC ISO-string slice would.
 // Omitted entirely for every other caller, so their behavior is unchanged.
+// centerId (fair_cycle_isolation_plan.md Phase 4): admin optionally narrows
+// via ?center_id=; every other role is pinned to its own center — via
+// candidates.fair_settings_id -> fair_settings.center_id, a LEFT JOIN so a
+// legacy candidate with no fair_settings_id still shows up in the unscoped
+// (admin, no center picked) view instead of silently vanishing.
 router.get('/candidates', authenticateJWT, asyncHandler(async (req, res) => {
+  const centerId = resolveCenterFilter(req);
   const result = await pool.query(
-    `SELECT id, token_no, name, qualification, checked_in_at, batch_id, registered_at
-     FROM candidates
-     WHERE deleted_at IS NULL
-       AND ($1::date IS NULL OR registered_at::date = $1::date)
-     ORDER BY registered_at DESC`,
-    [req.query.date || null]
+    `SELECT cd.id, cd.token_no, cd.name, cd.qualification, cd.checked_in_at, cd.batch_id, cd.registered_at
+     FROM candidates cd
+     LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
+     WHERE cd.deleted_at IS NULL
+       AND ($1::date IS NULL OR cd.registered_at::date = $1::date)
+       AND ($2::int IS NULL OR fs.center_id = $2)
+     ORDER BY cd.registered_at DESC`,
+    [req.query.date || null, centerId || null]
   );
   res.json(result.rows);
 }));

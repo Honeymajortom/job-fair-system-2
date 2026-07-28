@@ -90,7 +90,12 @@ async function main() {
     check('the 3 shown staging slots are the 3 closest (staging-1/2/3, not staging-4)',
       status.staging.includes(s1.token) && status.staging.includes(s2.token) && status.staging.includes(s3.token) && !status.staging.includes(s4.token),
       JSON.stringify(status.staging));
-    check('waiting_room includes gate + far candidates (not staging/desk/waitlisted/done/not-checked-in)', status.waiting_room >= 2, JSON.stringify(status));
+    // status.waiting_room (a flat count) doesn't exist in the current API
+    // shape — replaced by waiting_room_total/waiting_rooms (per-floor) when
+    // the single fair-wide waiting room was superseded by per-floor rooms,
+    // after this fixture was originally written. Same class of staleness as
+    // the mobile-format/is_open fixes elsewhere.
+    check('waiting_room includes gate + far candidates (not staging/desk/waitlisted/done/not-checked-in)', status.waiting_room_total >= 2, JSON.stringify(status));
     check('waiting_room_max/staging_max are present', typeof status.waiting_room_max === 'number' && typeof status.staging_max === 'number', JSON.stringify(status));
 
     console.log('\n--- exclusion checks: rebuild status after removing the ambiguous shared-queue candidates ---');
