@@ -105,7 +105,7 @@ async function computeFloorStats({ date, centerId } = {}) {
     // counts fall out correctly for free since they're grouped by company id.
     pool.query(`
       WITH ccs_scoped AS (
-        SELECT ccs.company_id, ccs.status, cd.checked_in_at
+        SELECT ccs.company_id, ccs.status, ccs.serial, cd.checked_in_at, cd.token_no
         FROM candidate_company_status ccs
         JOIN candidates cd ON cd.id = ccs.candidate_id AND cd.deleted_at IS NULL
         WHERE ccs.deleted_at IS NULL
@@ -114,7 +114,16 @@ async function computeFloorStats({ date, centerId } = {}) {
       SELECT c.id, c.company_name, c.seats, c.interview_minutes,
              COUNT(*) FILTER (WHERE ccs.status = 'Pending' AND ccs.checked_in_at IS NOT NULL)::int AS on_hand,
              COUNT(*) FILTER (WHERE ccs.status IN ('Pending','Waitlisted','Dispatched'))::int AS remaining,
-             COUNT(*) FILTER (WHERE ccs.status IN ('Selected','Rejected','Shortlisted','Hold'))::int AS completed
+             COUNT(*) FILTER (WHERE ccs.status IN ('Selected','Rejected','Shortlisted','Hold'))::int AS completed,
+             -- Floor tile redesign: the "Queue" squares show the actual next-
+             -- up token numbers (serial order = call order), not placeholder
+             -- 1..N counters — capped at 6 to match the tile's MAX_SLOTS, the
+             -- rest is still covered by the existing "+N" overflow badge.
+             (SELECT array_agg(t.token_no ORDER BY t.serial ASC) FROM (
+                SELECT token_no, serial FROM ccs_scoped s2
+                 WHERE s2.company_id = c.id AND s2.status = 'Pending' AND s2.checked_in_at IS NOT NULL
+                 ORDER BY serial ASC LIMIT 6
+              ) t) AS on_hand_tokens
       FROM companies c
       LEFT JOIN ccs_scoped ccs ON ccs.company_id = c.id
       WHERE ($2::int IS NULL OR c.center_id = $2)
@@ -162,6 +171,7 @@ async function computeFloorStats({ date, centerId } = {}) {
       name: row.company_name,
       interviewers: row.seats,
       on_hand: row.on_hand,
+      on_hand_tokens: row.on_hand_tokens || [],
       target,
       low: row.on_hand < target,
       completed: row.completed,

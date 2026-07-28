@@ -143,18 +143,17 @@ export default function FloorMonitor() {
             {sortedCompanies.map((c) => {
               const anomaly = anomalyFor(c);
               const live = servingCompanyIds.has(c.id);
-              const slotCount = Math.min(c.on_hand, MAX_SLOTS);
               const overflow = c.on_hand - MAX_SLOTS;
               return (
                 <div key={c.id} className={`bp-card co-tile${c.low ? ' low' : ''}`}>
                   <div className="co-head">
                     <div className="co-avatar">{initialsFor(c.name)}</div>
-                    <div className="co-name">{c.name}<small>{c.interviewers} interviewer{c.interviewers === 1 ? '' : 's'}</small></div>
+                    <div className="co-name">{c.name}</div>
                   </div>
                   {anomaly && <div className="anomaly"><span className="dt"></span>{anomaly}</div>}
                   <div className="co-row">
                     <div className="slot-group">
-                      {Array.from({ length: slotCount }).map((_, i) => <span key={i} className="slot">{i + 1}</span>)}
+                      {c.on_hand_tokens.map((token) => <span key={token} className="slot">{token}</span>)}
                       {overflow > 0 && <span className="overflow-label">+{overflow}</span>}
                       {!c.on_hand && <span className="overflow-label">No one waiting</span>}
                     </div>
