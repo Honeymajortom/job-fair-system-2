@@ -1,4 +1,10 @@
+import { useEffect, useState } from 'react';
+import { api } from '../api';
 import { useCenter } from './CenterContext';
+
+function fmtDate(iso) {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+}
 
 const REPORTS = [
   { path: '/candidate-summary', slug: 'candidate-summary', title: 'Candidate summary', desc: 'One row per candidate — companies assigned, interviews done, selections, no-shows.' },
@@ -24,9 +30,31 @@ export default function Reports() {
   // appended to the query string directly here rather than through a
   // wrapper function.
   const { effectiveCenterId } = useCenter();
+  // '' (the default) means "every day" — unlike Insights' Day picker, which
+  // defaults to showing nothing until a day is chosen, a report is an
+  // explicit, deliberate download: staff often want the full export, not
+  // just today's slice, so unscoped stays the default here rather than
+  // forcing a pick first.
+  const [date, setDate] = useState('');
+  const [availableDates, setAvailableDates] = useState([]);
+
+  // Piggybacks GET /insights purely for its available_dates list — same
+  // trick Insights.jsx itself uses — rather than adding a second endpoint
+  // whose only job is to enumerate registration days.
+  useEffect(() => {
+    api.getInsights(undefined, effectiveCenterId).then((d) => setAvailableDates(d.available_dates || [])).catch(() => {});
+  }, [effectiveCenterId]);
+
   return (
     <>
-      <p className="sec-label" style={{ marginBottom: 16 }}>Six exports · CSV · live off the current fair's data</p>
+      <p className="sec-label" style={{ marginBottom: 16 }}>Six exports · CSV · scoped to the current Center, optionally to one day</p>
+      <div className="field" style={{ maxWidth: 260, marginBottom: 16 }}>
+        <label>Day</label>
+        <select value={date} onChange={(e) => setDate(e.target.value)}>
+          <option value="">All time</option>
+          {availableDates.map((d) => <option key={d} value={d}>{fmtDate(d)}</option>)}
+        </select>
+      </div>
       <div className="report-grid">
         {REPORTS.map((r) => (
           <div key={r.slug} className="report-card">
@@ -36,8 +64,8 @@ export default function Reports() {
             </div>
             <a
               className="dl-btn"
-              href={`/api${r.path}?format=csv${effectiveCenterId ? `&center_id=${effectiveCenterId}` : ''}`}
-              download={`${r.slug}.csv`}
+              href={`/api${r.path}?format=csv${effectiveCenterId ? `&center_id=${effectiveCenterId}` : ''}${date ? `&date=${date}` : ''}`}
+              download={`${r.slug}${date ? `-${date}` : ''}.csv`}
             >
               <DownloadIcon />
               Download CSV
