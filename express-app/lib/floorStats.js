@@ -57,7 +57,7 @@ async function getClosingTime(centerId) {
 async function computeFloorStats({ date, centerId } = {}) {
   const dateFilter = date || null;
   const centerFilter = centerId || null;
-  const [registeredRes, atDeskRes, completedRes, waitlistedRes, companiesRes, availableDatesRes, closingTime, travelBuffer] = await Promise.all([
+  const [registeredRes, atDeskRes, completedRes, waitlistedRes, companiesRes, availableDatesRes, activeFairRes, closingTime, travelBuffer] = await Promise.all([
     pool.query(
       `SELECT COUNT(*)::int AS n FROM candidates cd
        LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
@@ -130,9 +130,23 @@ async function computeFloorStats({ date, centerId } = {}) {
         ORDER BY day DESC`,
       [centerFilter]
     ),
+    // A freshly-activated fair has zero registered candidates yet, so its own
+    // date never shows up in availableDatesRes (that's derived purely from
+    // registered_at) — floor_manager has no access to GET /fair-settings to
+    // find the date another way, so it's surfaced here instead, folded into
+    // available_dates below so "today" is always selectable once a fair is
+    // live, even before anyone has registered.
+    pool.query(
+      `SELECT to_char(fair_date, 'YYYY-MM-DD') AS d FROM fair_settings
+        WHERE is_active = true AND ($1::int IS NULL OR center_id = $1)
+        ORDER BY fair_date DESC LIMIT 1`,
+      [centerFilter]
+    ),
     getClosingTime(centerFilter),
     getTravelBuffer(),
   ]);
+
+  const activeFairDate = activeFairRes.rows[0]?.d || null;
 
   const minutesToClose = closingTime ? Math.max(0, (closingTime.getTime() - Date.now()) / 60000) : null;
 
@@ -179,10 +193,17 @@ async function computeFloorStats({ date, centerId } = {}) {
       .filter((r) => r.desk_id);
   }
 
+  const availableDates = availableDatesRes.rows.map((r) => r.day);
+  if (activeFairDate && !availableDates.includes(activeFairDate)) {
+    availableDates.unshift(activeFairDate);
+    availableDates.sort((a, b) => (a < b ? 1 : a > b ? -1 : 0)); // keep DESC order
+  }
+
   return {
     date: dateFilter,
     center_id: centerFilter,
-    available_dates: availableDatesRes.rows.map((r) => r.day),
+    available_dates: availableDates,
+    active_fair_date: activeFairDate,
     registered: registeredRes.rows[0].n,
     at_desk: atDeskRes.rows[0].n,
     completed: completedRes.rows[0].n,

@@ -54,8 +54,17 @@ export default function FloorMonitor() {
   // regardless of ?date= — fetched once, unscoped, purely to populate the Day
   // dropdown's option list; the all-time numbers themselves are discarded,
   // never assigned to `stats`, so nothing renders from this call.
+  // active_fair_date (the currently-active fair for this Center, folded into
+  // available_dates even before anyone's registered) is auto-selected so
+  // Floor shows live data on load instead of sitting on the blank "No day
+  // selected" state — a floor_manager has no other way to know the date to
+  // pick, since GET /fair-settings is admin/registration_staff only.
   useEffect(() => {
-    api.getFloorStats(undefined, effectiveCenterId).then((s) => setAvailableDates(s.available_dates || [])).catch(() => {});
+    setDate('');
+    api.getFloorStats(undefined, effectiveCenterId).then((s) => {
+      setAvailableDates(s.available_dates || []);
+      if (s.active_fair_date) setDate(s.active_fair_date);
+    }).catch(() => {});
   }, [effectiveCenterId]);
 
   useEffect(() => {
