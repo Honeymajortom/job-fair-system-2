@@ -209,8 +209,11 @@ export default function Insights() {
 
           <div className="sec-label" style={{ margin: '22px 0 10px' }}>Candidate demographics</div>
           <div className="ins-chart-card ins-donut-row">
-            <DonutBlock title="Gender" segments={GENDER_SEGMENTS(t)} />
-            <DonutBlock title="SDC status" segments={SDC_SEGMENTS(t)} />
+            {/* Distinct registered candidates, not bookings — data.totals sums
+                per-company assignments, so a candidate booked at 3 companies
+                would otherwise count 3 times here. */}
+            <DonutBlock title="Gender" segments={GENDER_SEGMENTS(data.candidate_demographics)} />
+            <DonutBlock title="SDC status" segments={SDC_SEGMENTS(data.candidate_demographics)} />
           </div>
         </>
       )}

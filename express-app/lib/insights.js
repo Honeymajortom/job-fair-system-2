@@ -42,8 +42,25 @@ async function computeInsights({ date, centerId } = {}) {
     ),
     // Historical: how many registered today, full stop — mirrors
     // lib/floorStats.js's own registered count so Floor and Insights agree.
+    // Gender/SDC breakdown lives here too, one row per candidate (not per
+    // booking) — the per-company `cand` CTE below double/triple-counts
+    // anyone booked at more than one company when its own per-company
+    // gender/SDC columns get summed across companies into `totals`, so
+    // `totals.male` etc. is really "male interviews," not "male candidates."
+    // This is the actual distinct-candidate figure the demographic donuts
+    // use; the per-company breakdown table further down is a different,
+    // legitimate metric (candidates assigned to *that* company) and is left
+    // reading from `totals` as before.
     pool.query(
-      `SELECT COUNT(*)::int AS n FROM candidates cd
+      `SELECT COUNT(*)::int AS n,
+              COUNT(*) FILTER (WHERE cd.gender = 'Male')::int AS male,
+              COUNT(*) FILTER (WHERE cd.gender = 'Female')::int AS female,
+              COUNT(*) FILTER (WHERE cd.gender = 'Other')::int AS other_gender,
+              COUNT(*) FILTER (WHERE cd.gender IS NULL)::int AS gender_unknown,
+              COUNT(*) FILTER (WHERE cd.is_sdc = true)::int AS sdc,
+              COUNT(*) FILTER (WHERE cd.is_sdc = false)::int AS non_sdc,
+              COUNT(*) FILTER (WHERE cd.is_sdc IS NULL)::int AS sdc_unknown
+         FROM candidates cd
         LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
        WHERE ($1::date IS NULL OR cd.registered_at::date = $1::date)
          AND ($2::int IS NULL OR fs.center_id = $2)`,
@@ -119,6 +136,17 @@ async function computeInsights({ date, centerId } = {}) {
     center_id: centerFilter,
     available_dates: availableDatesRes.rows.map((r) => r.day),
     registered: registeredRes.rows[0].n,
+    // Distinct-candidate demographics — see the query comment above for why
+    // this can't just be `totals` (which sums per-company bookings).
+    candidate_demographics: {
+      male: registeredRes.rows[0].male,
+      female: registeredRes.rows[0].female,
+      other_gender: registeredRes.rows[0].other_gender,
+      gender_unknown: registeredRes.rows[0].gender_unknown,
+      sdc: registeredRes.rows[0].sdc,
+      non_sdc: registeredRes.rows[0].non_sdc,
+      sdc_unknown: registeredRes.rows[0].sdc_unknown,
+    },
     totals,
     companies,
   };
