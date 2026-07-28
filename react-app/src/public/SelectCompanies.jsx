@@ -48,6 +48,9 @@ export default function SelectCompanies({ qr, onDone }) {
       </p>
       {error && <div className="error-note">{error}</div>}
       {!companies && !error && <div className="save-note">Loading companies…</div>}
+      {companies && companies.length === 0 && (
+        <p className="save-note">No companies are open for registration right now — check with staff.</p>
+      )}
       {companies && companies.map((c) => {
         const sel = selected.includes(c.id);
         return (
@@ -62,9 +65,7 @@ export default function SelectCompanies({ qr, onDone }) {
             <span className="slots">{c.queue_depth} ahead</span>
             <div className="co">{c.company_name}</div>
             <div className="loc">
-              {c.location ? `${c.location} · ` : ''}
-              {c.floor_number != null ? `Floor ${c.floor_number} · ` : ''}
-              {c.field}
+              {[c.location, c.floor_number != null ? `Floor ${c.floor_number}` : null, c.field].filter(Boolean).join(' · ')}
             </div>
           </button>
         );

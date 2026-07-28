@@ -395,11 +395,21 @@ export default function LivePosition() {
             {data.feedback_submitted ? (
               <>
                 <p className="desk-call-note calm" style={{ marginTop: 16 }}>✅ Feedback received — thank you!</p>
-                {qrDataUrl && (
+                {qrDataUrl ? (
                   <div className="qr-wrap">
                     <img src={qrDataUrl} alt="Exit QR" width={168} height={168} />
                     <div className="save-note">Show this at the Gate to exit</div>
                   </div>
+                ) : (
+                  // Same "no local checkin_qr" gap as the pre-check-in QR
+                  // above (a candidate who recovered their session on a
+                  // different device via /recover never has it) — that case
+                  // already falls back to showing the token number instead
+                  // of silently rendering nothing; this is the same fallback
+                  // for the exit QR, which previously had none at all.
+                  <p className="save-note" style={{ marginTop: 12 }}>
+                    Give the Gate staff your token number ({data.token}) to exit.
+                  </p>
                 )}
               </>
             ) : (

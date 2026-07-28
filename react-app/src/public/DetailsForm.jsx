@@ -141,7 +141,7 @@ export default function DetailsForm() {
         </div>
         <div className="field">
           <label>Age</label>
-          <input required type="number" value={form.age} onChange={(e) => set('age', e.target.value)} />
+          <input required type="number" min={14} max={100} value={form.age} onChange={(e) => set('age', e.target.value)} />
         </div>
         <div className="field">
           <label>Qualification</label>

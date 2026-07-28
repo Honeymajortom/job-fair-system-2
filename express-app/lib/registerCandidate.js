@@ -49,6 +49,16 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
   if (mobile && !isValidMobile(mobile)) {
     return { status: 400, body: { error: 'Enter a valid 10-digit mobile number' } };
   }
+  // Previously unvalidated anywhere in the stack (no client min/max, no
+  // server check, no DB constraint) despite being a `required` field on
+  // DetailsForm.jsx since the 2026-07-26 validation pass — that pass covered
+  // presence but not range. Bounds match the input's own min/max.
+  if (age != null && age !== '') {
+    const n = Number(age);
+    if (!Number.isFinite(n) || n < 14 || n > 100) {
+      return { status: 400, body: { error: 'age must be between 14 and 100' } };
+    }
+  }
   // Queue-system Phase 4 (new_architecture.md §3.3): feeds the "come now"
   // threshold (ETA <= travel time + 15min). Optional — an unset value just
   // means this candidate's ping ladder never reaches the "warm" rung early,
