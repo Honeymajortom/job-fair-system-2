@@ -8,6 +8,7 @@ const { clearNoShowTimer } = require('../lib/noShowTimer');
 const dispatcher = require('../lib/queueDispatcher');
 const { resolveCenterFilter } = require('../lib/centerScope');
 const redisCache = require('../middleware/redisCache');
+const redis = require('../lib/redisClient');
 
 const router = express.Router();
 
@@ -214,6 +215,35 @@ router.post('/fair-settings/:id/archive', authenticateJWT, requireRole('admin'),
   res.json({ archived: candIds.length, fair_settings_id: fairId, fair_name: fairRes.rows[0].fair_name });
 }));
 
+// Admin: remove a fair_settings row entirely — the Settings → Fair tab's
+// "All fairs" list, for a fair created by mistake or an old cycle nobody
+// needs to keep around once it's fully wound down. Same is_active guard as
+// /archive above (never delete a live cycle), plus a candidate_count guard —
+// if candidates are still tied to this fair, archive it first (POST
+// /fair-settings/:id/archive already exists specifically to purge those
+// safely, including the Redis cleanup a bare DELETE here has no business
+// doing); this route only ever removes fair_settings + its now-empty
+// fair_batches rows, never candidate data itself.
+router.delete('/fair-settings/:id', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
+  const fairId = Number(req.params.id);
+  if (!Number.isInteger(fairId)) return res.status(400).json({ error: 'Invalid fair id' });
+
+  const fairRes = await pool.query('SELECT id, fair_name, is_active FROM fair_settings WHERE id = $1', [fairId]);
+  if (!fairRes.rows.length) return res.status(404).json({ error: 'Fair not found' });
+  if (fairRes.rows[0].is_active) {
+    return res.status(409).json({ error: 'End this job fair before deleting it' });
+  }
+
+  const candRes = await pool.query('SELECT COUNT(*)::int AS n FROM candidates WHERE fair_settings_id = $1', [fairId]);
+  if (candRes.rows[0].n > 0) {
+    return res.status(409).json({ error: 'Archive this fair (purge its candidates) before deleting it' });
+  }
+
+  await pool.query('DELETE FROM fair_batches WHERE fair_settings_id = $1', [fairId]);
+  await pool.query('DELETE FROM fair_settings WHERE id = $1', [fairId]);
+  res.json({ ok: true, fair_settings_id: fairId, fair_name: fairRes.rows[0].fair_name });
+}));
+
 // Waiting rooms, one per floor — matched against companies.floor_number so a
 // candidate waiting for a Floor 2 company is told to sit in the Floor 2
 // waiting room, not a fair-wide generic one (superseded fair_settings.
@@ -225,10 +255,14 @@ router.post('/fair-settings/:id/archive', authenticateJWT, requireRole('admin'),
 // every center's rooms. Harmless while only one Center exists; Phase 4 scopes
 // this once a candidate's own fair/center is known.
 // Cached 60s (same TTL/convention as GET /qr/companies) — identical output
-// for every reader (GateBoard's 10s poll, every candidate's schedule poll)
-// and admin only ever changes this handful of rows rarely, so there's no
-// active invalidation on write either, same as this app's other caches — a
-// stale read just self-heals within the TTL.
+// for every reader (GateBoard's 10s poll, every candidate's schedule poll).
+// The POST/DELETE below actively bust this key (WAITING_ROOMS_CACHE_KEY) on
+// write — unlike this app's other caches, this one's writer and reader are
+// often the same admin, in the same Gate-tab session, seconds apart (e.g.
+// setting up floors right before a fair starts); a same-tab 60s-stale "no
+// rooms configured yet" right after adding one reads as a bug, not eventual
+// consistency, so it's worth the extra `redis.del()` here specifically.
+const WAITING_ROOMS_CACHE_KEY = 'cache:/api/waiting-rooms';
 router.get('/waiting-rooms', redisCache(60), asyncHandler(async (_req, res) => {
   const result = await pool.query('SELECT center_id, floor_number, location FROM waiting_rooms ORDER BY floor_number');
   res.json(result.rows);
@@ -251,6 +285,7 @@ router.post('/waiting-rooms', authenticateJWT, requireRole('admin'), asyncHandle
      RETURNING center_id, floor_number, location`,
     [center_id || null, floor_number, location.trim()]
   );
+  await redis.del(WAITING_ROOMS_CACHE_KEY).catch(() => {});
   res.status(201).json(result.rows[0]);
 }));
 
@@ -265,6 +300,7 @@ router.delete('/waiting-rooms/:floorNumber', authenticateJWT, requireRole('admin
     [req.query.center_id || null, req.params.floorNumber]
   );
   if (!result.rows.length) return res.status(404).json({ error: 'No waiting room configured for that floor' });
+  await redis.del(WAITING_ROOMS_CACHE_KEY).catch(() => {});
   res.json({ ok: true, floor_number: result.rows[0].floor_number });
 }));
 

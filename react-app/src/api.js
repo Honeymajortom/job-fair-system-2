@@ -138,6 +138,7 @@ export const api = {
   updateFairSettings: (id, payload) => request(`/fair-settings/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   activateFair: (payload) => request('/fair-settings/activate', { method: 'POST', body: JSON.stringify(payload) }),
   archiveFair: (id) => request(`/fair-settings/${id}/archive`, { method: 'POST' }),
+  deleteFairSettings: (id) => request(`/fair-settings/${id}`, { method: 'DELETE' }),
   generateBatches: (payload) => request('/batches/generate', { method: 'POST', body: JSON.stringify(payload) }),
   getWaitingRooms: () => request('/waiting-rooms'),
   setWaitingRoom: (floor_number, location) => request('/waiting-rooms', { method: 'POST', body: JSON.stringify({ floor_number, location }) }),

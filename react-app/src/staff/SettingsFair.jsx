@@ -16,16 +16,13 @@ function fmtDate(iso) {
 // living inside FloorMonitor.jsx — this tab isn't part of the Industry
 // redesign, same as Users/Companies/Reports/Insights.
 export default function SettingsFair() {
-  const { centers, selectedCenterId, effectiveCenterId } = useCenter();
+  const { selectedCenterId, effectiveCenterId } = useCenter();
   const [fairSettings, setFairSettings] = useState(null);
   const [fairDate, setFairDate] = useState('');
-  // Only shown/required when the Nav switcher is on "All centers" — if admin
-  // already has one Center selected there, starting a fair for it needs no
-  // extra picker.
-  const [fairCenterId, setFairCenterId] = useState('');
   const [startingFair, setStartingFair] = useState(false);
   const [endingFair, setEndingFair] = useState(false);
   const [archivingId, setArchivingId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
   const [toast, setToast] = useState(null);
 
   function showToast(text, isErr) {
@@ -40,17 +37,20 @@ export default function SettingsFair() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { loadFairSettings(); }, [effectiveCenterId]);
 
+  // Both checks below are real popups (window.alert), not the quiet toast
+  // the rest of this screen uses — starting a fair for the wrong (or no)
+  // Center/date is the one mistake here worth a hard stop in front of the
+  // admin's face, not something easy to miss in a corner-of-the-screen
+  // toast. In normal use neither should fire — the form itself is hidden
+  // until a Center is selected (see canManageFair below) and the date input
+  // is required — these are a defensive backstop, not the primary guard.
   async function startFair(e) {
     e.preventDefault();
-    if (!fairDate) { showToast('Pick a date', true); return; }
-    // Only ambiguous (needs the inline dropdown's value) when the switcher is
-    // on "All centers" AND more than one Center exists — otherwise there's
-    // exactly one sane target, no picker was even shown.
-    const targetCenterId = selectedCenterId || fairCenterId || (centers.length === 1 ? centers[0].id : '');
-    if (!targetCenterId) { showToast('Pick a center', true); return; }
+    if (!fairDate) { window.alert('Pick a fair date before starting the job fair.'); return; }
+    if (!selectedCenterId) { window.alert('Select a Center (Settings → Centers) before starting a job fair.'); return; }
     setStartingFair(true);
     try {
-      await api.activateFair({ fair_date: fairDate, center_id: Number(targetCenterId) });
+      await api.activateFair({ fair_date: fairDate, center_id: Number(selectedCenterId) });
       showToast(`Job fair started for ${fmtDate(fairDate)}`);
       loadFairSettings();
     } catch (err) {
@@ -92,13 +92,37 @@ export default function SettingsFair() {
     }
   }
 
-  // "Which fair is active" only has one right answer when fairSettings is
-  // scoped to a single Center — on the Nav switcher's "All centers" view with
-  // 2+ Centers in existence, multiple fairs can legitimately be active at
-  // once (fair_cycle_isolation_plan.md Phase 0's whole point), so Start/End
-  // job fair is hidden until a specific Center is picked, rather than acting
-  // on an arbitrary "first active fair found" row.
-  const canManageFair = Boolean(selectedCenterId) || centers.length <= 1;
+  // Full list, delete option — separate from archivableFairs above (which is
+  // just the "still has candidates to purge" subset). DELETE /fair-settings/:id
+  // itself refuses an active fair or one with candidates still attached (same
+  // guards mirrored client-side below, just for a clear disabled-button
+  // reason instead of a round trip that's always going to 409).
+  async function deleteFair(fair) {
+    if (!window.confirm(`Delete "${fair.fair_name}" (${fmtDate(fair.fair_date)})? This can't be undone.`)) return;
+    setDeletingId(fair.id);
+    try {
+      await api.deleteFairSettings(fair.id);
+      showToast(`Deleted ${fair.fair_name}`);
+      loadFairSettings();
+    } catch (err) {
+      showToast(err.message, true);
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  // Start/End job fair requires an explicit Center selection (Settings →
+  // Centers) — always, even when only one Center exists. This used to
+  // auto-pick the sole Center so the form worked without ever visiting the
+  // Centers tab; that silently meant "unless a Center is selected" never
+  // actually held, since a single-Center setup could always start a fair
+  // with nothing selected. "Which fair is active" also only has one right
+  // answer once fairSettings is scoped to a single Center anyway — on the
+  // "All centers" view with 2+ Centers, multiple fairs can legitimately be
+  // active at once (fair_cycle_isolation_plan.md Phase 0's whole point), so
+  // this doubles as the guard against acting on an arbitrary "first active
+  // fair found" row.
+  const canManageFair = Boolean(selectedCenterId);
   const activeFair = fairSettings && fairSettings.find((f) => f.is_active);
   const archivableFairs = fairSettings ? fairSettings.filter((f) => !f.is_active && f.candidate_count > 0) : [];
 
@@ -106,7 +130,7 @@ export default function SettingsFair() {
     <div>
       <div className="sec-label" style={{ marginBottom: 10 }}>Job fair</div>
       {!canManageFair && (
-        <p className="save-note" style={{ textAlign: 'left' }}>Select a center above to manage its job fair.</p>
+        <p className="save-note" style={{ textAlign: 'left' }}>Select a Center under Settings → Centers before managing a job fair.</p>
       )}
       {canManageFair && (
         activeFair ? (
@@ -122,15 +146,6 @@ export default function SettingsFair() {
               <label>Fair date</label>
               <input type="date" value={fairDate} onChange={(e) => setFairDate(e.target.value)} />
             </div>
-            {!selectedCenterId && centers.length > 1 && (
-              <div className="field" style={{ maxWidth: 160, marginBottom: 0 }}>
-                <label>Center</label>
-                <select value={fairCenterId} onChange={(e) => setFairCenterId(e.target.value)} required>
-                  <option value="" disabled>Select…</option>
-                  {centers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
-              </div>
-            )}
             <button className="btn" style={{ width: 'auto', padding: '10px 14px' }} type="submit" disabled={startingFair}>
               {startingFair ? 'Starting…' : 'Start job fair'}
             </button>
@@ -164,6 +179,51 @@ export default function SettingsFair() {
                     </td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {fairSettings && fairSettings.length > 0 && (
+        <>
+          <div className="sec-label" style={{ marginTop: 24, marginBottom: 10 }}>All fairs</div>
+          <div className="table-wrap scroll-5">
+            <table className="data-table">
+              <thead>
+                <tr><th>Fair</th><th>Date</th><th>Status</th><th>Candidates</th><th></th></tr>
+              </thead>
+              <tbody>
+                {fairSettings.map((f) => {
+                  const blockedReason = f.is_active
+                    ? 'End this job fair before deleting it'
+                    : f.candidate_count > 0
+                      ? 'Archive this fair (purge its candidates) before deleting it'
+                      : null;
+                  return (
+                    <tr key={f.id}>
+                      <td>{f.fair_name}</td>
+                      <td className="mono">{fmtDate(f.fair_date)}</td>
+                      <td>
+                        <span className={`checkin-status ${f.is_active ? 'in' : 'out'}`} style={{ marginTop: 0 }}>
+                          {f.is_active ? 'Active' : 'Ended'}
+                        </span>
+                      </td>
+                      <td className="mono">{f.candidate_count}</td>
+                      <td>
+                        <button
+                          className="btn ghost"
+                          style={{ width: 'auto', padding: '6px 12px', color: 'var(--st-rejected)' }}
+                          disabled={Boolean(blockedReason) || deletingId === f.id}
+                          title={blockedReason || undefined}
+                          onClick={() => deleteFair(f)}
+                        >
+                          {deletingId === f.id ? 'Deleting…' : 'Delete'}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
