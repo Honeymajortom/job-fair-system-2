@@ -147,6 +147,10 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
 .role-chip.company_hr, .role-chip.floor_manager { background: var(--system-soft); color: var(--system); }
 .s-body { padding: 18px; max-width: 1120px; width: 100%; margin: 0 auto; }
 
+.settings-subnav { display: flex; gap: 4px; margin: 4px 0 20px; border-bottom: 1px solid var(--line); padding-bottom: 10px; flex-wrap: wrap; }
+.settings-subnav a { font-size: 13px; font-weight: 500; color: var(--ink-60); text-decoration: none; padding: 6px 12px; border-radius: 7px; }
+.settings-subnav a.active { background: var(--candidate-soft); color: var(--candidate); }
+
 .live-tag { font-family: var(--mono); font-size: 10.5px; color: var(--ink-60); display: inline-flex; align-items: center; gap: 6px; }
 .checkin-status { display: inline-flex; align-items: center; font-family: var(--mono); font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 999px; margin-top: 8px; text-transform: uppercase; letter-spacing: .05em; }
 .checkin-status.in { background: #E3F7EB; color: var(--st-selected); border: 1px solid #BEE8D0; }
@@ -225,6 +229,8 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
 .data-table th { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-60); text-align: left; padding: 9px 12px; border-bottom: 2px solid var(--ink); }
 .data-table td { padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .table-wrap { overflow-x: auto; }
+.table-wrap.scroll-5 { max-height: 210px; overflow-y: auto; }
+.table-wrap.scroll-5 thead th { position: sticky; top: 0; background: var(--card); z-index: 1; }
 
 h2.screen-title { font-family: var(--disp); font-weight: 800; font-stretch: 85%; font-size: 26px; letter-spacing: -.01em; margin-bottom: 12px; }
 .sec-label { font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em; color: var(--ink-60); text-transform: uppercase; }

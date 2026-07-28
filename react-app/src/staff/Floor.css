@@ -1,0 +1,90 @@
+/* Floor tab only — ports the Industry design system recovered from
+   Floor_Dashboard.html (Barlow / Barlow Condensed, steel-blue accent,
+   hairline "blueprint" cards) onto the real Floor screen. Token shadowing
+   itself lives in industry-fonts.css's shared .industry-v2 block (applied
+   alongside this class on the root element) — every shared component
+   already used here (.field, .btn, .stat, .empty-state, .loading-row,
+   .offline-banner, .save-note, .checkin-status) re-themes for free through
+   the cascade. Every other staff tab is untouched.*/
+
+@import './industry-fonts.css';
+
+.floor-v2 {
+  background: var(--paper);
+  border-radius: 10px;
+}
+
+/* — blueprint card: hairline frame, no corner marks — */
+.floor-v2 .bp-card { position: relative; border: 1px solid var(--line); border-radius: var(--r); background: var(--card); }
+
+.floor-v2 .fv-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+.floor-v2 .fv-header-left { display: flex; flex-direction: column; gap: 12px; }
+.floor-v2 .fv-controls { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
+
+.floor-v2 .pill-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.floor-v2 .stat.pill {
+  display: inline-flex; flex-direction: row; align-items: center; gap: 7px; padding: 7px 14px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--card);
+}
+.floor-v2 .stat.pill .n { font-family: var(--mono); font-weight: 700; font-size: 15px; color: var(--ink); }
+.floor-v2 .stat.pill.hot .n { color: var(--st-hold); }
+.floor-v2 .stat.pill .l { font-family: var(--mono); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-60); margin: 0; }
+
+.floor-v2 .attn-card { width: 300px; flex-shrink: 0; padding: 14px 16px; }
+.floor-v2 .attn-card .card-kicker { font-family: var(--mono); font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase; color: var(--system); margin-bottom: 8px; }
+.floor-v2 .attn-list { max-height: 210px; overflow-y: auto; padding-right: 4px; }
+.floor-v2 .attn-item { display: flex; align-items: baseline; gap: 8px; font-size: 13px; padding: 4px 0; }
+.floor-v2 .attn-item b { color: var(--st-hold); }
+.floor-v2 .attn-item span { color: var(--ink-60); font-size: 11.5px; }
+
+.floor-v2 .section-title { font-family: var(--disp); font-weight: 600; font-size: 22px; margin: 4px 0 14px; letter-spacing: -.01em; }
+
+.floor-v2 .co-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.floor-v2 .co-tile { padding: 14px 16px; animation: fv-rise .32s cubic-bezier(.25,1,.5,1) both; }
+.floor-v2 .co-tile.low { border-left: 3px solid var(--st-hold); }
+.floor-v2 .co-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; min-height: 34px; }
+.floor-v2 .co-avatar {
+  width: 32px; height: 32px; border-radius: var(--r); background: var(--system-soft); color: var(--system);
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  font-family: var(--disp); font-weight: 600; font-size: 13px;
+}
+.floor-v2 .co-name { font-size: 14.5px; font-weight: 500; line-height: 1.25; }
+.floor-v2 .co-name small { display: block; font-family: var(--mono); font-size: 10.5px; color: var(--ink-60); font-weight: 400; }
+
+.floor-v2 .anomaly {
+  display: inline-flex; align-items: center; gap: 5px; background: #faf0dd; border: 1px solid #f0d9ab;
+  color: var(--st-hold); border-radius: 4px; padding: 2px 8px; font-size: 10.5px; font-weight: 600; margin-bottom: 8px;
+}
+.floor-v2 .anomaly .dt { width: 6px; height: 6px; border-radius: 50%; background: var(--st-hold); }
+
+.floor-v2 .co-row { display: flex; align-items: center; height: 34px; }
+.floor-v2 .slot-group { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.floor-v2 .slot {
+  width: 24px; height: 24px; border-radius: 4px; border: 1px solid var(--ink-30); background: var(--card);
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  font-family: var(--mono); font-size: 10px; font-weight: 700; color: var(--ink-60);
+  animation: fv-pop .3s cubic-bezier(.34,1.56,.64,1) both;
+}
+.floor-v2 .slot.empty { opacity: .3; border-style: dashed; }
+.floor-v2 .overflow-label { font-size: 11px; color: var(--ink-60); margin-left: 2px; }
+.floor-v2 .connector { flex: 1; min-width: 14px; height: 1px; background: var(--ink-30); margin: 0 8px; }
+.floor-v2 .connector.short { flex: 0 0 14px; }
+.floor-v2 .desk-dot-ring {
+  width: 30px; height: 30px; border-radius: 50%; border: 1.5px solid var(--ink-30); background: transparent;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  transition: border-color .3s ease, background .3s ease;
+}
+.floor-v2 .desk-dot-ring.live { border-color: var(--system); background: var(--system-soft); }
+.floor-v2 .desk-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-30); transition: background .3s ease; }
+.floor-v2 .desk-dot-ring.live .desk-dot { background: var(--system); }
+.floor-v2 .done-count { font-family: var(--disp); font-weight: 600; font-size: 18px; color: var(--system); flex-shrink: 0; }
+
+.floor-v2 .co-labels { display: flex; justify-content: space-between; margin-top: 7px; }
+.floor-v2 .co-labels span { font-family: var(--mono); font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-30); }
+
+@keyframes fv-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes fv-pop { from { opacity: 0; transform: scale(.5); } to { opacity: 1; transform: scale(1); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .floor-v2 .co-tile, .floor-v2 .slot { animation: none; }
+}

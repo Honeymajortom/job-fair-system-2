@@ -21,6 +21,7 @@ export default function IncomingCard({ candidate, companyId, ratingParameters, i
   const [status, setStatus] = useState(null);
   const [ratings, setRatings] = useState({});
   const [submitting, setSubmitting] = useState(false);
+  const [showValidation, setShowValidation] = useState(false);
 
   async function startInterview() {
     setStarting(true);
@@ -36,7 +37,7 @@ export default function IncomingCard({ candidate, companyId, ratingParameters, i
   }
 
   async function confirm() {
-    if (!status) return;
+    if (!status) { setShowValidation(true); return; }
     setSubmitting(true);
     try {
       await onDone({ status, ratings });
@@ -45,6 +46,7 @@ export default function IncomingCard({ candidate, companyId, ratingParameters, i
       setPickingOutcome(false);
       setStatus(null);
       setRatings({});
+      setShowValidation(false);
     }
   }
 
@@ -59,12 +61,19 @@ export default function IncomingCard({ candidate, companyId, ratingParameters, i
         {interviewStartedAt ? 'Interviewing now' : acknowledged ? '✅ Confirmed — on the way' : 'On their way to you'}
       </div>
       <div className="tk">{candidate.token}</div>
-      <dl className="cand-card" style={{ border: 'none', padding: 0 }}>
-        <dt>Name</dt><dd>{candidate.name}</dd>
-        <dt>Qual</dt><dd>{candidate.qualification || '—'}</dd>
-        <dt>Missed calls</dt><dd>{candidate.missedCalls ?? 0}</dd>
-        <dt>Coming from</dt><dd>{candidate.comingFrom}</dd>
-      </dl>
+      <div className="cand-fields">
+        {[
+          ['Name', candidate.name],
+          ['Qual', candidate.qualification || '—'],
+          ['Missed calls', candidate.missedCalls ?? 0],
+          ['Coming from', candidate.comingFrom],
+        ].map(([label, value]) => (
+          <div key={label}>
+            <div className="cf-label">{label}</div>
+            <div className="cf-val">{value}</div>
+          </div>
+        ))}
+      </div>
 
       <AnimatePresence mode="wait">
         {!interviewStartedAt && (
@@ -106,13 +115,14 @@ export default function IncomingCard({ candidate, companyId, ratingParameters, i
             transition={{ duration: 0.25 }}
             style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}
           >
-            <div className="seg">
+            <div className="seg" style={showValidation ? { border: '1.5px solid var(--st-rejected)' } : undefined}>
               {OUTCOMES.map((o) => (
-                <button key={o} type="button" className={status === o ? 'on' : ''} onClick={() => setStatus(o)}>
+                <button key={o} type="button" className={status === o ? 'on' : ''} onClick={() => { setStatus(o); setShowValidation(false); }}>
                   {o}
                 </button>
               ))}
             </div>
+            {showValidation && <div className="error-note" style={{ marginTop: -4 }}>Choose an outcome before submitting</div>}
             {ratingParameters?.map((p) => (
               <div className="stars-row" key={p.id}>
                 <span className="p">{p.parameter_name}</span>

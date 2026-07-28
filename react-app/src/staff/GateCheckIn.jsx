@@ -3,7 +3,9 @@ import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import { api } from '../api';
 import { useAuth } from './AuthContext';
+import { useCenter } from './CenterContext';
 import CandidateLookup from './CandidateLookup';
+import './Gate.css';
 
 // Camera itself just needs getUserMedia — decoding falls back to jsQR
 // (pure JS, works everywhere) when the native BarcodeDetector API isn't
@@ -37,21 +39,17 @@ function decodeJwtExp(token) {
   }
 }
 
-// Local calendar date, not UTC — new Date().toISOString() alone would show
-// tomorrow's date for anyone west of UTC in their evening, or yesterday's for
-// anyone east of it in the early morning. Subtracting the timezone offset
-// before converting to ISO is the standard way to get "today" in local terms.
-function todayLocal() {
-  const d = new Date();
-  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
-}
-
 function fmtDate(iso) {
   return new Date(`${iso}T00:00:00`).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
+function fmtTime(ts) {
+  return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
 export default function GateCheckIn() {
   const { user } = useAuth();
+  const { centers, selectedCenterId, effectiveCenterId } = useCenter();
   const [mode, setMode] = useState('entrance'); // 'entrance' | 'exit' — same scanner, opposite direction
   const [batches, setBatches] = useState(null);
   const [manualToken, setManualToken] = useState('');
@@ -61,6 +59,11 @@ export default function GateCheckIn() {
   const [submitting, setSubmitting] = useState(false);
   const [entranceQr, setEntranceQr] = useState(null); // { dataUrl, fairName, expiresAt }
   const [generatingQr, setGeneratingQr] = useState(false);
+  // Only shown/required when the Nav switcher is on "All centers" and 2+
+  // Centers exist — fair_cycle_isolation_plan.md Phase 5 follow-up: which
+  // Center this QR registers into is decided once, at mint time, not
+  // re-derived ambiguously per registration.
+  const [qrCenterId, setQrCenterId] = useState('');
   const [waitingRooms, setWaitingRoomsState] = useState([]);
   const [roomEdits, setRoomEdits] = useState({}); // floor_number -> location being edited
   const [savingRoomFloor, setSavingRoomFloor] = useState(null);
@@ -68,9 +71,6 @@ export default function GateCheckIn() {
   const [newRoomLocation, setNewRoomLocation] = useState('');
   const [addingRoom, setAddingRoom] = useState(false);
   const [fairSettings, setFairSettings] = useState(null);
-  const [fairDate, setFairDate] = useState(todayLocal);
-  const [startingFair, setStartingFair] = useState(false);
-  const [endingFair, setEndingFair] = useState(false);
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -87,10 +87,11 @@ export default function GateCheckIn() {
   }
 
   function loadBatches() {
-    api.getBatches().then(setBatches).catch((err) => showToast(err.message, true));
+    api.getBatches(effectiveCenterId).then(setBatches).catch((err) => showToast(err.message, true));
   }
 
-  useEffect(() => { loadBatches(); }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { loadBatches(); }, [effectiveCenterId]);
 
   // Admin only, matching the waiting-rooms write endpoints' role — one row
   // per floor, matched against companies.floor_number so a candidate waiting
@@ -109,48 +110,19 @@ export default function GateCheckIn() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Admin only — starting/ending the whole job fair (POST /fair-settings/
-  // activate, PUT /fair-settings/:id) is the same write-permission tier as
-  // the rest of fair-settings, not the Reg. Staff batch/QR controls below.
+  // Admin only — read-only here (matches Gate.html: just a status pill).
+  // Starting/ending the fair itself now lives on the Floor tab instead,
+  // next to its Day picker, since that's the screen an admin actually needs
+  // it from before any dates exist for that dropdown to offer.
   function loadFairSettings() {
-    api.getFairSettings().then(setFairSettings).catch(() => {});
+    api.getFairSettings(effectiveCenterId).then(setFairSettings).catch(() => {});
   }
 
   useEffect(() => {
     if (user.role !== 'admin') return;
     loadFairSettings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function startFair(e) {
-    e.preventDefault();
-    if (!fairDate) { showToast('Pick a date', true); return; }
-    setStartingFair(true);
-    try {
-      await api.activateFair({ fair_date: fairDate });
-      showToast(`Job fair started for ${fmtDate(fairDate)}`);
-      loadFairSettings();
-    } catch (err) {
-      showToast(err.message, true);
-    } finally {
-      setStartingFair(false);
-    }
-  }
-
-  async function endFair() {
-    if (!activeFair) return;
-    if (!window.confirm(`End the job fair for ${fmtDate(activeFair.fair_date)}?`)) return;
-    setEndingFair(true);
-    try {
-      await api.updateFairSettings(activeFair.id, { is_active: false });
-      showToast('Job fair ended');
-      loadFairSettings();
-    } catch (err) {
-      showToast(err.message, true);
-    } finally {
-      setEndingFair(false);
-    }
-  }
+  }, [effectiveCenterId]);
 
   useEffect(() => stopCamera, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -234,9 +206,14 @@ export default function GateCheckIn() {
   // candidate scans to reach /register, distinct from each candidate's own
   // personal check-in QR.
   async function generateEntranceQr() {
+    const targetCenterId = selectedCenterId || qrCenterId;
+    if (user.role === 'admin' && !targetCenterId && centers.length > 1) {
+      showToast('Pick a center', true);
+      return;
+    }
     setGeneratingQr(true);
     try {
-      const res = await api.qrToken();
+      const res = await api.qrToken(targetCenterId || undefined);
       const fullUrl = `${window.location.origin}${res.register_url}`;
       const dataUrl = await QRCode.toDataURL(fullUrl, { margin: 1, width: 240 });
       setEntranceQr({ dataUrl, fairName: res.fair_name, expiresAt: decodeJwtExp(res.qr_token) });
@@ -295,137 +272,186 @@ export default function GateCheckIn() {
     }
   }
 
+  // Read-only status pill only (Start/End now lives on Floor, see above) — on
+  // admin's "All centers" switcher view with 2+ Centers, this just shows
+  // whichever active fair sorts first, since there's no single right answer
+  // once concurrent centers can each have their own. registration_staff never
+  // hits this ambiguity: resolveCenterFilter always pins their fetch to their
+  // own center server-side regardless of the switcher.
   const activeFair = fairSettings && fairSettings.find((f) => f.is_active);
   const exitMode = mode === 'exit';
   // Gate operations (batch close, entrance QR mint) are Admin + Registration
   // Staff — both roles actually staff the entrance.
   const canManageGate = user.role === 'admin' || user.role === 'registration_staff';
-  const checkInStepNum = canManageGate ? 2 : 1;
 
   return (
-    <div className="s-body" style={{ maxWidth: 520 }}>
-      <h2 className="screen-title">Gate {exitMode ? 'exit-scan' : 'check-in'}</h2>
-
-      {user.role === 'admin' && (
-        <div className="field" style={{ marginBottom: 16 }}>
-          <div className="sec-label" style={{ marginBottom: 8 }}>Job fair</div>
-          {activeFair ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <span className="checkin-status in">Active — {fmtDate(activeFair.fair_date)}</span>
-              <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} disabled={endingFair} onClick={endFair}>
-                {endingFair ? 'Ending…' : 'End job fair'}
-              </button>
-            </div>
-          ) : (
-            <form onSubmit={startFair} style={{ display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }}>
-              <div className="field" style={{ maxWidth: 200 }}>
-                <label>Date</label>
-                <input type="date" value={fairDate} onChange={(e) => setFairDate(e.target.value)} />
-              </div>
-              <button className="btn" style={{ width: 'auto', padding: '8px 14px' }} type="submit" disabled={startingFair}>
-                {startingFair ? 'Starting…' : 'Start job fair'}
-              </button>
-            </form>
-          )}
-          {!fairSettings && <p className="save-note" style={{ marginTop: 8 }}>Loading…</p>}
-        </div>
-      )}
-
-      <div className="field" style={{ marginBottom: 16 }}>
-        <label>Direction</label>
-        <select value={mode} onChange={(e) => setMode(e.target.value)}>
-          <option value="entrance">Entrance</option>
-          <option value="exit">Exit</option>
-        </select>
+    <div className="s-body industry-v2 gate-v2">
+      <div>
+        <h2 className="screen-title">Gate {exitMode ? 'exit-scan' : 'check-in'}</h2>
+        <p className="gv-subtitle">{exitMode ? 'Exit' : 'Entrance'} gate</p>
       </div>
 
-      {canManageGate && (
-        <div className="field" style={{ marginBottom: 16 }}>
-          <CandidateLookup />
+      {/* Job fair + Direction, one card — matches Gate.html's grouping: a
+          header row (kicker+title on the left, status pill on the right),
+          then Direction as its own field below it. The mockup's pill is
+          read-only (no start/end control exists there); the Start/End
+          button is real functionality the toy mockup didn't need, so it
+          gets its own row under the header rather than crowding into it. */}
+      <div className="gv-card">
+        {user.role === 'admin' && (
+          <>
+            <div className="gv-card-head">
+              <div>
+                <div className="gv-kicker">Job fair</div>
+                <div className="gv-title">SDC Job Fair</div>
+              </div>
+              <span className={`checkin-status ${activeFair ? 'in' : 'out'}`} style={{ marginTop: 0 }}>
+                {activeFair ? `Active · ${fmtDate(activeFair.fair_date)}` : 'Not started'}
+              </span>
+            </div>
+            {!fairSettings && <p className="save-note" style={{ textAlign: 'left' }}>Loading…</p>}
+          </>
+        )}
+        <div className="field" style={{ marginBottom: 0 }}>
+          <label>Direction</label>
+          <div className="seg">
+            <button type="button" className={mode === 'entrance' ? 'on' : ''} onClick={() => setMode('entrance')}>Entrance</button>
+            <button type="button" className={mode === 'exit' ? 'on' : ''} onClick={() => setMode('exit')}>Exit</button>
+          </div>
         </div>
-      )}
+      </div>
 
+      {/* Check-in card: camera, token/button, then Recent inline at the
+          bottom — same card the mockup keeps them all in, rather than a
+          separate trailing "Recent" card. */}
+      <div className="gv-card">
+        <div className="gv-kicker">{exitMode ? 'Check out' : 'Check in'}</div>
+
+        {CAMERA_SUPPORTED && (
+          <div className="gv-cam-frame">
+            <video ref={videoRef} muted playsInline style={{ width: '100%', borderRadius: 8, border: '1px solid var(--line)', display: scanning ? 'block' : 'none', background: '#000' }} />
+            <canvas ref={canvasRef} style={{ display: 'none' }} />
+            {/* Filled/primary while active, matching the mockup's
+                cameraBtnClass toggle (btn-secondary -> btn-primary) — a real
+                visual state change, not just a text swap. */}
+            {!scanning ? (
+              <button className="btn ghost" style={{ minHeight: 48 }} type="button" onClick={startCamera}>
+                📷 Start camera
+              </button>
+            ) : (
+              <button className="btn" style={{ minHeight: 48 }} type="button" onClick={stopCamera}>
+                📷 Stop camera
+              </button>
+            )}
+          </div>
+        )}
+
+        <form onSubmit={submitManual} style={{ display: 'contents' }}>
+          <div className="search-bar">
+            <div className="field">
+              <label>{exitMode ? 'Token exit' : 'Candidate token'}</label>
+              <input value={manualToken} onChange={(e) => setManualToken(e.target.value)} placeholder="A-42" />
+            </div>
+            <button className="btn" style={{ width: 'auto', padding: '0 22px', minHeight: 48 }} type="submit" disabled={submitting || !manualToken.trim()}>{exitMode ? 'Check out' : 'Check in'}</button>
+          </div>
+        </form>
+
+        <div className="gv-recent">
+          {log.map((row) => (
+            <div key={row.ts} className={`ci-row${row.ok ? ' done' : ''}`}>
+              <span className="tk">{row.token}</span>
+              {row.ok ? <span>{row.name}</span> : <span className="error-note" style={{ marginTop: 0 }}>{row.message}</span>}
+              {row.ok && (row.exited ? <span className="ci-state">Exited</span> : <span className="ci-state">{row.checked_in}/{row.capacity}</span>)}
+            </div>
+          ))}
+          {!log.length && <p className="save-note" style={{ marginTop: 0 }}>No check-ins yet this session.</p>}
+        </div>
+      </div>
+
+      {/* Entrance-only order matches Gate.html exactly: Entrance QR, then
+          Waiting rooms per floor, then Arrival batches — previously had
+          batches first, which was the wrong sequence. */}
       {!exitMode && (
         <>
           {canManageGate && (
-            <div className="field" style={{ marginBottom: 16 }}>
-              <label>Today's arrival batches</label>
-              <p className="save-note" style={{ marginTop: 0, marginBottom: 8 }}>
-                Batches are created automatically as candidates register or check in — nothing to generate or pick by hand.
-              </p>
-              {batches && batches.map((b) => (
-                <div key={b.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                  <span className="mono">Batch {b.batch_number} · {b.checked_in}/{b.capacity}{b.status === 'closed' ? ' · closed' : ''}</span>
-                  <button className="btn ghost" style={{ width: 'auto', padding: '6px 10px' }} disabled={b.status === 'closed'} onClick={() => closeBatch(b.id)}>
-                    Close
+            <div className="gv-card">
+              <div className="gv-kicker">Entrance QR</div>
+              <p className="gv-body">Candidates scan this at the gate to register their arrival.</p>
+              {!entranceQr && user.role === 'admin' && !selectedCenterId && centers.length > 1 && (
+                <div className="field" style={{ maxWidth: 200, marginBottom: 8 }}>
+                  <label>Center</label>
+                  <select value={qrCenterId} onChange={(e) => setQrCenterId(e.target.value)} required>
+                    <option value="" disabled>Select…</option>
+                    {centers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+              )}
+              {entranceQr ? (
+                <div className="gv-qr-row">
+                  <img src={entranceQr.dataUrl} alt="Entrance registration QR" width={58} height={58} style={{ borderRadius: 6, border: '1px solid var(--line)' }} />
+                  <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} onClick={generateEntranceQr} disabled={generatingQr}>
+                    {generatingQr ? 'Generating…' : 'Regenerate'}
                   </button>
                 </div>
-              ))}
-              {(!batches || !batches.length) && <p className="save-note">No batches yet — the first registration will create one.</p>}
-            </div>
-          )}
-
-          {canManageGate && (
-            <div className="field" style={{ marginBottom: 16 }}>
-              <div className="sec-label" style={{ marginBottom: 8 }}>Step 1 · Generate entrance QR</div>
-              <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} onClick={generateEntranceQr} disabled={generatingQr}>
-                {generatingQr ? 'Generating…' : 'Generate entrance QR'}
-              </button>
+              ) : (
+                <button className="btn" style={{ width: 'auto', padding: '8px 14px', alignSelf: 'flex-start' }} onClick={generateEntranceQr} disabled={generatingQr}>
+                  {generatingQr ? 'Generating…' : 'Generate entrance QR'}
+                </button>
+              )}
               {entranceQr && (
-                <div style={{ marginTop: 12, textAlign: 'center' }}>
-                  <img src={entranceQr.dataUrl} alt="Entrance registration QR" width={240} height={240} />
-                  <p className="save-note" style={{ marginTop: 8 }}>
-                    {entranceQr.fairName} — print for the entrance.
-                    {entranceQr.expiresAt && ` Valid until ${entranceQr.expiresAt.toLocaleString()}.`}
-                  </p>
-                </div>
+                <p className="save-note" style={{ textAlign: 'left' }}>
+                  {entranceQr.fairName} — print for the entrance.
+                  {entranceQr.expiresAt && ` Valid until ${entranceQr.expiresAt.toLocaleString()}.`}
+                </p>
               )}
             </div>
           )}
 
           {user.role === 'admin' && (
-            <div className="field" style={{ marginBottom: 16 }}>
-              <div className="sec-label" style={{ marginBottom: 8 }}>Waiting rooms, per floor</div>
-              <p className="save-note" style={{ marginTop: 0, marginBottom: 8 }}>
+            <div className="gv-card">
+              <div className="gv-kicker">Waiting rooms, per floor</div>
+              <p className="gv-body">
                 Matched against each company's floor — a candidate waiting for a Floor 2 company is told to sit in the Floor 2 room, not a fair-wide generic one.
               </p>
-              {waitingRooms.map((r) => (
-                <div key={r.floor_number} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'end' }}>
-                  <div className="field" style={{ maxWidth: 80 }}>
-                    <label>Floor</label>
-                    <input value={r.floor_number} disabled className="mono" />
+              <div>
+                {waitingRooms.map((r) => (
+                  <div key={r.floor_number} className="gv-room-row" style={{ alignItems: 'end', gap: 8 }}>
+                    <div className="field" style={{ maxWidth: 70, marginBottom: 0 }}>
+                      <label>Floor</label>
+                      <input value={r.floor_number} disabled className="mono" />
+                    </div>
+                    <div className="field" style={{ flex: 1, marginBottom: 0 }}>
+                      <label>Location</label>
+                      <input
+                        value={roomEdits[r.floor_number] ?? ''}
+                        onChange={(e) => setRoomEdits({ ...roomEdits, [r.floor_number]: e.target.value })}
+                      />
+                    </div>
+                    <button
+                      className="btn ghost"
+                      style={{ width: 'auto', padding: '8px 14px' }}
+                      disabled={savingRoomFloor === r.floor_number}
+                      onClick={() => saveRoomLocation(r.floor_number)}
+                    >
+                      {savingRoomFloor === r.floor_number ? 'Saving…' : 'Save'}
+                    </button>
+                    <button
+                      className="btn ghost"
+                      style={{ width: 'auto', padding: '8px 14px', color: 'var(--st-rejected)' }}
+                      onClick={() => removeWaitingRoom(r.floor_number)}
+                    >
+                      Remove
+                    </button>
                   </div>
-                  <div className="field" style={{ flex: 1, maxWidth: 220 }}>
-                    <label>Location</label>
-                    <input
-                      value={roomEdits[r.floor_number] ?? ''}
-                      onChange={(e) => setRoomEdits({ ...roomEdits, [r.floor_number]: e.target.value })}
-                    />
-                  </div>
-                  <button
-                    className="btn ghost"
-                    style={{ width: 'auto', padding: '8px 14px' }}
-                    disabled={savingRoomFloor === r.floor_number}
-                    onClick={() => saveRoomLocation(r.floor_number)}
-                  >
-                    {savingRoomFloor === r.floor_number ? 'Saving…' : 'Save'}
-                  </button>
-                  <button
-                    className="btn ghost"
-                    style={{ width: 'auto', padding: '8px 14px', color: 'var(--st-rejected)' }}
-                    onClick={() => removeWaitingRoom(r.floor_number)}
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))}
-              {!waitingRooms.length && <p className="save-note" style={{ marginBottom: 8 }}>No waiting rooms configured yet.</p>}
+                ))}
+              </div>
+              {!waitingRooms.length && <p className="save-note">No waiting rooms configured yet.</p>}
               <form onSubmit={addWaitingRoom} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'end' }}>
-                <div className="field" style={{ maxWidth: 80 }}>
+                <div className="field" style={{ maxWidth: 70, marginBottom: 0 }}>
                   <label>Floor</label>
                   <input type="number" min="0" value={newRoomFloor} onChange={(e) => setNewRoomFloor(e.target.value)} placeholder="0" />
                 </div>
-                <div className="field" style={{ maxWidth: 200 }}>
+                <div className="field" style={{ flex: 1, marginBottom: 0 }}>
                   <label>Location</label>
                   <input value={newRoomLocation} onChange={(e) => setNewRoomLocation(e.target.value)} placeholder="Main Hall" />
                 </div>
@@ -435,58 +461,61 @@ export default function GateCheckIn() {
               </form>
             </div>
           )}
+
+          {/* Real feature the mockup never had — placed right before Arrival
+              batches, entrance-only (staff manage candidates on the way in,
+              not on the way out). */}
+          {canManageGate && (
+            <div className="gv-card">
+              <CandidateLookup />
+            </div>
+          )}
+
+          {canManageGate && (
+            <div className="gv-card">
+              <div className="gv-card-head">
+                <div className="gv-kicker">Arrival batches</div>
+              </div>
+              <p className="gv-body" style={{ margin: 0 }}>
+                Created automatically as candidates register or check in — nothing to generate or pick by hand.
+              </p>
+              {/* Open batches nearest capacity float to the top (same principle
+                  as Floor's "people on hand" sort) so the wave that needs a
+                  Close tap next is visible without scrolling past closed ones. */}
+              {batches && batches.length ? (
+                <div className="gv-batches">
+                  {[...batches].sort((a, b) => {
+                    const aClosed = a.status === 'closed';
+                    const bClosed = b.status === 'closed';
+                    if (aClosed !== bClosed) return aClosed ? 1 : -1;
+                    return (b.checked_in / b.capacity) - (a.checked_in / a.capacity);
+                  }).map((b) => {
+                    const full = b.checked_in >= b.capacity;
+                    return (
+                      <div key={b.id} className="gv-batch-row">
+                        <div>
+                          <div className="gv-batch-title">Batch {b.batch_number} <span className="gv-batch-time">· {fmtTime(b.arrival_time)}</span></div>
+                          <div className="gv-batch-tags">
+                            <span className={`checkin-status ${full ? 'out' : 'in'}`} style={{ marginTop: 0 }}>{b.checked_in}/{b.capacity}</span>
+                            {b.status === 'closed' && <span className="checkin-status" style={{ marginTop: 0, background: 'var(--line)', color: 'var(--ink-60)' }}>Closed</span>}
+                          </div>
+                        </div>
+                        {b.status !== 'closed' && (
+                          <button className="btn ghost" style={{ width: 'auto', padding: '6px 10px' }} onClick={() => closeBatch(b.id)}>
+                            Close
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="save-note">No batches yet — the first registration will create one.</p>
+              )}
+            </div>
+          )}
         </>
       )}
-
-      {exitMode && (
-        <p className="save-note" style={{ marginBottom: 16 }}>
-          Scanning here permanently ends the candidate's session — their QR and live position link stop working right after.
-        </p>
-      )}
-
-      <form onSubmit={submitManual} style={{ marginBottom: 18 }}>
-        <div className="sec-label" style={{ marginBottom: 8 }}>
-          {exitMode ? 'Step 1 · Scan QR or enter candidate token' : `Step ${checkInStepNum} · Check in`}
-        </div>
-
-        {CAMERA_SUPPORTED && (
-          <div style={{ marginBottom: 16 }}>
-            <video ref={videoRef} muted playsInline style={{ width: '100%', borderRadius: 10, border: '1px solid var(--line)', display: scanning ? 'block' : 'none', background: '#000' }} />
-            <canvas ref={canvasRef} style={{ display: 'none' }} />
-            {!scanning ? (
-              <button className="scan-btn" style={{ width: '100%', padding: '13px' }} type="button" onClick={startCamera}>
-                ⌗ Start camera
-              </button>
-            ) : (
-              <button className="scan-btn" style={{ width: '100%', padding: '13px', marginTop: 8 }} type="button" onClick={stopCamera}>
-                Stop camera
-              </button>
-            )}
-          </div>
-        )}
-
-        <div className="search-bar">
-          <div className="field">
-            <label>Candidate token</label>
-            <input value={manualToken} onChange={(e) => setManualToken(e.target.value)} placeholder="A-42" />
-          </div>
-          <button className="scan-btn" type="submit" disabled={submitting || !manualToken.trim()}>{exitMode ? 'Exit candidate' : 'Check in'}</button>
-        </div>
-
-        {exitMode && (
-          <div className="sec-label" style={{ marginTop: 12 }}>Step 2 · Exit candidate — scanning or submitting the token above exits them immediately</div>
-        )}
-      </form>
-
-      <div className="sec-label" style={{ marginBottom: 8 }}>Recent</div>
-      {log.map((row) => (
-        <div key={row.ts} className={`ci-row${row.ok ? ' done' : ''}`}>
-          <span className="tk">{row.token}</span>
-          {row.ok ? <span>{row.name}</span> : <span className="error-note" style={{ marginTop: 0 }}>{row.message}</span>}
-          {row.ok && (row.exited ? <span className="ci-state">Exited</span> : <span className="ci-state">{row.checked_in}/{row.capacity}</span>)}
-        </div>
-      ))}
-      {!log.length && <p className="save-note">No check-ins yet this session.</p>}
 
       {toast && <div className={`toast${toast.isErr ? ' err' : ''}`}>{toast.text}</div>}
     </div>

@@ -1,0 +1,64 @@
+/* Shared foundation for the Industry-derived staff-screen redesigns
+   (Floor.css, Gate.css, ...): the five recovered @font-face rules, plus one
+   shared .industry-v2 token block. Apply BOTH `industry-v2` and the
+   screen-specific class (e.g. `floor-v2`) to a screen's root element.
+
+   Full shadow, not a partial one: index.css's shared components
+   (.btn/.field/.seg/.stat/.role-chip/.ci-row/.alert/...) are colored via
+   --candidate (purple, the actual primary/button color — NOT --system) and
+   --live (coral) as well as --system, so shadowing only --system/--st-*
+   left every .btn and .stat.hot rendering in the old purple/coral instead of
+   the steel accent. Every brand/semantic token index.css defines is
+   remapped here onto the steel + neutral + good/warn/critical palette so
+   nothing falls through unstyled. */
+@font-face { font-family: 'Barlow'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/Barlow-400.woff2') format('woff2'); }
+@font-face { font-family: 'Barlow'; font-style: normal; font-weight: 500; font-display: swap; src: url('/fonts/Barlow-500.woff2') format('woff2'); }
+@font-face { font-family: 'Barlow'; font-style: normal; font-weight: 700; font-display: swap; src: url('/fonts/Barlow-700.woff2') format('woff2'); }
+@font-face { font-family: 'Barlow Condensed'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/BarlowCondensed-400.woff2') format('woff2'); }
+@font-face { font-family: 'Barlow Condensed'; font-style: normal; font-weight: 600; font-display: swap; src: url('/fonts/BarlowCondensed-600.woff2') format('woff2'); }
+
+.industry-v2 {
+  --ink: #1d1f20;
+  --ink-60: rgba(29,31,32,.62);
+  --ink-30: rgba(29,31,32,.32);
+  --paper: #f2f2f3;
+  --card: #ffffff;
+  --line: rgba(29,31,32,.14);
+
+  /* index.css's two brand accents (--candidate purple, --system teal)
+     collapse onto the Industry system's one steel-blue accent. */
+  --candidate: #5980a6;
+  --candidate-soft: #eaf1f6;
+  --system: #5980a6;
+  --system-soft: #eaf1f6;
+
+  /* --live (coral "hot/urgent") remaps to the amber warn tone instead —
+     the Industry system has no separate red-orange hue for this. */
+  --live: #b8790a;
+  --live-soft: #faf0dd;
+
+  --st-pending: #8a8d90;
+  --st-desk: #5980a6;
+  --st-selected: #2f8f6f;
+  --st-rejected: #b5482f;
+  --st-short: #5980a6;
+  --st-hold: #b8790a;
+  --st-noshow: #b5482f;
+
+  /* Desk's CountdownRing/IncomingCard urgency scale — --rung-hot is real
+     urgency (near-timeout ring, low-buffer highlight elsewhere), so it
+     stays a critical red rather than collapsing onto the steel accent. */
+  --rung-far: #8a8d90;
+  --rung-warm: #b8790a;
+  --rung-hot: #b5482f;
+
+  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --sans: 'Barlow', system-ui, sans-serif;
+  --disp: 'Barlow Condensed', system-ui, sans-serif;
+  --r: 6px;
+}
+/* index.css's h2.screen-title asks for weight 800 + font-stretch:85% —
+   tuned for Archivo's variable axes. Only 400/600 are loaded for Barlow
+   Condensed, so this pins it to a weight that's actually there instead of
+   silently falling back to a system font over a weight/stretch mismatch. */
+.industry-v2 h2.screen-title { font-weight: 600; font-stretch: normal; }

@@ -1,0 +1,71 @@
+/* Gate tab only — same Industry system as Floor.css (Barlow / Barlow
+   Condensed, steel accent, plain hairline cards). Token shadowing itself
+   lives in industry-fonts.css's shared .industry-v2 block (applied
+   alongside this class on the root element) — .field/.btn/.seg/.ci-row/
+   .checkin-status/.save-note/.error-note/.scan-btn/.search-bar all re-theme
+   for free. Every other staff tab is untouched. No corner-tick decoration
+   this time — dropped from Floor after feedback that it read as visual
+   noise, so this pass never added it. */
+@import './industry-fonts.css';
+
+.gate-v2 {
+  max-width: 480px;
+  background: var(--paper);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.gate-v2 .gv-subtitle { margin: 4px 0 0; font-size: 13px; color: var(--ink-60); }
+
+/* index.css's .field label is a tiny mono uppercase caption (the app-wide
+   convention elsewhere); the Industry system's own is a plain sentence-case
+   label. Overridden here rather than globally so only Gate/Floor pick it up. */
+.gate-v2 .field label {
+  font-family: var(--sans); font-size: 12px; font-weight: 400;
+  text-transform: none; letter-spacing: normal; color: var(--ink-60); margin-bottom: 5px;
+}
+
+/* .seg's shared ".on" styling is green (--st-selected) because its other
+   real use — Desk's outcome picker — treats "on" as "an outcome is chosen",
+   not specifically "success". Direction here is a neutral toggle, so it
+   gets its own steel-accent override rather than changing that shared rule
+   (which would also recolor Desk). */
+.gate-v2 .seg button.on { background: var(--system); }
+
+.gate-v2 .gv-card {
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--card);
+  padding: 16px; display: flex; flex-direction: column; gap: 12px;
+}
+.gate-v2 .gv-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.gate-v2 .gv-kicker { font-family: var(--mono); font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase; color: var(--system); }
+.gate-v2 .gv-title { font-family: var(--disp); font-weight: 600; font-size: 17px; }
+.gate-v2 .gv-body { margin: 0; font-size: 13px; color: var(--ink-60); }
+
+.gate-v2 .gv-qr-row { display: flex; align-items: center; gap: 12px; }
+.gate-v2 .gv-qr-icon {
+  width: 58px; height: 58px; border: 1px solid var(--line); border-radius: var(--r);
+  display: flex; align-items: center; justify-content: center; color: var(--system); flex-shrink: 0;
+  animation: gv-pop .3s cubic-bezier(.34,1.56,.64,1) both;
+}
+@keyframes gv-pop { from { opacity: 0; transform: scale(.85); } to { opacity: 1; transform: scale(1); } }
+
+.gate-v2 .gv-room-row { display: flex; justify-content: space-between; padding: 6px 0; border-top: 1px solid var(--line); font-size: 13.5px; }
+.gate-v2 .gv-room-row:first-child { border-top: none; }
+
+.gate-v2 .gv-batches { max-height: 280px; overflow-y: auto; padding-right: 4px; display: flex; flex-direction: column; gap: 8px; }
+.gate-v2 .gv-batch-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--r);
+}
+.gate-v2 .gv-batch-title { font-size: 14px; font-weight: 500; }
+.gate-v2 .gv-batch-time { font-weight: 400; color: var(--ink-60); font-size: 13px; }
+.gate-v2 .gv-batch-tags { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+
+.gate-v2 .gv-cam-frame { position: relative; }
+.gate-v2 .gv-recent { display: flex; flex-direction: column; gap: 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .gate-v2 .gv-qr-icon { animation: none; }
+}

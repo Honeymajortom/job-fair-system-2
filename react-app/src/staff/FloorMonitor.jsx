@@ -1,34 +1,53 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { useSocketEvent } from './SocketContext';
+import { useCenter } from './CenterContext';
 import OfflineBanner from '../common/OfflineBanner';
 import Spinner from '../common/Spinner';
 import EmptyState from '../common/EmptyState';
+import './Floor.css';
 
 const POLL_MS = 20000;
-const RECENT_LIMIT = 20;
-
-const alertMessage = (a) =>
-  `${a.remaining} people still waiting, won't all get seen before closing at this pace. ` +
-  `Reach out now: offer a transfer, a priority slot tomorrow, or a virtual interview.`;
+const MAX_SLOTS = 6;
 
 function fmtDate(iso) {
   return new Date(`${iso}T00:00:00`).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
+function initialsFor(name) {
+  const caps = name.split(' ').filter((w) => /^[A-Z]/.test(w)).slice(0, 2).map((w) => w[0]).join('');
+  return caps || name.slice(0, 2).toUpperCase();
+}
+
+// Pace signal, distinct from `low` (buffer sufficiency — do they have enough
+// people checked in and waiting). This is about whether a company is
+// actually getting through the people it has: real completed/remaining
+// counts from lib/floorStats.js, not a display-only guess.
+function anomalyFor(c) {
+  const total = c.completed + c.remaining;
+  if (total === 0 || c.remaining === 0) return null;
+  if (c.completed === 0) return 'No progress yet';
+  if (c.completed / total < 0.05) return 'Falling behind';
+  return null;
+}
+
+// settings_tab_plan.md (2026-07-28): this used to also carry the Start/End
+// job fair control + Past-fairs archive list — both moved to Settings → Fair,
+// which has permanent room for them and doesn't need the "hide it from
+// floor_manager" guard this screen had to apply inline (Settings is already
+// admin-gated at the route level). Floor is now purely the live dashboard.
 export default function FloorMonitor() {
+  const { effectiveCenterId } = useCenter();
   // Each fair day is its own fresh session now — '' means "nothing picked
   // yet", not "all time" (that all-time aggregate used to be the default
   // view, which read as stale/misleading once multiple fair days piled up).
   const [date, setDate] = useState('');
   const [stats, setStats] = useState(null);
-  const [recent, setRecent] = useState(null);
   const [availableDates, setAvailableDates] = useState([]);
 
   function load(d) {
-    if (!d) { setStats(null); setRecent(null); return; }
-    api.getFloorStats(d).then(setStats).catch(() => {});
-    api.listCandidates(d).then(setRecent).catch(() => {});
+    if (!d) { setStats(null); return; }
+    api.getFloorStats(d, effectiveCenterId).then(setStats).catch(() => {});
   }
 
   // GET /floor-stats returns available_dates alongside the all-time numbers
@@ -36,15 +55,20 @@ export default function FloorMonitor() {
   // dropdown's option list; the all-time numbers themselves are discarded,
   // never assigned to `stats`, so nothing renders from this call.
   useEffect(() => {
-    api.getFloorStats().then((s) => setAvailableDates(s.available_dates || [])).catch(() => {});
-  }, []);
+    api.getFloorStats(undefined, effectiveCenterId).then((s) => setAvailableDates(s.available_dates || [])).catch(() => {});
+  }, [effectiveCenterId]);
 
   useEffect(() => {
-    if (!date) return undefined;
+    // load(date) itself clears stats back to null when date is '' — that
+    // branch was previously skipped entirely, so re-selecting "Select a
+    // day…" after viewing a real day left the last day's stats (and tile
+    // grid) rendered underneath the "No day selected" empty state.
     load(date);
+    if (!date) return undefined;
     const t = setInterval(() => load(date), POLL_MS);
     return () => clearInterval(t);
-  }, [date]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date, effectiveCenterId]);
 
   // Live-ish without full local delta application (v1's FloorMonitor did
   // that; this pass just re-fetches on the events that would move a number).
@@ -55,21 +79,49 @@ export default function FloorMonitor() {
   useSocketEvent('no_show_marked', () => load(date));
 
   // now_serving/alerts are always live (no historical record to scope by
-  // day, see lib/floorStats.js) — everything else, including this list,
-  // respects the dropdown via GET /candidates' optional ?date=.
-  const recentScoped = recent ? recent.slice(0, RECENT_LIMIT) : null;
+  // day, see lib/floorStats.js) — everything else respects the dropdown.
+  const servingCompanyIds = stats ? new Set(stats.now_serving.map((r) => r.company_id)) : new Set();
+  const sortedCompanies = stats ? [...stats.companies].sort((a, b) => (a.low === b.low ? 0 : a.low ? -1 : 1)) : [];
+  const sortedAlerts = stats ? [...stats.alerts].sort((a, b) => b.remaining - a.remaining) : [];
 
   return (
-    <div className="s-body">
+    <div className="s-body industry-v2 floor-v2">
       <OfflineBanner />
-      <h2 className="screen-title">Floor</h2>
 
-      <div className="field" style={{ maxWidth: 260, marginBottom: 16 }}>
-        <label>Day</label>
-        <select value={date} onChange={(e) => setDate(e.target.value)}>
-          <option value="">Select a day…</option>
-          {availableDates.map((d) => <option key={d} value={d}>{fmtDate(d)}</option>)}
-        </select>
+      <div className="fv-header">
+        <div className="fv-header-left">
+          <h2 className="screen-title">Floor</h2>
+          <div className="fv-controls">
+            <div className="field" style={{ maxWidth: 260, marginBottom: 0 }}>
+              <label>Day</label>
+              <select value={date} onChange={(e) => setDate(e.target.value)}>
+                <option value="">Select a day…</option>
+                {availableDates.map((d) => <option key={d} value={d}>{fmtDate(d)}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {stats && (
+            <div className="pill-row">
+              <div className="stat pill"><span className="n">{stats.registered}</span><span className="l">Registered</span></div>
+              <div className="stat pill hot"><span className="n">{stats.at_desk}</span><span className="l">At desk now</span></div>
+              <div className="stat pill"><span className="n">{stats.completed}</span><span className="l">Completed</span></div>
+              <div className="stat pill"><span className="n">{stats.waitlisted}</span><span className="l">On the waitlist</span></div>
+              <div className="stat pill hot"><span className="n">{stats.needs_attention}</span><span className="l">Needs attention</span></div>
+            </div>
+          )}
+        </div>
+
+        {stats && (
+          <div className="bp-card attn-card">
+            <div className="card-kicker">Won't finish in time — rechecked every 30 min</div>
+            <div className="attn-list">
+              {sortedAlerts.length ? sortedAlerts.map((a) => (
+                <div key={a.company_id} className="attn-item"><b>{a.company_name}</b><span>{a.remaining} waiting</span></div>
+              )) : <p className="save-note" style={{ textAlign: 'left' }}>No companies at risk right now.</p>}
+            </div>
+          </div>
+        )}
       </div>
 
       {!date && <EmptyState icon="📅" title="No day selected" hint="Pick a day above to see Floor data." />}
@@ -77,96 +129,38 @@ export default function FloorMonitor() {
 
       {stats && (
         <>
-          <div className="stats-row">
-            <div className="stat"><div className="n">{stats.registered}</div><div className="l">Registered</div></div>
-            <div className="stat hot"><div className="n">{stats.at_desk}</div><div className="l">At desk now</div></div>
-            <div className="stat"><div className="n">{stats.completed}</div><div className="l">Completed</div></div>
-            <div className="stat"><div className="n">{stats.waitlisted}</div><div className="l">On the waitlist</div></div>
-            <div className="stat hot"><div className="n">{stats.needs_attention}</div><div className="l">Needs attention</div></div>
-          </div>
-
-          {/* Three independently-scrolling panels side by side instead of
-              three full-width lists stacked and growing forever — with many
-              companies, the old layout meant scrolling past "people on hand"
-              and "now serving" just to reach the at-risk alerts. Sorting each
-              list so the thing that needs attention is at the top means the
-              urgent case is visible without any scrolling at all. */}
-          <div className="floor-grid">
-            <div className="floor-panel">
-              <div className="sec-label">People on hand, per company</div>
-              <div className="buffer-list">
-                {[...stats.companies].sort((a, b) => (a.low === b.low ? 0 : a.low ? -1 : 1)).map((c) => {
-                  // Fill and target tick share one scale (the larger of the
-                  // two, plus headroom) so "fill reaches the tick" reads as
-                  // "at target" regardless of which happens to be bigger.
-                  const scaleMax = Math.max(c.on_hand, c.target, 1) * 1.15;
-                  const fillPct = Math.round((c.on_hand / scaleMax) * 100);
-                  const targetPct = Math.round((c.target / scaleMax) * 100);
-                  return (
-                    <div key={c.id} className={`buf-row${c.low ? ' low' : ''}`}>
-                      <div className="co">{c.name}<small>{c.interviewers} interviewer{c.interviewers === 1 ? '' : 's'}</small></div>
-                      <div className="buf-track">
-                        <span className="buf-fill" style={{ width: `${fillPct}%` }} />
-                        <span className="buf-target" style={{ left: `${targetPct}%` }} />
-                      </div>
-                      <div className="val">{c.on_hand}/{c.target}</div>
+          <h3 className="section-title">People on hand, per company</h3>
+          <div className="co-tiles">
+            {sortedCompanies.map((c) => {
+              const anomaly = anomalyFor(c);
+              const live = servingCompanyIds.has(c.id);
+              const slotCount = Math.min(c.on_hand, MAX_SLOTS);
+              const overflow = c.on_hand - MAX_SLOTS;
+              return (
+                <div key={c.id} className={`bp-card co-tile${c.low ? ' low' : ''}`}>
+                  <div className="co-head">
+                    <div className="co-avatar">{initialsFor(c.name)}</div>
+                    <div className="co-name">{c.name}<small>{c.interviewers} interviewer{c.interviewers === 1 ? '' : 's'}</small></div>
+                  </div>
+                  {anomaly && <div className="anomaly"><span className="dt"></span>{anomaly}</div>}
+                  <div className="co-row">
+                    <div className="slot-group">
+                      {Array.from({ length: slotCount }).map((_, i) => <span key={i} className="slot">{i + 1}</span>)}
+                      {overflow > 0 && <span className="overflow-label">+{overflow}</span>}
+                      {!c.on_hand && <span className="overflow-label">No one waiting</span>}
                     </div>
-                  );
-                })}
-                {!stats.companies.length && <p className="save-note">No companies yet.</p>}
-              </div>
-            </div>
-
-            <div className="floor-panel">
-              <div className="sec-label">Now serving</div>
-              <div className="now-board">
-                {stats.now_serving.map((r) => (
-                  <div key={r.token} className="now-tok"><b>{r.token}</b><span>→ {r.company_name} · Desk {r.desk_id}</span></div>
-                ))}
-                {!stats.now_serving.length && <p className="save-note">Nobody at a desk right now.</p>}
-              </div>
-            </div>
-
-            <div className="floor-panel">
-              <div className="sec-label">Won't finish in time — rechecked every 30 min</div>
-              <div className="alert-list">
-                {[...stats.alerts].sort((a, b) => b.remaining - a.remaining).map((a) => (
-                  <div key={a.company_id} className="alert"><b>{a.company_name}</b> — {alertMessage(a)}</div>
-                ))}
-                {!stats.alerts.length && <p className="save-note">No companies at risk right now.</p>}
-              </div>
-            </div>
+                    <div className="connector"></div>
+                    <div className={`desk-dot-ring${live ? ' live' : ''}`}><span className="desk-dot"></span></div>
+                    <div className="connector short"></div>
+                    <div className="done-count">{c.completed}</div>
+                  </div>
+                  <div className="co-labels"><span>Queue</span><span>Desk</span><span>Done</span></div>
+                </div>
+              );
+            })}
+            {!sortedCompanies.length && <p className="save-note">No companies yet.</p>}
           </div>
         </>
-      )}
-
-      <div className="sec-label" style={{ margin: '18px 0 10px' }}>Recent registrations</div>
-      {recentScoped ? (
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr><th>Token</th><th>Name</th><th>Qualification</th><th>Registered at</th><th>Checked in</th></tr>
-            </thead>
-            <tbody>
-              {recentScoped.map((c) => (
-                <tr key={c.id}>
-                  <td className="mono">{c.token_no}</td>
-                  <td>{c.name}</td>
-                  <td>{c.qualification || '—'}</td>
-                  <td className="mono">{new Date(c.registered_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
-                  <td>{c.checked_in_at ? 'Yes' : '—'}</td>
-                </tr>
-              ))}
-              {!recentScoped.length && (
-                <tr><td colSpan={5} className="save-note">No candidates registered yet.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      ) : date ? (
-        <Spinner label="Loading recent registrations…" />
-      ) : (
-        <EmptyState icon="📅" hint="Pick a day above to see recent registrations." />
       )}
     </div>
   );

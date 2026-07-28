@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import { useCenter } from './CenterContext';
 import OfflineBanner from '../common/OfflineBanner';
 import Spinner from '../common/Spinner';
 import EmptyState from '../common/EmptyState';
@@ -112,16 +113,19 @@ function DonutBlock({ title, segments }) {
 }
 
 export default function Insights() {
+  const { effectiveCenterId } = useCenter();
   // Each fair day is its own fresh session now — '' means "nothing picked
   // yet", not "all time" (an all-time aggregate by default read as stale
   // once multiple fair days piled up).
   const [date, setDate] = useState('');
   const [data, setData] = useState(null);
+  const [recent, setRecent] = useState(null);
   const [availableDates, setAvailableDates] = useState([]);
 
   function load(d) {
-    if (!d) { setData(null); return; }
-    api.getInsights(d).then(setData).catch(() => {});
+    if (!d) { setData(null); setRecent(null); return; }
+    api.getInsights(d, effectiveCenterId).then(setData).catch(() => {});
+    api.listCandidates(d, effectiveCenterId).then(setRecent).catch(() => {});
   }
 
   // GET /insights returns available_dates alongside the all-time totals
@@ -129,15 +133,16 @@ export default function Insights() {
   // dropdown's option list; the all-time totals themselves are discarded,
   // never assigned to `data`, so nothing renders from this call.
   useEffect(() => {
-    api.getInsights().then((d) => setAvailableDates(d.available_dates || [])).catch(() => {});
-  }, []);
+    api.getInsights(undefined, effectiveCenterId).then((d) => setAvailableDates(d.available_dates || [])).catch(() => {});
+  }, [effectiveCenterId]);
 
   useEffect(() => {
     if (!date) return undefined;
     load(date);
     const t = setInterval(() => load(date), POLL_MS);
     return () => clearInterval(t);
-  }, [date]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date, effectiveCenterId]);
 
   const t = data?.totals;
   const companies = data?.companies || [];
@@ -145,9 +150,8 @@ export default function Insights() {
   const maxAssigned = Math.max(1, ...companies.map((c) => c.assigned));
 
   return (
-    <div className="s-body">
+    <>
       <OfflineBanner />
-      <h2 className="screen-title">Insights</h2>
 
       <div className="field" style={{ maxWidth: 260, marginBottom: 16 }}>
         <label>Day</label>
@@ -209,7 +213,7 @@ export default function Insights() {
 
       <div className="sec-label" style={{ margin: '18px 0 10px' }}>Per company — vacancies &amp; outcomes</div>
       {data ? (
-        <div className="table-wrap">
+        <div className="table-wrap scroll-5">
           <table className="data-table">
             <thead>
               <tr>
@@ -244,7 +248,7 @@ export default function Insights() {
 
       <div className="sec-label" style={{ margin: '18px 0 10px' }}>Per company — demographics</div>
       {data ? (
-        <div className="table-wrap">
+        <div className="table-wrap scroll-5">
           <table className="data-table">
             <thead>
               <tr>
@@ -274,6 +278,33 @@ export default function Insights() {
       ) : (
         date ? <Spinner label="Loading…" /> : <EmptyState icon="📅" hint="Pick a day above to see this table." />
       )}
-    </div>
+
+      <div className="sec-label" style={{ margin: '18px 0 10px' }}>Recent registrations</div>
+      {recent ? (
+        <div className="table-wrap scroll-5">
+          <table className="data-table">
+            <thead>
+              <tr><th>Token</th><th>Name</th><th>Qualification</th><th>Registered at</th><th>Checked in</th></tr>
+            </thead>
+            <tbody>
+              {recent.map((c) => (
+                <tr key={c.id}>
+                  <td className="mono">{c.token_no}</td>
+                  <td>{c.name}</td>
+                  <td>{c.qualification || '—'}</td>
+                  <td className="mono">{new Date(c.registered_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+                  <td>{c.checked_in_at ? 'Yes' : '—'}</td>
+                </tr>
+              ))}
+              {!recent.length && (
+                <tr><td colSpan={5} className="save-note">No candidates registered yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        date ? <Spinner label="Loading recent registrations…" /> : <EmptyState icon="📅" hint="Pick a day above to see recent registrations." />
+      )}
+    </>
   );
 }

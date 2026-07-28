@@ -1,9 +1,10 @@
 import { Fragment, useEffect, useState } from 'react';
 import { api } from '../api';
+import { useCenter } from './CenterContext';
 
 const emptyCompanyForm = {
   company_name: '', description: '', location: '', floor_number: '', field: '', job_type: '',
-  min_qualification: '', max_qualification: '', seats: '', interview_minutes: '',
+  min_qualification: '', max_qualification: '', seats: '', interview_minutes: '', center_id: '',
 };
 
 const emptyEditForm = {
@@ -18,6 +19,7 @@ const emptyPostForm = {
 };
 
 export default function CompanyManagement() {
+  const { centers, effectiveCenterId } = useCenter();
   const [roster, setRoster] = useState(null);
   const [companyForm, setCompanyForm] = useState(emptyCompanyForm);
   const [creating, setCreating] = useState(false);
@@ -41,10 +43,16 @@ export default function CompanyManagement() {
   }
 
   function loadRoster() {
-    api.getCompanies().then(setRoster).catch((err) => showToast(err.message, true));
+    api.getCompanies(effectiveCenterId).then(setRoster).catch((err) => showToast(err.message, true));
   }
 
-  useEffect(() => { loadRoster(); }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { loadRoster(); }, [effectiveCenterId]);
+
+  // Pre-fills the create form's Center field from the Nav switcher whenever
+  // it changes — a convenience default, not a lock; admin can still pick a
+  // different Center for the company being created.
+  useEffect(() => { setCompanyForm((f) => ({ ...f, center_id: effectiveCenterId || '' })); }, [effectiveCenterId]);
 
   function loadDetail(id) {
     api.getCompany(id).then((c) => {
@@ -73,16 +81,22 @@ export default function CompanyManagement() {
 
   async function createCompany(e) {
     e.preventDefault();
+    // fair_cycle_isolation_plan.md Phase 4: a company is permanently tied to
+    // one Center, so this is the one field admin must pick explicitly rather
+    // than defaulting silently — pre-filled from the Nav switcher's current
+    // selection (see the effect above) as a convenience only.
+    if (!companyForm.center_id) { showToast('Pick a center', true); return; }
     setCreating(true);
     try {
       await api.createCompany({
         ...companyForm,
+        center_id: Number(companyForm.center_id),
         floor_number: companyForm.floor_number ? Number(companyForm.floor_number) : undefined,
         seats: companyForm.seats ? Number(companyForm.seats) : undefined,
         interview_minutes: companyForm.interview_minutes ? Number(companyForm.interview_minutes) : undefined,
       });
       showToast(`${companyForm.company_name} added`);
-      setCompanyForm(emptyCompanyForm);
+      setCompanyForm({ ...emptyCompanyForm, center_id: effectiveCenterId || '' });
       loadRoster();
     } catch (err) {
       showToast(err.message, true);
@@ -233,7 +247,7 @@ export default function CompanyManagement() {
   return (
     <div className="s-body">
       <h2 className="screen-title">Companies</h2>
-      <div className="table-wrap">
+      <div className="table-wrap scroll-5">
         <table className="data-table">
           <thead>
             <tr><th>Name</th><th>Floor</th><th>Field</th><th>Qualification</th><th>Seats / Interview</th><th>Desk</th><th></th></tr>
@@ -460,6 +474,13 @@ export default function CompanyManagement() {
         <div className="field" style={{ maxWidth: 200 }}>
           <label>Name</label>
           <input value={companyForm.company_name} onChange={(e) => setCompanyForm({ ...companyForm, company_name: e.target.value })} required />
+        </div>
+        <div className="field" style={{ maxWidth: 160 }}>
+          <label>Center</label>
+          <select value={companyForm.center_id} onChange={(e) => setCompanyForm({ ...companyForm, center_id: e.target.value })} required>
+            <option value="" disabled>Select a center…</option>
+            {centers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
         </div>
         <div className="field" style={{ maxWidth: 220 }}>
           <label>Description</label>

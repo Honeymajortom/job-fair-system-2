@@ -1,3 +1,5 @@
+import { useCenter } from './CenterContext';
+
 const REPORTS = [
   { path: '/candidate-summary', slug: 'candidate-summary', title: 'Candidate summary', desc: 'One row per candidate — companies assigned, interviews done, selections, no-shows.' },
   { path: '/master-report', slug: 'master-report', title: 'Master report', desc: 'Full export — one row per candidate × company assignment, with ratings and feedback.' },
@@ -17,9 +19,13 @@ function DownloadIcon() {
 }
 
 export default function Reports() {
+  // fair_cycle_isolation_plan.md Phase 4: these are plain <a href> downloads
+  // (not api.js fetch calls), so the Nav switcher's Center scoping has to be
+  // appended to the query string directly here rather than through a
+  // wrapper function.
+  const { effectiveCenterId } = useCenter();
   return (
-    <div className="s-body">
-      <h2 className="screen-title">Reports</h2>
+    <>
       <p className="sec-label" style={{ marginBottom: 16 }}>Six exports · CSV · live off the current fair's data</p>
       <div className="report-grid">
         {REPORTS.map((r) => (
@@ -28,13 +34,17 @@ export default function Reports() {
               <h3>{r.title}</h3>
               <p>{r.desc}</p>
             </div>
-            <a className="dl-btn" href={`/api${r.path}?format=csv`} download={`${r.slug}.csv`}>
+            <a
+              className="dl-btn"
+              href={`/api${r.path}?format=csv${effectiveCenterId ? `&center_id=${effectiveCenterId}` : ''}`}
+              download={`${r.slug}.csv`}
+            >
               <DownloadIcon />
               Download CSV
             </a>
           </div>
         ))}
       </div>
-    </div>
+    </>
   );
 }

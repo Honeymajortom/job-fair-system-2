@@ -1,0 +1,41 @@
+/* Desk tab only — same Industry system as Floor.css/Gate.css. Token
+   shadowing lives in industry-fonts.css's shared .industry-v2 block
+   (applied alongside this class on the root element) — .field/.btn/.seg/
+   .checkin-status/.ring/.incoming-card/.resume-box/.stars all re-theme for
+   free. Every other staff tab is untouched. */
+@import './industry-fonts.css';
+
+.desk-v2 { display: flex; flex-direction: column; gap: 16px; }
+
+.desk-v2 .field label {
+  font-family: var(--sans); font-size: 12px; font-weight: 400;
+  text-transform: none; letter-spacing: normal; color: var(--ink-60); margin-bottom: 5px;
+}
+
+/* Kicker + big token color: the mockup's card-kicker/id are steel, not the
+   shared .incoming-card's --rung-hot (that variable stays a real urgency
+   color for the ring elsewhere, so it's overridden here specifically
+   rather than changed at the token level). */
+.desk-v2 .incoming-card .tag { color: var(--system); }
+.desk-v2 .incoming-card .tk { color: var(--system); }
+
+/* Roomier two-column layout (call card + ring/controls), matching the
+   mockup's own grid instead of the app-wide narrow 200px ring column. */
+.desk-v2 .tablet-grid { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); align-items: start; }
+
+.desk-v2 .cand-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; margin: 8px 0 12px; }
+.desk-v2 .cand-fields .cf-label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-60); margin-bottom: 2px; }
+.desk-v2 .cand-fields .cf-val { font-size: 15px; }
+
+.desk-v2 .queue-note { font-size: 12px; color: var(--ink-60); text-align: center; }
+
+.desk-v2 .context-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.desk-v2 .context-card { border: 1px solid var(--line); border-radius: 6px; background: var(--card); padding: 16px; }
+.desk-v2 .context-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.desk-v2 .context-kicker { font-family: var(--mono); font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase; color: var(--system); }
+.desk-v2 .context-count { font-family: var(--mono); font-size: 11px; font-weight: 600; background: var(--paper); color: var(--ink-60); border-radius: 999px; padding: 2px 9px; }
+.desk-v2 .context-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-top: 1px solid var(--line); }
+.desk-v2 .context-row:first-child { border-top: none; }
+.desk-v2 .context-row .nm { font-size: 14px; }
+.desk-v2 .context-row .sub { font-size: 11px; color: var(--ink-60); }
+.desk-v2 .context-row .id { font-family: var(--disp); font-weight: 600; color: var(--system); }

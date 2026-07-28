@@ -7,6 +7,7 @@ import IncomingCard from './IncomingCard';
 import CountdownRing from './CountdownRing';
 import InterviewTimer from './InterviewTimer';
 import OfflineBanner from '../common/OfflineBanner';
+import './Desk.css';
 
 // lib/queueDispatcher.js arms the timer at one of these two durations
 // depending on resolveSameFloor()'s companies.floor_number comparison; the
@@ -48,8 +49,6 @@ export default function DeskTablet() {
   const [skipping, setSkipping] = useState(false);
   const [upNext, setUpNext] = useState(null);
   const [completedToday, setCompletedToday] = useState(null);
-  const [showUpNext, setShowUpNext] = useState(false);
-  const [showCompleted, setShowCompleted] = useState(false);
 
   useEffect(() => {
     joinDesk({ companyId, deskId });
@@ -259,11 +258,16 @@ export default function DeskTablet() {
     }
   }
 
+  const waitingCount = upNext ? upNext.length : 0;
+  const queueText = incoming
+    ? `${waitingCount} waiting`
+    : waitingCount > 0 ? `${waitingCount} more waiting to be called` : 'Queue complete for today';
+
   return (
-    <div className="s-body">
+    <div className="s-body industry-v2 desk-v2">
       <OfflineBanner />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-        <h2 className="screen-title">Desk {deskId}</h2>
+        <h2 className="screen-title" style={{ margin: 0 }}>Desk {deskId}</h2>
         {isOpen !== null && (
           <button
             className={`checkin-status ${isOpen ? 'in' : 'out'}`}
@@ -272,10 +276,11 @@ export default function DeskTablet() {
             onClick={toggleDeskOpen}
             title="Whether candidates can currently see and register for this company"
           >
-            {togglingOpen ? '…' : isOpen ? 'Desk open — candidates can register' : 'Desk closed — hidden from candidates'}
+            {isOpen ? 'Desk open — candidates can register' : 'Desk closed — hidden from candidates'}
           </button>
         )}
       </div>
+
       <div className="tablet-grid">
         <AnimatePresence mode="wait">
           {incoming ? (
@@ -298,90 +303,61 @@ export default function DeskTablet() {
             </m.div>
           )}
         </AnimatePresence>
-        {incoming && (
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginBottom: 10 }}>
-            <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} disabled={pausing} onClick={togglePause}>
-              {pausing ? '…' : paused ? '▶ Resume' : '⏸ Pause'}
-            </button>
-            {!incoming.interviewStartedAt && (
-              <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} disabled={skipping} onClick={handleSkip}>
-                {skipping ? '…' : '⏭ Next'}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {incoming?.interviewStartedAt ? (
+            <InterviewTimer startedAt={incoming.interviewStartedAt} paused={paused} />
+          ) : (
+            <CountdownRing
+              expiresAt={incoming?.expiresAt}
+              totalMs={incoming?.sameFloor === false ? CROSS_FLOOR_MS : SAME_FLOOR_MS}
+              paused={paused}
+              pausedRemainingMs={pausedRemainingMs}
+            />
+          )}
+          {incoming && (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn ghost" style={{ flex: 1, padding: '8px 14px' }} disabled={pausing} onClick={togglePause}>
+                {pausing ? '…' : paused ? '▶ Resume' : '⏸ Pause'}
               </button>
-            )}
-          </div>
-        )}
-        {incoming?.interviewStartedAt ? (
-          <InterviewTimer startedAt={incoming.interviewStartedAt} paused={paused} />
-        ) : (
-          <CountdownRing
-            expiresAt={incoming?.expiresAt}
-            totalMs={incoming?.sameFloor === false ? CROSS_FLOOR_MS : SAME_FLOOR_MS}
-            paused={paused}
-            pausedRemainingMs={pausedRemainingMs}
-          />
-        )}
+              {!incoming.interviewStartedAt && (
+                <button className="btn ghost" style={{ flex: 1, padding: '8px 14px' }} disabled={skipping} onClick={handleSkip}>
+                  {skipping ? '…' : '⏭ Next'}
+                </button>
+              )}
+            </div>
+          )}
+          <div className="queue-note">{queueText}</div>
+        </div>
       </div>
 
-      {/* Read-only context, collapsed by default — additive to the live
-          IncomingCard above, not a replacement for it. */}
-      <div style={{ marginTop: 18 }}>
-        <button
-          type="button"
-          className="sec-label"
-          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'block' }}
-          onClick={() => setShowUpNext((s) => !s)}
-        >
-          {showUpNext ? '▾' : '▸'} Up next ({upNext ? upNext.length : '…'})
-        </button>
-        {showUpNext && (
-          <div className="table-wrap" style={{ marginTop: 8 }}>
-            <table className="data-table">
-              <thead><tr><th>Token</th><th>Name</th><th>Qualification</th></tr></thead>
-              <tbody>
-                {upNext && upNext.slice(0, 10).map((c) => (
-                  <tr key={c.ccs_id}>
-                    <td className="mono">{c.token_no}</td>
-                    <td>{c.name}</td>
-                    <td>{c.qualification || '—'}</td>
-                  </tr>
-                ))}
-                {upNext && !upNext.length && (
-                  <tr><td colSpan={3} className="save-note">No one waiting in the queue.</td></tr>
-                )}
-              </tbody>
-            </table>
+      {/* Always-visible context, matching Desk Console.html — additive to
+          the live IncomingCard above, not a replacement for it. */}
+      <div className="context-grid">
+        <div className="context-card">
+          <div className="context-head">
+            <span className="context-kicker">Up next</span>
+            <span className="context-count">{upNext ? upNext.length : '…'}</span>
           </div>
-        )}
-      </div>
+          {upNext && upNext.length ? upNext.slice(0, 10).map((c) => (
+            <div key={c.ccs_id} className="context-row">
+              <div><div className="nm">{c.name}</div><div className="sub">{c.qualification || '—'}</div></div>
+              <span className="id">{c.token_no}</span>
+            </div>
+          )) : <p className="save-note" style={{ textAlign: 'left', marginTop: 8 }}>Nobody else waiting right now.</p>}
+        </div>
 
-      <div style={{ marginTop: 14 }}>
-        <button
-          type="button"
-          className="sec-label"
-          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'block' }}
-          onClick={() => setShowCompleted((s) => !s)}
-        >
-          {showCompleted ? '▾' : '▸'} Completed today ({completedToday ? completedToday.length : '…'})
-        </button>
-        {showCompleted && (
-          <div className="table-wrap" style={{ marginTop: 8 }}>
-            <table className="data-table">
-              <thead><tr><th>Token</th><th>Name</th><th>Status</th></tr></thead>
-              <tbody>
-                {completedToday && completedToday.map((c) => (
-                  <tr key={c.ccs_id}>
-                    <td className="mono">{c.token_no}</td>
-                    <td>{c.name}</td>
-                    <td><span className="role-chip">{c.status}</span></td>
-                  </tr>
-                ))}
-                {completedToday && !completedToday.length && (
-                  <tr><td colSpan={3} className="save-note">Nothing completed at this desk yet today.</td></tr>
-                )}
-              </tbody>
-            </table>
+        <div className="context-card">
+          <div className="context-head">
+            <span className="context-kicker">Completed today</span>
+            <span className="context-count">{completedToday ? completedToday.length : '…'}</span>
           </div>
-        )}
+          {completedToday && completedToday.length ? completedToday.map((c) => (
+            <div key={c.ccs_id} className="context-row">
+              <div><div className="nm">{c.name}</div><div className="sub mono">{c.token_no}</div></div>
+              <span className="role-chip">{c.status}</span>
+            </div>
+          )) : <p className="save-note" style={{ textAlign: 'left', marginTop: 8 }}>No interviews completed yet.</p>}
+        </div>
       </div>
 
       {toast && <div className={`toast${toast.isErr ? ' err' : ''}`}>{toast.text}</div>}

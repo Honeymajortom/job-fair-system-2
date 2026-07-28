@@ -1,20 +1,23 @@
 import { useState, useEffect } from 'react';
 import { Navigate, Route, Routes, useNavigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './AuthContext';
+import { CenterProvider, useCenter } from './CenterContext';
 import { SocketProvider } from './SocketContext';
 import Login from './Login';
 import DeskTablet from './DeskTablet';
 import UserAdmin from './UserAdmin';
 import CompanyManagement from './CompanyManagement';
-import Reports from './Reports';
+import Settings from './Settings';
 import FloorMonitor from './FloorMonitor';
 import GateCheckIn from './GateCheckIn';
-import Insights from './Insights';
 import { api } from '../api';
 
 // prototype/integrity-test-report.md's NAV_LINKS pattern, carried forward:
 // nav visibility and route access are driven by the same single list instead
 // of two things that can drift apart.
+// settings_tab_plan.md (2026-07-28): Reports and Insights, plus Fair Creation
+// (moved out of FloorMonitor.jsx) and Center management (new), are now
+// consolidated under one Settings tab instead of separate top-level entries.
 const NAV_LINKS = [
   { to: '/staff/floor', label: 'Floor', roles: ['admin', 'floor_manager'] },
   { to: '/staff/gate', label: 'Gate', roles: ['admin', 'registration_staff'] },
@@ -25,8 +28,7 @@ const NAV_LINKS = [
   // itself stays gated internally to admin (see UserAdmin.jsx).
   { to: '/staff/users', label: 'Users', roles: ['admin', 'registration_staff'] },
   { to: '/staff/companies', label: 'Companies', roles: ['admin'] },
-  { to: '/staff/reports', label: 'Reports', roles: ['admin'] },
-  { to: '/staff/insights', label: 'Insights', roles: ['admin'] },
+  { to: '/staff/settings', label: 'Settings', roles: ['admin'] },
 ];
 
 function Gate({ roles, children }) {
@@ -39,6 +41,7 @@ function Gate({ roles, children }) {
 
 function DeskPicker() {
   const { user } = useAuth();
+  const { effectiveCenterId } = useCenter();
   const [companies, setCompanies] = useState(null);
   const [companyId, setCompanyId] = useState('');
   const [deskId, setDeskId] = useState('1');
@@ -48,15 +51,17 @@ function DeskPicker() {
   // enforces this server-side on every desk/queue action) — showing every
   // company in this dropdown just invites picking the wrong one and hitting a
   // 403 the moment they try to call a candidate. admin/floor_manager still see
-  // the full list, since they can legitimately work any desk.
+  // the full list (narrowed to admin's selected Center, if any — fair_cycle_
+  // isolation_plan.md Phase 4; floor_manager is always narrowed server-side
+  // to their own Center regardless of what's passed here).
   const isCompanyHr = user.role === 'company_hr';
 
   useEffect(() => {
-    api.getCompanies().then((rows) => {
+    api.getCompanies(effectiveCenterId).then((rows) => {
       setCompanies(isCompanyHr ? rows.filter((c) => c.id === user.company_id) : rows);
     }).catch(() => setCompanies([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [effectiveCenterId]);
 
   useEffect(() => {
     if (isCompanyHr && companies && companies.length) setCompanyId(String(companies[0].id));
@@ -91,17 +96,28 @@ function DeskPicker() {
 
 function Nav() {
   const { user, logout } = useAuth();
+  const { isAdmin, selectedCenterId, centerName } = useCenter();
   const navigate = useNavigate();
   async function doLogout() {
     await logout();
     navigate('/staff/login');
   }
+  // fair_cycle_isolation_plan.md Phase 4 / settings_tab_plan.md follow-up:
+  // the Nav used to carry an interactive Center switcher (a <select>) here.
+  // It moved to Settings → Centers (SettingsCenters.jsx), which has room for
+  // a proper "Viewing" control instead of squeezing a dropdown into the nav
+  // bar — the nav now just shows which Center is currently in effect,
+  // read-only, same as it already did for non-admin roles.
+  const centerLabel = isAdmin
+    ? (selectedCenterId ? centerName(selectedCenterId) : 'All centers')
+    : (user.center_id != null ? centerName(user.center_id) : null);
   return (
     <div className="s-nav">
       <span className="brand">SDC JOB FAIR · STAFF</span>
       {NAV_LINKS.filter((l) => l.roles.includes(user.role)).map((l) => (
         <a key={l.to} href={l.to} onClick={(e) => { e.preventDefault(); navigate(l.to); }}>{l.label}</a>
       ))}
+      {centerLabel && <span className="save-note" style={{ marginTop: 0, marginLeft: 10 }}>Center: {centerLabel || '—'}</span>}
       <span className={`role-chip ${user.role}`}>{user.role}</span>
       <button className="btn ghost" style={{ width: 'auto', padding: '6px 12px', marginLeft: 10 }} onClick={doLogout}>
         Log out
@@ -128,8 +144,7 @@ function Shell() {
                 <Route path="desk/:companyId/:deskId" element={<DeskTablet />} />
                 <Route path="users" element={<Gate roles={['admin', 'registration_staff']}><UserAdmin /></Gate>} />
                 <Route path="companies" element={<Gate roles={['admin']}><CompanyManagement /></Gate>} />
-                <Route path="reports" element={<Gate roles={['admin']}><Reports /></Gate>} />
-                <Route path="insights" element={<Gate roles={['admin']}><Insights /></Gate>} />
+                <Route path="settings/*" element={<Gate roles={['admin']}><Settings /></Gate>} />
                 <Route path="*" element={<Navigate to="/staff/desk" replace />} />
               </Routes>
             </div>
@@ -143,9 +158,11 @@ function Shell() {
 export default function StaffApp() {
   return (
     <AuthProvider>
-      <SocketProvider>
-        <Shell />
-      </SocketProvider>
+      <CenterProvider>
+        <SocketProvider>
+          <Shell />
+        </SocketProvider>
+      </CenterProvider>
     </AuthProvider>
   );
 }
