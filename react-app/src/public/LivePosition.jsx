@@ -5,6 +5,7 @@ import QRCode from 'qrcode';
 import { api } from '../api';
 import RungBadge, { cardModifier } from './RungBadge';
 import FeedbackForm from './FeedbackForm';
+import CompanyInterestForm from './CompanyInterestForm';
 import SelectCompanies from './SelectCompanies';
 import SiteCredit from './SiteCredit.jsx';
 import OfflineBanner from '../common/OfflineBanner';
@@ -370,6 +371,11 @@ export default function LivePosition() {
   // blocking the thank-you screen on a pick that was never actually live.
   const realSlots = data.slots.filter((s) => s.rung !== undefined);
   const allSettled = realSlots.length > 0 && realSlots.every((s) => s.rung === 'done');
+  // Deduped by company_id purely defensively — a candidate shouldn't have two
+  // live bookings with the same company, but CompanyInterestForm's answers
+  // object is keyed by company_id, so a duplicate would just silently share
+  // one answer rather than break anything.
+  const interestCompanies = [...new Map(realSlots.map((s) => [s.company_id, { company_id: s.company_id, company_name: s.company }])).values()];
 
   return (
     <div className="m-shell">
@@ -446,6 +452,12 @@ export default function LivePosition() {
                   </p>
                 )}
               </>
+            ) : !data.company_interest_submitted ? (
+              <CompanyInterestForm
+                token={token}
+                companies={interestCompanies}
+                onSubmitted={() => setData((d) => ({ ...d, company_interest_submitted: true }))}
+              />
             ) : (
               <FeedbackForm token={token} onSubmitted={() => setData((d) => ({ ...d, feedback_submitted: true }))} />
             )}

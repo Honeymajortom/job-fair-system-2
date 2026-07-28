@@ -515,3 +515,14 @@ DROP INDEX IF EXISTS idx_candidates_mobile;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_candidates_mobile
   ON candidates(mobile, fair_settings_id)
   WHERE mobile IS NOT NULL AND mobile != '';
+
+-- ---------------------------------------------------------------------------
+-- Candidate's own per-company interest, asked on LivePosition once every
+-- booking is done — independent of ratings/feedback_text above (staff's
+-- rating OF the candidate) and of candidate_feedback (one fair-wide row).
+-- Lives on this table rather than a new one since it's exactly the same
+-- shape of fact as ratings/feedback_text: one per (candidate, company)
+-- booking, sharing that row's lifecycle.
+-- ---------------------------------------------------------------------------
+ALTER TABLE candidate_company_status
+  ADD COLUMN IF NOT EXISTS candidate_interested BOOLEAN;
