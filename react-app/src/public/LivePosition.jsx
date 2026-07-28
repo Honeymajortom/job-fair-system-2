@@ -61,11 +61,13 @@ function trackWidth(position) {
 }
 
 // location is free text ("Hall A Desk 5"); floor_number is the plain integer
-// companies.js added alongside it — shown together, floor first, since it's
-// the more useful signal for wayfinding at a glance across multiple halls.
+// companies.js added alongside it — shown location first, floor second: a
+// company may have either, both, or neither set (pre-existing companies
+// often have location but no floor; newer ones the reverse), and location is
+// the more specific, human-written signal when both exist.
 function describeLocation(slot) {
   const floor = slot.floor_number != null ? `Floor ${slot.floor_number}` : null;
-  return [floor, slot.location].filter(Boolean).join(' · ') || null;
+  return [slot.location, floor].filter(Boolean).join(' · ') || null;
 }
 
 // Tells the candidate whether to be in the waiting room right now, or that
@@ -84,7 +86,7 @@ function WaitingDirective({ slots, waitingRooms }) {
   if (rung === 'far' || rung === 'warm' || rung === 'gate') {
     const room = waitingRooms.find((r) => r.floor_number === slot.floor_number);
     const floorLabel = slot.floor_number != null ? `Floor ${slot.floor_number}` : null;
-    const loc = [floorLabel, room && room.location].filter(Boolean).join(' · ');
+    const loc = [room && room.location, floorLabel].filter(Boolean).join(' · ');
     return (
       <p className="desk-call-note calm" style={{ marginTop: 0, marginBottom: 14 }}>
         🪑 Please wait in the Waiting Room{loc ? <> — <strong>{loc}</strong></> : ''}.
