@@ -190,12 +190,17 @@ export default function GateCheckIn() {
   // Batches are created automatically now (lib/batchAssignment.js) — the one
   // manual action left is closing a wave once it's done, so new arrivals stop
   // being assigned to it and roll onto the next one.
+  // Optimistic: the row flips to "Closed" immediately (new arrivals stop
+  // landing in it from that instant in the staff's mental model) instead of
+  // waiting on the round trip + a full loadBatches() refetch; a failure
+  // reverts just this row's status and surfaces an error toast.
   async function closeBatch(id) {
+    setBatches((rows) => rows.map((b) => (b.id === id ? { ...b, status: 'closed' } : b)));
     try {
       await api.setBatchStatus(id, 'closed');
       showToast('Batch closed');
-      loadBatches();
     } catch (err) {
+      setBatches((rows) => rows.map((b) => (b.id === id ? { ...b, status: 'upcoming' } : b)));
       showToast(err.message, true);
     }
   }

@@ -2,6 +2,7 @@ require('dotenv').config();
 const http = require('http');
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
 const cookieParser = require('cookie-parser');
 const { attach } = require('./lib/io');
 const { corsOptions } = require('./lib/corsConfig');
@@ -36,6 +37,16 @@ const app = express();
 // the CORS layer shouldn't rely on that alone). Allow-list instead, shared
 // with lib/io.js's Socket.IO server so the two can't drift.
 app.use(cors(corsOptions));
+// gzip/brotli for JSON/CSV responses (reports.js's ?format=csv exports and
+// every route's JSON payload) — negotiated automatically off the client's own
+// Accept-Encoding header, nothing to configure client-side. Only kicks in
+// above ~1KB (compression's own default threshold — not worth the CPU below
+// that) and skips anything the response already marks as compressed (a
+// pre-set Content-Encoding header, or a mime type mime-db lists as
+// non-compressible, e.g. the resume PDFs candidates.js streams — those are
+// already internally deflate-encoded, so re-gzipping them would just burn
+// CPU for no size win).
+app.use(compression());
 app.use(cookieParser());
 app.use(express.json());
 

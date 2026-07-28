@@ -7,6 +7,7 @@ const store = require('../lib/queueStore');
 const { clearNoShowTimer } = require('../lib/noShowTimer');
 const dispatcher = require('../lib/queueDispatcher');
 const { resolveCenterFilter } = require('../lib/centerScope');
+const redisCache = require('../middleware/redisCache');
 
 const router = express.Router();
 
@@ -223,7 +224,12 @@ router.post('/fair-settings/:id/archive', authenticateJWT, requireRole('admin'),
 // center yet (that's Phase 1: candidates.fair_settings_id), so this returns
 // every center's rooms. Harmless while only one Center exists; Phase 4 scopes
 // this once a candidate's own fair/center is known.
-router.get('/waiting-rooms', asyncHandler(async (_req, res) => {
+// Cached 60s (same TTL/convention as GET /qr/companies) — identical output
+// for every reader (GateBoard's 10s poll, every candidate's schedule poll)
+// and admin only ever changes this handful of rows rarely, so there's no
+// active invalidation on write either, same as this app's other caches — a
+// stale read just self-heals within the TTL.
+router.get('/waiting-rooms', redisCache(60), asyncHandler(async (_req, res) => {
   const result = await pool.query('SELECT center_id, floor_number, location FROM waiting_rooms ORDER BY floor_number');
   res.json(result.rows);
 }));

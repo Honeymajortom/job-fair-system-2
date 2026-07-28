@@ -100,19 +100,21 @@ async function seed() {
       );
       companyId = res.rows[0].id;
 
-      for (let i = 0; i < c.params.length; i++) {
-        await client.query(
-          `INSERT INTO rating_parameters (company_id, parameter_name, display_order) VALUES ($1,$2,$3)`,
-          [companyId, c.params[i], i]
-        );
-      }
+      // One multi-row INSERT per company instead of one round trip per param.
+      const paramValues = c.params.map((_, i) => `($1, $${i * 2 + 2}, $${i * 2 + 3})`).join(', ');
+      const paramArgs = c.params.flatMap((name, i) => [name, i]);
+      await client.query(
+        `INSERT INTO rating_parameters (company_id, parameter_name, display_order) VALUES ${paramValues}`,
+        [companyId, ...paramArgs]
+      );
 
-      for (const slotStart of buildSlotTimes()) {
-        await client.query(
-          `INSERT INTO interview_slots (company_id, slot_start, duration_minutes, capacity) VALUES ($1,$2,$3,$4)`,
-          [companyId, slotStart, 15, 1]
-        );
-      }
+      // Same batching for the 10-slot grid — one INSERT instead of 10.
+      const slotTimes = buildSlotTimes();
+      const slotValues = slotTimes.map((_, i) => `($1, $${i + 2}, 15, 1)`).join(', ');
+      await client.query(
+        `INSERT INTO interview_slots (company_id, slot_start, duration_minutes, capacity) VALUES ${slotValues}`,
+        [companyId, ...slotTimes]
+      );
 
       console.log(`Seeded ${c.company_name} (id ${companyId}) with ${c.params.length} rating params and 10 slots.`);
     }

@@ -87,12 +87,21 @@ export default function DeskTablet() {
   // The signal candidates' GET /qr/companies filters on — this is where
   // whoever's actually staffing the desk flips it, rather than needing an
   // admin to do it from the Companies tab on their behalf.
+  // Optimistic: flip the visible state immediately so the tap feels instant,
+  // reconcile with whatever the server actually stored (should just confirm
+  // it), and roll back to the prior value + surface an error toast if the
+  // request fails — a company_hr mid-desk shouldn't see a spinner for a
+  // toggle this simple.
   async function toggleDeskOpen() {
+    const previous = isOpen;
+    const next = !isOpen;
+    setIsOpen(next);
     setTogglingOpen(true);
     try {
-      const res = await api.setCompanyOpenStatus(companyId, !isOpen);
+      const res = await api.setCompanyOpenStatus(companyId, next);
       setIsOpen(res.is_open);
     } catch (err) {
+      setIsOpen(previous);
       showToast(err.message, true);
     } finally {
       setTogglingOpen(false);

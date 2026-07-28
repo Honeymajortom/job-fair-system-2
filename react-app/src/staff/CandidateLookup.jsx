@@ -54,14 +54,26 @@ export default function CandidateLookup({ initialToken = '' }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Optimistic: the row disappears the instant staff click Remove, instead of
+  // waiting on the round trip + a full re-lookup — reconciliation is a no-op
+  // on success (the row's already gone), and a failure re-inserts it at its
+  // original position and surfaces an error toast so staff aren't misled into
+  // thinking a company got removed when it didn't.
   async function removeCompany(companyId) {
     if (!candidate) return;
+    const index = candidate.companies.findIndex((c) => c.company_id === companyId);
+    const removed = candidate.companies[index];
+    setCandidate((cur) => ({ ...cur, companies: cur.companies.filter((c) => c.company_id !== companyId) }));
     setBusy(true);
     try {
       await api.removeCandidateCompany(candidate.id, companyId);
       showToast('Company removed');
-      await lookup(null, candidate.token_no);
     } catch (err) {
+      setCandidate((cur) => {
+        const companies = [...cur.companies];
+        companies.splice(index, 0, removed);
+        return { ...cur, companies };
+      });
       showToast(err.message, true);
     } finally {
       setBusy(false);

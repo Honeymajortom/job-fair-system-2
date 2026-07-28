@@ -140,12 +140,20 @@ export default function CompanyManagement() {
     }
   }
 
+  // Optimistic: flip this row's Open/Closed immediately instead of waiting on
+  // the round trip + a full loadRoster() refetch, reconcile with the server's
+  // actual value on success, and roll just this row back + show an error
+  // toast if the request fails.
   async function toggleOpen(company) {
+    const previous = company.is_open;
+    const next = !previous;
+    setRoster((rows) => rows.map((r) => (r.id === company.id ? { ...r, is_open: next } : r)));
     setTogglingOpen(company.id);
     try {
-      await api.setCompanyOpenStatus(company.id, !company.is_open);
-      loadRoster();
+      const res = await api.setCompanyOpenStatus(company.id, next);
+      setRoster((rows) => rows.map((r) => (r.id === company.id ? { ...r, is_open: res.is_open } : r)));
     } catch (err) {
+      setRoster((rows) => rows.map((r) => (r.id === company.id ? { ...r, is_open: previous } : r)));
       showToast(err.message, true);
     } finally {
       setTogglingOpen(null);
@@ -269,7 +277,7 @@ export default function CompanyManagement() {
                       onClick={() => toggleOpen(c)}
                       title="Toggle whether candidates can see and register for this company"
                     >
-                      {togglingOpen === c.id ? '…' : c.is_open ? 'Open' : 'Closed'}
+                      {c.is_open ? 'Open' : 'Closed'}
                     </button>
                   </td>
                   <td style={{ display: 'flex', gap: 6 }}>

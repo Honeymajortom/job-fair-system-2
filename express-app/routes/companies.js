@@ -106,12 +106,14 @@ router.post('/companies', authenticateJWT, requireRole('admin'), asyncHandler(as
     );
     const company = result.rows[0];
 
-    for (let i = 0; i < DEFAULT_RATING_PARAMETERS.length; i++) {
-      await pool.query(
-        'INSERT INTO rating_parameters (company_id, parameter_name, display_order) VALUES ($1,$2,$3)',
-        [company.id, DEFAULT_RATING_PARAMETERS[i], i]
-      );
-    }
+    // One multi-row INSERT instead of 5 round trips — same DEFAULT_RATING_
+    // PARAMETERS list, just written in a single statement.
+    const values = DEFAULT_RATING_PARAMETERS.map((_, i) => `($1, $${i * 2 + 2}, $${i * 2 + 3})`).join(', ');
+    const params = DEFAULT_RATING_PARAMETERS.flatMap((name, i) => [name, i]);
+    await pool.query(
+      `INSERT INTO rating_parameters (company_id, parameter_name, display_order) VALUES ${values}`,
+      [company.id, ...params]
+    );
 
     res.status(201).json(company);
   } catch (err) {
