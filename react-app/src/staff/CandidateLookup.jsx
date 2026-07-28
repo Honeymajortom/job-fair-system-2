@@ -123,13 +123,17 @@ export default function CandidateLookup({ initialToken = '' }) {
   // Re-looks-up on success rather than patching optimistically — unlike
   // remove (a simple row disappearance), this changes the row's status,
   // serial, and queue position all at once, so a full refresh is simpler and
-  // safer than reconstructing the new row shape client-side.
-  async function reactivateCompany(companyId) {
+  // safer than reconstructing the new row shape client-side. Confirmed first
+  // since — beyond No_Show — this can overturn a real recorded Selected/
+  // Rejected/Hold/Shortlisted outcome and wipes that booking's ratings/
+  // feedback, not something a stray click should do silently.
+  async function reassignCompany(companyId) {
     if (!candidate) return;
+    if (!window.confirm('Put this candidate back in the queue for this company? Any recorded rating/feedback for it will be cleared.')) return;
     setBusy(true);
     try {
       const result = await api.reactivateCandidateCompany(candidate.id, companyId);
-      showToast(result.status === 'Waitlisted' ? 'Reactivated — waitlisted (company full)' : 'Reactivated — back in the queue');
+      showToast(result.status === 'Waitlisted' ? 'Reassigned — waitlisted (company full)' : 'Reassigned — back in the queue');
       await lookupByToken(null, candidate.token_no);
     } catch (err) {
       showToast(err.message, true);
@@ -286,14 +290,14 @@ export default function CandidateLookup({ initialToken = '' }) {
                             Remove
                           </button>
                         )}
-                        {c.status === 'No_Show' && (
+                        {SETTLED_STATUSES.includes(c.status) && (
                           <button
                             className="btn ghost"
                             style={{ width: 'auto', padding: '6px 12px', color: 'var(--st-selected)' }}
                             disabled={busy}
-                            onClick={() => reactivateCompany(c.company_id)}
+                            onClick={() => reassignCompany(c.company_id)}
                           >
-                            Reactivate
+                            Reassign
                           </button>
                         )}
                       </td>

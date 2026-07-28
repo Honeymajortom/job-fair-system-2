@@ -13,6 +13,7 @@ const { RESUME_DIR } = require('../lib/resumeStorage');
 const { assignCompanies, MAX_COMPANIES } = require('../lib/companyAssignment');
 const { resolveCenterFilter } = require('../lib/centerScope');
 const { normalizeMobile } = require('../lib/mobile');
+const { DONE_STATUSES } = require('../lib/pingLadder');
 
 const router = express.Router();
 
@@ -216,16 +217,18 @@ router.delete('/candidates/:id/companies/:companyId', authenticateJWT, requireRo
   res.json({ ok: true });
 }));
 
-// Admin / Registration Staff: reactivate a No_Show booking — CandidateLookup.jsx's
-// "Reactivate" button, for the case where a candidate genuinely showed up (or
-// was reachable) after all and staff need to give them another shot at a
-// company, rather than leaving them permanently locked out by
-// workers/noShowWorker.js's 5-miss cutoff. Deliberately its own endpoint
-// rather than folding into the add/reassign route above: this mutates an
-// EXISTING terminal row back to live, which is a different, narrower action
-// than "book a new company" — scoped to No_Show only (409 for every other
-// status) so this can't become a backdoor to undo a real Selected/Rejected/
-// Hold/Shortlisted outcome.
+// Admin / Registration Staff: reactivate a settled booking — CandidateLookup.jsx's
+// "Reassign" button. Started as a No_Show-only override (a candidate genuinely
+// showed up after all and staff need to give them another shot, rather than
+// leaving them permanently locked out by workers/noShowWorker.js's 5-miss
+// cutoff), then widened to cover every DONE_STATUSES outcome (Selected/
+// Rejected/Hold/Shortlisted too) — a recorded result can be wrong (staff
+// mistake, a result logged against the wrong candidate/company, stale test
+// data), and staff need a way to put that booking back in the live queue
+// without deleting and re-registering the candidate. Still 409s for anything
+// NOT in DONE_STATUSES (Pending/Waitlisted/Dispatched) — those aren't settled
+// yet, so "reactivate" doesn't mean anything for them; use the remove/add
+// routes above instead.
 router.post('/candidates/:id/companies/:companyId/reactivate', authenticateJWT, requireRole('admin', 'registration_staff'), asyncHandler(async (req, res) => {
   const candidateId = Number(req.params.id);
   const companyId = Number(req.params.companyId);
@@ -262,9 +265,9 @@ router.post('/candidates/:id/companies/:companyId/reactivate', authenticateJWT, 
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'No active booking for that candidate/company' });
     }
-    if (ccsRes.rows[0].status !== 'No_Show') {
+    if (!DONE_STATUSES.includes(ccsRes.rows[0].status)) {
       await client.query('ROLLBACK');
-      return res.status(409).json({ error: 'Only a No_Show booking can be reactivated' });
+      return res.status(409).json({ error: 'Only a completed booking (Selected/Rejected/Hold/Shortlisted/No_Show) can be reassigned' });
     }
     const ccsId = ccsRes.rows[0].id;
 
