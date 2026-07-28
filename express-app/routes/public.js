@@ -563,7 +563,7 @@ router.get('/qr/schedule/:token', readTokenLimit, scheduleIpLimit, redisCache(15
 
   const slotsRes = await pool.query(
     `SELECT s.slot_start AS time, c.company_name AS company, c.location, c.floor_number, ccs.status,
-            ccs.company_id, ccs.serial, c.seats, c.interview_minutes, ccs.interview_started_at
+            ccs.company_id, ccs.serial, c.seats, c.interview_minutes, ccs.interview_started_at, c.is_open
      FROM candidate_company_status ccs
      JOIN companies c ON c.id = ccs.company_id
      LEFT JOIN interview_slots s ON s.id = ccs.slot_id
@@ -576,7 +576,7 @@ router.get('/qr/schedule/:token', readTokenLimit, scheduleIpLimit, redisCache(15
   // (new-model) bookings — waitlisted entries (serial IS NULL) are left as-is
   // so the frontend can render a distinct waitlisted card.
   const slots = await Promise.all(slotsRes.rows.map(async (row) => {
-    const base = { time: row.time, company: row.company, company_id: row.company_id, location: row.location, floor_number: row.floor_number, status: row.status };
+    const base = { time: row.time, company: row.company, company_id: row.company_id, location: row.location, floor_number: row.floor_number, status: row.status, is_open: row.is_open };
     if (row.serial === null) return base;
     const ladder = await resolveRung({
       status: row.status,

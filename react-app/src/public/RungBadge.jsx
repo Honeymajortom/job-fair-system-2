@@ -48,8 +48,12 @@ export function cardModifier(rung, status) {
 }
 
 // status is the raw candidate_company_status value (only meaningful when
-// rung === 'done') — see OUTCOME_LABELS above.
-export default function RungBadge({ rung, status }) {
+// rung === 'done') — see OUTCOME_LABELS above. closed (LivePosition.jsx's
+// isClosed) overrides everything else — a company that's shut its desk
+// mid-fair shouldn't still show "TRACKING"/"WAITLISTED" next to a "closed"
+// message in the card body below.
+export default function RungBadge({ rung, status, closed }) {
+  if (closed) return <span className="rung-badge closed">CLOSED</span>;
   const modifier = cardModifier(rung, status);
   const label = (rung === 'done' && OUTCOME_LABELS[status]) || LABELS[rung] || rung;
   return (

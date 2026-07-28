@@ -141,7 +141,14 @@ function PosCard({ slot, token }) {
   const isCalled = rung === 'desk_call';
   const isInInterview = rung === 'in_interview';
   const isDone = rung === 'done';
-  const modifier = isWaitlisted ? '' : cardModifier(rung, slot.status);
+  // A company can be closed (Desk toggle / admin) after a candidate already
+  // booked it — their position/ETA would otherwise just sit there frozen
+  // forever with no one dispatching. Doesn't apply once the candidate is
+  // actually being called or interviewed (an edge-case timing gap, not worth
+  // confusing an active call with a "closed" message) or once the result is
+  // already in (the outcome note is more relevant at that point).
+  const isClosed = slot.is_open === false && !isCalled && !isInInterview && !isDone;
+  const modifier = isClosed ? 'rejected' : (isWaitlisted ? '' : cardModifier(rung, slot.status));
   const prevRung = useRef(rung);
   const [pulsing, setPulsing] = useState(false);
   const [acking, setAcking] = useState(false);
@@ -194,13 +201,9 @@ function PosCard({ slot, token }) {
               multiple companies needs this ahead of time too. */}
           {describeLocation(slot) && <div className="loc-note">📍 {describeLocation(slot)}</div>}
         </div>
-        <RungBadge rung={rung} status={slot.status} />
+        <RungBadge rung={rung} status={slot.status} closed={isClosed} />
       </div>
-      {isWaitlisted ? (
-        <p className="save-note" style={{ textAlign: 'left', marginTop: 10 }}>
-          You're on the waitlist — you'll move up if a spot opens.
-        </p>
-      ) : isCalled ? (
+      {isCalled ? (
         // Dispatched (position 0 / eta 0) means the desk is asking for this
         // candidate right now — a bare "0" position number reads as noise at
         // exactly the moment it matters most, so this replaces the numeric
@@ -223,6 +226,12 @@ function PosCard({ slot, token }) {
         <p className="desk-call-note calm">🎤 Interview in progress at {describeLocation(slot) || 'the desk'}</p>
       ) : isDone ? (
         <p className="desk-call-note calm">{OUTCOME_NOTES[slot.status] || 'Interview completed.'}</p>
+      ) : isClosed ? (
+        <p className="desk-call-note calm">🚫 This company has closed — no more interviews are being conducted.</p>
+      ) : isWaitlisted ? (
+        <p className="save-note" style={{ textAlign: 'left', marginTop: 10 }}>
+          You're on the waitlist — you'll move up if a spot opens.
+        </p>
       ) : (
         <>
           <div className="row">
