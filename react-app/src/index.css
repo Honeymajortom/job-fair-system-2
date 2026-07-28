@@ -76,10 +76,23 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
 .chip-st.shortlisted { background: var(--st-short); }
 .chip-st.hold { background: var(--st-hold); }
 .chip-st.no_show { background: transparent; color: var(--st-noshow); border: 1.5px solid var(--st-noshow); }
+.chip-st.waitlisted { background: transparent; color: var(--st-pending); border: 1.5px dashed var(--st-pending); }
 .chip-st.open { background: transparent; color: var(--system); border: 1.5px dashed var(--system); }
 
 .error-note { color: var(--st-rejected); font-size: 12.5px; margin-top: 8px; }
 .mono { font-family: var(--mono); }
+
+/* --- CandidateLookup.jsx: candidate detail card + manage-companies panel --- */
+.candidate-detail-card, .manage-companies-panel {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+  padding: 14px 16px; margin-bottom: 16px;
+}
+.kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+.kv-grid .kv-label {
+  display: block; font-family: var(--mono); font-size: 10px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ink-60); margin-bottom: 2px;
+}
+.kv-grid .kv-val { font-size: 14px; }
 
 /* --- resume upload (DetailsForm.jsx) — deliberately lighter-weight than the
    required fields around it: dashed border, no red-asterisk styling, an

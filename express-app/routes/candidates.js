@@ -12,6 +12,7 @@ const { emit } = require('../lib/events');
 const { RESUME_DIR } = require('../lib/resumeStorage');
 const { assignCompanies, MAX_COMPANIES } = require('../lib/companyAssignment');
 const { resolveCenterFilter } = require('../lib/centerScope');
+const { normalizeMobile } = require('../lib/mobile');
 
 const router = express.Router();
 
@@ -50,8 +51,14 @@ router.post('/register', authenticateJWT, requireRole('admin', 'registration_sta
 // candidates.fair_settings_id -> fair_settings.center_id, a LEFT JOIN so a
 // legacy candidate with no fair_settings_id still shows up in the unscoped
 // (admin, no center picked) view instead of silently vanishing.
+// ?mobile= (CandidateLookup.jsx's mobile-number lookup): normalized the same
+// way registration stores it, so a staff member can type the number with
+// spaces/a country code and still match. Mobile dedup is per-fair-cycle now
+// (not global), so this can legitimately return more than one row for the
+// same person across different cycles — the caller disambiguates.
 router.get('/candidates', authenticateJWT, asyncHandler(async (req, res) => {
   const centerId = resolveCenterFilter(req);
+  const mobile = req.query.mobile ? normalizeMobile(req.query.mobile) : null;
   const result = await pool.query(
     `SELECT cd.id, cd.token_no, cd.name, cd.qualification, cd.checked_in_at, cd.batch_id, cd.registered_at
      FROM candidates cd
@@ -59,8 +66,9 @@ router.get('/candidates', authenticateJWT, asyncHandler(async (req, res) => {
      WHERE cd.deleted_at IS NULL
        AND ($1::date IS NULL OR cd.registered_at::date = $1::date)
        AND ($2::int IS NULL OR fs.center_id = $2)
+       AND ($3::text IS NULL OR cd.mobile = $3)
      ORDER BY cd.registered_at DESC`,
-    [req.query.date || null, centerId || null]
+    [req.query.date || null, centerId || null, mobile]
   );
   res.json(result.rows);
 }));
@@ -77,6 +85,7 @@ router.get('/candidates/:token', authenticateJWT, asyncHandler(async (req, res) 
 
   const statusRes = await pool.query(
     `SELECT ccs.id, ccs.status, ccs.ratings, ccs.feedback_text, ccs.processed_at, ccs.misses,
+            ccs.serial, ccs.dispatched_at, ccs.interview_started_at,
             c.id AS company_id, c.company_name, c.location, c.floor_number,
             s.slot_start
      FROM candidate_company_status ccs
@@ -205,6 +214,111 @@ router.delete('/candidates/:id/companies/:companyId', authenticateJWT, requireRo
   }
 
   res.json({ ok: true });
+}));
+
+// Admin / Registration Staff: reactivate a No_Show booking — CandidateLookup.jsx's
+// "Reactivate" button, for the case where a candidate genuinely showed up (or
+// was reachable) after all and staff need to give them another shot at a
+// company, rather than leaving them permanently locked out by
+// workers/noShowWorker.js's 5-miss cutoff. Deliberately its own endpoint
+// rather than folding into the add/reassign route above: this mutates an
+// EXISTING terminal row back to live, which is a different, narrower action
+// than "book a new company" — scoped to No_Show only (409 for every other
+// status) so this can't become a backdoor to undo a real Selected/Rejected/
+// Hold/Shortlisted outcome.
+router.post('/candidates/:id/companies/:companyId/reactivate', authenticateJWT, requireRole('admin', 'registration_staff'), asyncHandler(async (req, res) => {
+  const candidateId = Number(req.params.id);
+  const companyId = Number(req.params.companyId);
+
+  // Same fair_hours resolution the candidate's own booking was made under —
+  // prefer their own fair_settings_id over a fresh "whichever fair is active"
+  // lookup (the latter is only ever a fallback, for a legacy candidate with no
+  // fair_settings_id).
+  const fairRes = await pool.query(
+    `SELECT fs.fair_hours FROM candidates cd
+      LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
+     WHERE cd.id = $1`,
+    [candidateId]
+  );
+  let fairHours = fairRes.rows[0]?.fair_hours;
+  if (fairHours == null) {
+    const fallbackRes = await pool.query(`SELECT fair_hours FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1`);
+    fairHours = fallbackRes.rows.length ? fallbackRes.rows[0].fair_hours : 8;
+  }
+  fairHours = Number(fairHours);
+
+  const client = await pool.connect();
+  let result;
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1)', [companyId]);
+
+    const ccsRes = await client.query(
+      `SELECT id, status FROM candidate_company_status
+        WHERE candidate_id = $1 AND company_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+      [candidateId, companyId]
+    );
+    if (!ccsRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'No active booking for that candidate/company' });
+    }
+    if (ccsRes.rows[0].status !== 'No_Show') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Only a No_Show booking can be reactivated' });
+    }
+    const ccsId = ccsRes.rows[0].id;
+
+    // Same capacity/waitlist gate every other booking goes through
+    // (lib/companyAssignment.js) — excludes this row itself from the "already
+    // booked" count, since it's about to be re-decided, not double-counted
+    // against its own prior occupancy.
+    const companyRes = await client.query(
+      `SELECT c.seats, c.interview_minutes,
+              (SELECT COUNT(*)::int FROM candidate_company_status ccs
+                WHERE ccs.company_id = c.id AND ccs.status != 'Waitlisted' AND ccs.deleted_at IS NULL AND ccs.id != $2) AS booked
+         FROM companies c WHERE c.id = $1`,
+      [companyId, ccsId]
+    );
+    if (!companyRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Company not found' });
+    }
+    const company = companyRes.rows[0];
+    const capacity = company.seats * (60 / company.interview_minutes) * fairHours;
+    const capSold = Math.floor(0.9 * capacity);
+    const isWaitlisted = company.booked >= capSold;
+    const serial = isWaitlisted ? null : company.booked + 1;
+
+    await client.query(
+      `UPDATE candidate_company_status
+          SET status = $1, serial = $2, misses = 0, dispatched_at = NULL,
+              interview_started_at = NULL, processed_at = NULL, ratings = NULL, feedback_text = NULL
+        WHERE id = $3`,
+      [isWaitlisted ? 'Waitlisted' : 'Pending', serial, ccsId]
+    );
+    await client.query('COMMIT');
+    result = { status: isWaitlisted ? 'Waitlisted' : 'Pending', serial };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  // Same post-commit ordering as every other booking mutation in this file —
+  // a Redis outage must never undo an already-committed status change.
+  if (result.status === 'Pending') {
+    try {
+      await queueStore.enqueue(companyId, candidateId, result.serial);
+    } catch (err) {
+      console.error(`[candidates/:id/companies/:companyId/reactivate] queue enqueue failed for candidate ${candidateId} company ${companyId}:`, err.message);
+    }
+    emit('queue_joined', { companies: [{ company_id: companyId, serial: result.serial }], statsDelta: { queued: 1 } });
+  } else {
+    emit('candidate_waitlisted', { companies: [{ company_id: companyId }], statsDelta: { waitlisted: 1 } });
+  }
+
+  res.json(result);
 }));
 
 // Admin / Floor Manager / Company HR: serve an uploaded resume — inline, not
