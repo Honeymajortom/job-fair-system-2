@@ -110,16 +110,18 @@ export default function GateCheckIn() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Admin only — read-only here (matches Gate.html: just a status pill).
-  // Starting/ending the fair itself now lives on the Floor tab instead,
-  // next to its Day picker, since that's the screen an admin actually needs
-  // it from before any dates exist for that dropdown to offer.
+  // Admin sees the read-only status pill (matches Gate.html: just a status
+  // pill — starting/ending the fair itself lives on the Floor tab, next to
+  // its Day picker). registration_staff can't see that card but still needs
+  // to know whether a fair is active — GET /qr/token 404s without one, and
+  // the Entrance QR button below is disabled on the same activeFair check,
+  // so both roles need this fetched, not just admin.
   function loadFairSettings() {
     api.getFairSettings(effectiveCenterId).then(setFairSettings).catch(() => {});
   }
 
   useEffect(() => {
-    if (user.role !== 'admin') return;
+    if (user.role !== 'admin' && user.role !== 'registration_staff') return;
     loadFairSettings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveCenterId]);
@@ -220,7 +222,7 @@ export default function GateCheckIn() {
     try {
       const res = await api.qrToken(targetCenterId || undefined);
       const fullUrl = `${window.location.origin}${res.register_url}`;
-      const dataUrl = await QRCode.toDataURL(fullUrl, { margin: 1, width: 240 });
+      const dataUrl = await QRCode.toDataURL(fullUrl, { margin: 1, width: 400 });
       setEntranceQr({ dataUrl, fairName: res.fair_name, expiresAt: decodeJwtExp(res.qr_token) });
     } catch (err) {
       showToast(err.message, true);
@@ -382,6 +384,11 @@ export default function GateCheckIn() {
             <div className="gv-card">
               <div className="gv-kicker">Entrance QR</div>
               <p className="gv-body">Candidates scan this at the gate to register their arrival.</p>
+              {fairSettings && !activeFair && (
+                <p className="error-note" style={{ marginTop: 0 }}>
+                  No job fair is active{user.role === 'admin' ? ' — start one from Settings → Fair first.' : ' yet — check with an admin.'}
+                </p>
+              )}
               {!entranceQr && user.role === 'admin' && !selectedCenterId && centers.length > 1 && (
                 <div className="field" style={{ maxWidth: 200, marginBottom: 8 }}>
                   <label>Center</label>
@@ -392,14 +399,20 @@ export default function GateCheckIn() {
                 </div>
               )}
               {entranceQr ? (
-                <div className="gv-qr-row">
-                  <img src={entranceQr.dataUrl} alt="Entrance registration QR" width={58} height={58} style={{ borderRadius: 6, border: '1px solid var(--line)' }} />
-                  <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} onClick={generateEntranceQr} disabled={generatingQr}>
+                <div className="gv-qr-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 10 }}>
+                  <img src={entranceQr.dataUrl} alt="Entrance registration QR" width={220} height={220} style={{ borderRadius: 8, border: '1px solid var(--line)' }} />
+                  <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} onClick={generateEntranceQr} disabled={generatingQr || !activeFair}>
                     {generatingQr ? 'Generating…' : 'Regenerate'}
                   </button>
                 </div>
               ) : (
-                <button className="btn" style={{ width: 'auto', padding: '8px 14px', alignSelf: 'flex-start' }} onClick={generateEntranceQr} disabled={generatingQr}>
+                <button
+                  className="btn"
+                  style={{ width: 'auto', padding: '8px 14px', alignSelf: 'flex-start' }}
+                  onClick={generateEntranceQr}
+                  disabled={generatingQr || !activeFair}
+                  title={!activeFair ? 'Start a job fair before generating an entrance QR' : undefined}
+                >
                   {generatingQr ? 'Generating…' : 'Generate entrance QR'}
                 </button>
               )}
