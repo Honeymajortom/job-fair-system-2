@@ -175,7 +175,32 @@ router.get('/qr/token', authenticateJWT, requireRole('admin', 'registration_staf
 // schema.sql's is_open comment). Companies a candidate already booked keep
 // showing on their own schedule page (GET /qr/schedule/:token) regardless —
 // this filter only applies to the initial pick-a-company step.
-router.get('/qr/companies', readIpLimit, ensureDeviceCookie, redisCache(60), asyncHandler(async (_req, res) => {
+router.get('/qr/companies', readIpLimit, ensureDeviceCookie, redisCache(60), asyncHandler(async (req, res) => {
+  // Center scoping (fair_cycle_isolation_plan.md): companies are 1:1 with a
+  // Center, but this query had no center filter at all until this fix — any
+  // is_open company anywhere in the system showed to every candidate,
+  // regardless of which Center's fair they actually checked in at (found via
+  // a stale company from a different, unrelated Center bleeding into a live
+  // fair's candidate picker). ?qr= is the candidate's own signed check-in QR
+  // (same as /qr/select-companies/:qr) — resolves their fair_settings_id ->
+  // center_id. No qr (or an invalid one) falls back to the old unscoped
+  // behavior rather than an empty list, since this is a read-only, low-
+  // sensitivity endpoint and a single-Center deployment has no wrong answer
+  // to scope against anyway.
+  let centerId = null;
+  if (req.query.qr) {
+    const tokenNo = verifyQr(String(req.query.qr));
+    if (tokenNo) {
+      const centerRes = await pool.query(
+        `SELECT fs.center_id FROM candidates cd
+          JOIN fair_settings fs ON fs.id = cd.fair_settings_id
+         WHERE cd.token_no = $1 AND cd.deleted_at IS NULL`,
+        [tokenNo]
+      );
+      centerId = centerRes.rows[0]?.center_id ?? null;
+    }
+  }
+
   const result = await pool.query(
     `SELECT c.id, c.company_name, c.description, c.location, c.floor_number, c.field, c.job_type,
             c.min_qualification, c.max_qualification,
@@ -186,9 +211,10 @@ router.get('/qr/companies', readIpLimit, ensureDeviceCookie, redisCache(60), asy
        SELECT COUNT(*)::int AS taken FROM candidate_company_status ccs
        WHERE ccs.slot_id = s.id AND ccs.deleted_at IS NULL
      ) t ON true
-     WHERE c.is_open = true
+     WHERE c.is_open = true AND ($1::int IS NULL OR c.center_id = $1)
      GROUP BY c.id
-     ORDER BY c.company_name`
+     ORDER BY c.company_name`,
+    [centerId]
   );
   // Queue-system Phase 4: open_slots above is stale for the new capacity-gate
   // model (it only ever counted interview_slots rows) — left untouched per

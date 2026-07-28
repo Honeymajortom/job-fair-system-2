@@ -67,7 +67,10 @@ function qs(params) {
 
 export const api = {
   // public candidate path
-  qrCompanies: () => request('/qr/companies'),
+  // qr (optional): the candidate's own signed check-in QR, scopes the list to
+  // their Center server-side (routes/public.js) instead of showing every
+  // is_open company system-wide.
+  qrCompanies: (qr) => request(`/qr/companies${qs({ qr })}`),
   qrRegister: (payload) => request('/qr/register', { method: 'POST', body: JSON.stringify(payload) }),
   // qr here is the signed "{token_no}.{HMAC}" string (registerCandidate's
   // `result.qr`), not the bare token — the server verifies the signature

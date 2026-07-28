@@ -17,8 +17,8 @@ export default function SelectCompanies({ qr, onDone }) {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    api.qrCompanies().then(setCompanies).catch((err) => setError(err.message));
-  }, []);
+    api.qrCompanies(qr).then(setCompanies).catch((err) => setError(err.message));
+  }, [qr]);
 
   function toggle(id) {
     setSelected((prev) => {
