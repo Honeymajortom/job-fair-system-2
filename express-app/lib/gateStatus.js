@@ -48,6 +48,7 @@ async function computeGateStatus() {
       travelTimeMinutes: row.travel_time_minutes,
       seats: row.seats,
       interviewMinutes: row.interview_minutes,
+      includeArrivalDeadline: false, // this aggregate board never renders it — skip the extra lookup per called candidate
     })),
   })));
 

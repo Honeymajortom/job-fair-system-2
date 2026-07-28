@@ -103,6 +103,37 @@ function WaitingDirective({ slots, waitingRooms }) {
   return null;
 }
 
+function formatCountdown(ms) {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  const mm = String(Math.floor(s / 60)).padStart(2, '0');
+  const ss = String(s % 60).padStart(2, '0');
+  return `${mm}:${ss}`;
+}
+
+// The same arrival deadline Company HR's desk tablet shows via CountdownRing
+// (lib/noShowTimer.js's getArrivalStatus, threaded through the 'desk_call'
+// rung) — a plain ticking mm:ss here rather than the desk's visual ring, off
+// the identical expiresAt/pausedRemainingMs values so the two can never
+// disagree. Ticks locally against the server-provided deadline the same way
+// CountdownRing does; the actual no-show reversion stays server-authoritative
+// (workers/noShowWorker.js) — this never fires anything itself.
+function ArrivalCountdown({ expiresAt, paused, pausedRemainingMs }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (paused || !expiresAt) return undefined;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [paused, expiresAt]);
+
+  if (!expiresAt && !paused) return null;
+  const remaining = paused ? pausedRemainingMs : new Date(expiresAt).getTime() - now;
+  return (
+    <p className="save-note" style={{ textAlign: 'left', marginTop: 6 }}>
+      ⏱ {paused ? 'Paused — ' : 'Time to arrive: '}<span className="mono">{formatCountdown(remaining)}</span>
+    </p>
+  );
+}
+
 function PosCard({ slot, token }) {
   const isWaitlisted = slot.rung === undefined;
   const rung = isWaitlisted ? 'waitlisted' : slot.rung;
@@ -175,6 +206,7 @@ function PosCard({ slot, token }) {
         // display with an explicit call to action instead.
         <>
           <p className="desk-call-note">🔔 Your turn — go to {describeLocation(slot) || 'the desk'} now</p>
+          <ArrivalCountdown expiresAt={slot.expiresAt} paused={slot.paused} pausedRemainingMs={slot.pausedRemainingMs} />
           {acked ? (
             <p className="save-note" style={{ marginTop: 8, textAlign: 'left' }}>✅ We told them you're on the way</p>
           ) : (

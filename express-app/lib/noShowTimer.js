@@ -66,7 +66,12 @@ async function pauseNoShowTimer(candidateId, companyId) {
   if (!job) return null;
   const remaining = Math.max(1000, job.timestamp + job.opts.delay - Date.now());
   await job.remove();
-  await connection.set(pausedKey(candidateId, companyId), String(remaining), 'EX', 3600);
+  // Total delay (job.opts.delay — the original 90s/180s this job was armed
+  // with) is stored alongside remaining, not just remaining alone, so a
+  // reader (getArrivalStatus below) can still compute a correct progress
+  // fraction while paused, without having to re-derive same-floor/cross-floor
+  // from scratch.
+  await connection.set(pausedKey(candidateId, companyId), JSON.stringify({ remaining, total: job.opts.delay }), 'EX', 3600);
   return remaining;
 }
 
@@ -74,13 +79,36 @@ async function pauseNoShowTimer(candidateId, companyId) {
 // doesn't lose or gain arrival-window time just because it was paused.
 async function resumeNoShowTimer({ candidateId, companyId, deskId, ccsId, sameFloor }) {
   const key = pausedKey(candidateId, companyId);
-  const remaining = await connection.get(key);
-  if (remaining == null) return null;
+  const raw = await connection.get(key);
+  if (raw == null) return null;
   await connection.del(key);
-  await armNoShowTimer({ candidateId, companyId, deskId, ccsId, sameFloor, delayMsOverride: Number(remaining) });
-  return Number(remaining);
+  const { remaining } = JSON.parse(raw);
+  await armNoShowTimer({ candidateId, companyId, deskId, ccsId, sameFloor, delayMsOverride: remaining });
+  return remaining;
+}
+
+// Read-only — the same arrival deadline the desk tablet's CountdownRing
+// shows Company HR, exposed for the candidate's own schedule page
+// (lib/pingLadder.js's 'desk_call' rung) to show the identical countdown on
+// their side. Never arms/clears/mutates anything, safe to call on every
+// schedule poll. Three possible shapes: actively armed (expiresAt + totalMs,
+// same as queueDispatcher.js's dispatch() response), paused (pausedRemainingMs
+// + totalMs, no expiresAt — there's no live deadline to count down against),
+// or neither (not currently dispatched / already arrived, in which case the
+// caller shouldn't render a ring at all).
+async function getArrivalStatus(candidateId, companyId) {
+  const job = await noShowQueue.getJob(jobId(candidateId, companyId));
+  if (job) {
+    return { expiresAt: new Date(job.timestamp + job.opts.delay).toISOString(), totalMs: job.opts.delay };
+  }
+  const raw = await connection.get(pausedKey(candidateId, companyId));
+  if (raw != null) {
+    const { remaining, total } = JSON.parse(raw);
+    return { paused: true, pausedRemainingMs: remaining, totalMs: total };
+  }
+  return null;
 }
 
 module.exports = {
-  noShowQueue, armNoShowTimer, clearNoShowTimer, pauseNoShowTimer, resumeNoShowTimer, SAME_FLOOR_MS, CROSS_FLOOR_MS,
+  noShowQueue, armNoShowTimer, clearNoShowTimer, pauseNoShowTimer, resumeNoShowTimer, getArrivalStatus, SAME_FLOOR_MS, CROSS_FLOOR_MS,
 };

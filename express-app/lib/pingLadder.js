@@ -3,6 +3,7 @@
 // so it's independently testable (scripts/phase4PositionFixture.js) and
 // reusable if another surface ever needs the same ladder logic.
 const store = require('./queueStore');
+const { getArrivalStatus } = require('./noShowTimer');
 
 // Order matters: booking outcomes (done/desk_call) short-circuit before the
 // position-based bands, and position bands (staging/gate) are checked before
@@ -12,7 +13,7 @@ const DONE_STATUSES = ['Selected', 'Rejected', 'Shortlisted', 'Hold', 'No_Show']
 const MIN_DRAIN_RATE = 0.05; // floor so a cold/misconfigured company can't divide-by-near-zero into an infinite ETA
 const DEFAULT_BETA = 15; // sim/jobfair_sim.py's fixed BETA — used until lib/bufferController.js has retuned this company at least once
 
-async function resolveRung({ status, companyId, candidateId, travelTimeMinutes, seats, interviewMinutes, interviewStartedAt }) {
+async function resolveRung({ status, companyId, candidateId, travelTimeMinutes, seats, interviewMinutes, interviewStartedAt, includeArrivalDeadline = true }) {
   if (DONE_STATUSES.includes(status)) return { position: null, eta_minutes: null, rung: 'done' };
   // interviewStartedAt is stamped by confirm-arrival while status is still
   // 'Dispatched' (it only changes to a DONE_STATUSES value once the result is
@@ -20,7 +21,18 @@ async function resolveRung({ status, companyId, candidateId, travelTimeMinutes, 
   // interview would keep seeing the "come to the desk" call. Optional: only
   // gateStatus.js's aggregate view doesn't pass it, and not passing it just
   // preserves the old desk_call-for-the-whole-visit behavior there.
-  if (status === 'Dispatched') return { position: 0, eta_minutes: 0, rung: interviewStartedAt ? 'in_interview' : 'desk_call' };
+  if (status === 'Dispatched') {
+    if (interviewStartedAt) return { position: 0, eta_minutes: 0, rung: 'in_interview' };
+    // The same arrival deadline Company HR's desk tablet shows via
+    // CountdownRing (queueDispatcher.js's dispatch() response), read fresh
+    // off the actual armed/paused no-show timer rather than recomputed —
+    // exposed here so a candidate's own schedule page can show the identical
+    // countdown for their 'desk_call' rung. gateStatus.js's aggregate board
+    // never renders this, so it opts out (includeArrivalDeadline: false) to
+    // skip the extra lookup for every called candidate.
+    const arrival = includeArrivalDeadline ? await getArrivalStatus(candidateId, companyId) : null;
+    return { position: 0, eta_minutes: 0, rung: 'desk_call', ...(arrival || {}) };
+  }
 
   const position = await store.getPosition(companyId, candidateId);
   if (position === null) return { position: null, eta_minutes: null, rung: 'far' };
