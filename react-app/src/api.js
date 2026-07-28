@@ -120,6 +120,7 @@ export const api = {
   addCandidateCompanies: (id, company_ids) => request(`/candidates/${id}/companies`, { method: 'POST', body: JSON.stringify({ company_ids }) }),
   removeCandidateCompany: (id, companyId) => request(`/candidates/${id}/companies/${companyId}`, { method: 'DELETE' }),
   reactivateCandidateCompany: (id, companyId) => request(`/candidates/${id}/companies/${companyId}/reactivate`, { method: 'POST' }),
+  deleteCandidate: (id) => request(`/candidates/${id}`, { method: 'DELETE' }),
   rescheduleBatch: (id, batch_id) => request(`/candidates/${id}/batch`, { method: 'PUT', body: JSON.stringify({ batch_id }) }),
   getQueue: (companyId) => request(`/queue/${companyId}`),
   getCompletedToday: (companyId) => request(`/queue/${companyId}/completed`),

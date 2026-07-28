@@ -25,6 +25,18 @@ export default function CandidateAdmin() {
   const [registerError, setRegisterError] = useState(null);
   const [toast, setToast] = useState(null);
 
+  // Delete Candidate: search by mobile (dedup is per-fair-cycle now, so the
+  // same number can genuinely match more than one candidate — same
+  // disambiguation shape as CandidateLookup.jsx's mobile lookup), then delete
+  // whichever match staff mean. DELETE /candidates/:id itself decides soft
+  // vs hard delete server-side depending on whether a fair is currently
+  // active.
+  const [delMobile, setDelMobile] = useState('');
+  const [delMatches, setDelMatches] = useState(null);
+  const [delSearching, setDelSearching] = useState(false);
+  const [delError, setDelError] = useState(null);
+  const [delBusyId, setDelBusyId] = useState(null);
+
   function showToast(text, isErr) {
     setToast({ text, isErr });
     setTimeout(() => setToast(null), 2500);
@@ -62,7 +74,40 @@ export default function CandidateAdmin() {
     }
   }
 
+  async function searchToDelete(e) {
+    e.preventDefault();
+    const mobile = delMobile.trim();
+    if (!mobile) return;
+    setDelSearching(true);
+    setDelError(null);
+    setDelMatches(null);
+    try {
+      const matches = await api.listCandidates(undefined, undefined, mobile);
+      if (!matches.length) setDelError('No candidate found with that mobile number');
+      else setDelMatches(matches);
+    } catch (err) {
+      setDelError(err.message);
+    } finally {
+      setDelSearching(false);
+    }
+  }
+
+  async function deleteCandidate(c) {
+    if (!window.confirm(`Delete ${c.name} (${c.token_no})? This can't be undone.`)) return;
+    setDelBusyId(c.id);
+    try {
+      const result = await api.deleteCandidate(c.id);
+      showToast(result.deleted === 'soft' ? `${c.token_no} removed` : `${c.token_no} permanently deleted`);
+      setDelMatches((prev) => prev.filter((m) => m.id !== c.id));
+    } catch (err) {
+      showToast(err.message, true);
+    } finally {
+      setDelBusyId(null);
+    }
+  }
+
   return (
+    <>
     <div style={{ marginTop: 28 }}>
       <div className="sec-label" style={{ marginBottom: 10 }}>Register new candidate</div>
       <form onSubmit={register} style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'end' }}>
@@ -119,8 +164,56 @@ export default function CandidateAdmin() {
         </button>
       </form>
       {registerError && <div className="error-note" style={{ marginTop: 8 }}>{registerError}</div>}
-
-      {toast && <div className={`toast${toast.isErr ? ' err' : ''}`}>{toast.text}</div>}
     </div>
+
+    <div style={{ marginTop: 28 }}>
+      <div className="sec-label" style={{ marginBottom: 10 }}>Delete Candidate</div>
+      <form onSubmit={searchToDelete} style={{ display: 'flex', gap: 8, alignItems: 'end', marginBottom: 14 }}>
+        <div className="field" style={{ maxWidth: 200 }}>
+          <label>Mobile number</label>
+          <input
+            inputMode="numeric"
+            value={delMobile}
+            onChange={(e) => setDelMobile(e.target.value.replace(/\D/g, '').slice(0, 10))}
+          />
+        </div>
+        <button className="btn ghost" style={{ width: 'auto', padding: '11px 18px' }} type="submit" disabled={delSearching}>
+          {delSearching ? 'Searching…' : 'Search'}
+        </button>
+      </form>
+      {delError && <div className="error-note">{delError}</div>}
+      {delMatches && (
+        <div className="table-wrap" style={{ maxWidth: 560 }}>
+          <table className="data-table">
+            <thead><tr><th>Name</th><th>Token</th><th>Registered</th><th></th></tr></thead>
+            <tbody>
+              {delMatches.map((c) => (
+                <tr key={c.id}>
+                  <td>{c.name}</td>
+                  <td className="mono">{c.token_no}</td>
+                  <td>{new Date(c.registered_at).toLocaleDateString([], { dateStyle: 'medium' })}</td>
+                  <td>
+                    <button
+                      className="btn ghost"
+                      style={{ width: 'auto', padding: '6px 12px', color: 'var(--st-rejected)' }}
+                      disabled={delBusyId === c.id}
+                      onClick={() => deleteCandidate(c)}
+                    >
+                      {delBusyId === c.id ? 'Deleting…' : 'Delete'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {!delMatches.length && (
+                <tr><td colSpan={4} className="save-note">No candidates left matching that number.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+
+    {toast && <div className={`toast${toast.isErr ? ' err' : ''}`}>{toast.text}</div>}
+    </>
   );
 }
