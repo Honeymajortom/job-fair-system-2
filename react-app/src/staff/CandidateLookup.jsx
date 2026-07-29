@@ -31,7 +31,23 @@ export default function CandidateLookup({ initialToken = '' }) {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
 
-  useEffect(() => { api.getCompanies().then(setCompanies).catch(() => {}); }, []);
+  // company_roster_plan.md: only companies actually on the looked-up
+  // candidate's own fair cycle's roster are offered here — not the full
+  // historical per-Center directory api.getCompanies() returns. Refetched
+  // per candidate (keyed on fair_settings_id, not the whole candidate object,
+  // so re-lookups after add/remove/reassign that land on the same cycle
+  // don't re-fetch needlessly) since different candidates can belong to
+  // different cycles. A candidate with no fair_settings_id (legacy, no
+  // active fair at registration time) has no cycle to scope to — nothing to
+  // safely offer, so the picker stays empty rather than falling back to the
+  // full directory.
+  useEffect(() => {
+    if (!candidate || !candidate.fair_settings_id) { setCompanies([]); return; }
+    api.getRoster(candidate.fair_settings_id)
+      .then((rows) => setCompanies(rows.map((r) => ({ id: r.company_id, company_name: r.company_name }))))
+      .catch(() => setCompanies([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candidate?.fair_settings_id]);
 
   function showToast(text, isErr) {
     setToast({ text, isErr });

@@ -382,4 +382,112 @@ router.get('/batches', authenticateJWT, asyncHandler(async (req, res) => {
   res.json(result.rows);
 }));
 
+// ---------------------------------------------------------------------------
+// Per-fair-cycle company roster (company_roster_plan.md) — a company is a
+// permanent, reusable per-Center directory entry (routes/companies.js); each
+// fair cycle explicitly opts one in via its own roster row here, carrying
+// that cycle's operational values (seats/interview_minutes/floor_number/
+// is_open). Nested under the fair, same convention as archive/waiting-rooms
+// above.
+// ---------------------------------------------------------------------------
+
+router.get('/fair-settings/:id/roster', authenticateJWT, requireRole('admin', 'registration_staff'), asyncHandler(async (req, res) => {
+  const result = await pool.query(
+    `SELECT r.id, r.company_id, c.company_name, r.seats, r.interview_minutes, r.floor_number, r.is_open, r.created_at
+     FROM fair_company_roster r
+     JOIN companies c ON c.id = r.company_id
+     WHERE r.fair_settings_id = $1
+     ORDER BY c.company_name`,
+    [req.params.id]
+  );
+  res.json(result.rows);
+}));
+
+// Upsert-by-(fair_settings_id, company_id) — re-adding a company that was
+// previously removed from this cycle's roster just refreshes its values
+// rather than erroring on the UNIQUE constraint. Also where the Redis leak
+// fix lives (company_roster_plan.md): a re-added company must start this
+// cycle from fresh drain-rate/ping-buffer defaults, not a stale tuned value
+// carried over from whatever cycle last used it.
+router.post('/fair-settings/:id/roster', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
+  const fairId = Number(req.params.id);
+  if (!Number.isInteger(fairId)) return res.status(400).json({ error: 'Invalid fair id' });
+  const { company_id, seats, interview_minutes, floor_number, is_open } = req.body;
+  if (!company_id) return res.status(400).json({ error: 'company_id is required' });
+  if (interview_minutes != null && !(Number.isInteger(interview_minutes) && interview_minutes > 0)) {
+    return res.status(400).json({ error: 'interview_minutes must be a positive integer' });
+  }
+  if (floor_number != null && !(Number.isInteger(floor_number) && floor_number >= 0)) {
+    return res.status(400).json({ error: 'floor_number must be a non-negative integer' });
+  }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO fair_company_roster (fair_settings_id, company_id, seats, interview_minutes, floor_number, is_open)
+       VALUES ($1, $2, COALESCE($3, 1), COALESCE($4, 6), $5, COALESCE($6, false))
+       ON CONFLICT (fair_settings_id, company_id) DO UPDATE SET
+         seats = EXCLUDED.seats, interview_minutes = EXCLUDED.interview_minutes,
+         floor_number = EXCLUDED.floor_number, is_open = EXCLUDED.is_open
+       RETURNING *`,
+      [fairId, company_id, seats || null, interview_minutes || null,
+       floor_number != null ? floor_number : null, typeof is_open === 'boolean' ? is_open : null]
+    );
+    await store.clearTunedState(company_id);
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23514') return res.status(400).json({ error: 'interview_minutes must be positive and floor_number must be non-negative' });
+    if (err.code === '23503') return res.status(404).json({ error: 'Company or fair not found' });
+    throw err;
+  }
+}));
+
+router.put('/fair-settings/:id/roster/:companyId', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
+  const { seats, interview_minutes, floor_number, is_open } = req.body;
+  if (interview_minutes != null && !(Number.isInteger(interview_minutes) && interview_minutes > 0)) {
+    return res.status(400).json({ error: 'interview_minutes must be a positive integer' });
+  }
+  if (floor_number != null && !(Number.isInteger(floor_number) && floor_number >= 0)) {
+    return res.status(400).json({ error: 'floor_number must be a non-negative integer' });
+  }
+
+  const result = await pool.query(
+    `UPDATE fair_company_roster SET
+       seats = COALESCE($1, seats),
+       interview_minutes = COALESCE($2, interview_minutes),
+       floor_number = COALESCE($3, floor_number),
+       is_open = COALESCE($4, is_open)
+     WHERE fair_settings_id = $5 AND company_id = $6
+     RETURNING *`,
+    [seats || null, interview_minutes || null, floor_number != null ? floor_number : null,
+     typeof is_open === 'boolean' ? is_open : null, req.params.id, req.params.companyId]
+  );
+  if (!result.rows.length) return res.status(404).json({ error: 'Roster entry not found' });
+  res.json(result.rows[0]);
+}));
+
+// App-level 409 guard (no DB FK enforces this — candidate_company_status.
+// company_id references companies, not the roster row): a company with a
+// live booking in this cycle can't be pulled off the roster out from under
+// it — resolve the booking first.
+router.delete('/fair-settings/:id/roster/:companyId', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
+  const liveRes = await pool.query(
+    `SELECT 1 FROM candidate_company_status ccs
+     JOIN candidates cd ON cd.id = ccs.candidate_id
+     WHERE ccs.company_id = $1 AND cd.fair_settings_id = $2
+       AND ccs.status IN ('Pending', 'Waitlisted', 'Dispatched') AND ccs.deleted_at IS NULL
+     LIMIT 1`,
+    [req.params.companyId, req.params.id]
+  );
+  if (liveRes.rows.length) {
+    return res.status(409).json({ error: 'This company has live bookings in this cycle — resolve them before removing it from the roster' });
+  }
+
+  const result = await pool.query(
+    'DELETE FROM fair_company_roster WHERE fair_settings_id = $1 AND company_id = $2 RETURNING id',
+    [req.params.id, req.params.companyId]
+  );
+  if (!result.rows.length) return res.status(404).json({ error: 'Roster entry not found' });
+  res.json({ ok: true });
+}));
+
 module.exports = router;

@@ -26,12 +26,22 @@ const STAGING_MAX = 3;
 const RUNG_RANK = { desk_call: 0, staging: 1, gate: 2, warm: 3, far: 4 };
 
 async function computeGateStatus() {
+  // company_roster_plan.md: seats/interview_minutes/floor_number now come
+  // from the roster row for whichever fair is currently active at each
+  // company's Center — live-only aggregate, no historical/date dimension, so
+  // this is sufficient (same "active fair for this company's Center"
+  // resolution lib/queueDispatcher.js/lib/bufferController.js use). A company
+  // with no roster row for the active fair shouldn't have any live booking to
+  // begin with (the roster DELETE route 409s while one exists), so this join
+  // isn't expected to null out seats/interview_minutes in practice.
   const rows = await pool.query(
     `SELECT cd.id AS candidate_id, cd.token_no, cd.travel_time_minutes,
-            ccs.company_id, ccs.status, c.seats, c.interview_minutes, c.floor_number
+            ccs.company_id, ccs.status, r.seats, r.interview_minutes, r.floor_number
        FROM candidates cd
        JOIN candidate_company_status ccs ON ccs.candidate_id = cd.id AND ccs.deleted_at IS NULL
        JOIN companies c ON c.id = ccs.company_id
+       LEFT JOIN fair_settings fs ON fs.center_id = c.center_id AND fs.is_active = true
+       LEFT JOIN fair_company_roster r ON r.company_id = c.id AND r.fair_settings_id = fs.id
       WHERE cd.checked_in_at IS NOT NULL AND cd.deleted_at IS NULL
         AND ccs.status != ALL($1::varchar[])`,
     [[...DONE_STATUSES, 'Waitlisted']] // waitlisted bookings never entered the live queue — resolving one would misreport 'far'

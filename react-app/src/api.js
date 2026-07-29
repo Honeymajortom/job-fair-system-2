@@ -170,6 +170,12 @@ export const api = {
   // centers (fair_cycle_isolation_plan.md Phase 4)
   getCenters: () => request('/centers'),
   createCenter: (payload) => request('/centers', { method: 'POST', body: JSON.stringify(payload) }),
+
+  // per-fair-cycle company roster (company_roster_plan.md)
+  getRoster: (fairSettingsId) => request(`/fair-settings/${fairSettingsId}/roster`),
+  upsertRoster: (fairSettingsId, payload) => request(`/fair-settings/${fairSettingsId}/roster`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateRoster: (fairSettingsId, companyId, payload) => request(`/fair-settings/${fairSettingsId}/roster/${companyId}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  removeRoster: (fairSettingsId, companyId) => request(`/fair-settings/${fairSettingsId}/roster/${companyId}`, { method: 'DELETE' }),
 };
 
 // Staff-only (lib/io.js rejects anonymous connections) — same-origin via the

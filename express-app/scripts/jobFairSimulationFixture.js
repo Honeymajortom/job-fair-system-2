@@ -21,6 +21,7 @@ const redis = require('../lib/redisClient');
 const bcrypt = require('bcryptjs');
 const { computeFloorStats } = require('../lib/floorStats');
 const { computeInsights } = require('../lib/insights');
+const { ensureRoster } = require('./testRosterHelper');
 
 const API = process.env.FIXTURE_API_URL || 'http://localhost:3000/api';
 
@@ -101,6 +102,15 @@ async function main() {
     [fairDate, centerId, FAIR_HOURS]
   );
   const fairId = fairRes.rows[0].id;
+
+  // company_roster_plan.md: seats/interview_minutes/floor_number/is_open now
+  // come from a roster row against this exact fair, not the (now-legacy)
+  // companies columns — every real consumer this simulation exercises
+  // (assignCompanies via /qr/select-companies, the dispatcher, buffer
+  // controller, gate status, floor stats) reads through the roster now.
+  for (const c of companies) {
+    await ensureRoster(fairId, c.id, { seats: c.seats, interview_minutes: c.interview_minutes, floor_number: c.floor_number, is_open: true });
+  }
 
   const hash = bcrypt.hashSync('testpass123', 4);
   const regUserRes = await pool.query(
@@ -271,6 +281,10 @@ async function main() {
     await pool.query('DELETE FROM candidate_company_status WHERE candidate_id = ANY($1::int[])', [candidateIds]);
     await pool.query('DELETE FROM candidates WHERE id = ANY($1::int[])', [candidateIds]);
     await pool.query('DELETE FROM users WHERE id = $1', [regUserId]);
+    // Roster rows deleted explicitly first — company_id is ON DELETE
+    // RESTRICT there, and the fair_settings delete below (which would
+    // otherwise cascade them away) hasn't run yet at this point.
+    await pool.query('DELETE FROM fair_company_roster WHERE company_id = ANY($1::int[])', [companies.map((c) => c.id)]);
     await pool.query('DELETE FROM companies WHERE id = ANY($1::int[])', [companies.map((c) => c.id)]);
     await pool.query('DELETE FROM fair_batches WHERE fair_settings_id = $1', [fairId]);
     await pool.query('DELETE FROM fair_settings WHERE id = $1', [fairId]);

@@ -126,6 +126,15 @@ async function computeFloorStats({ date, centerId } = {}) {
     // fan-out-avoidance shape as lib/insights.js's `cand` CTE. Center-scoping
     // filters the companies list itself (c.center_id) — the per-company
     // counts fall out correctly for free since they're grouped by company id.
+    // company_roster_plan.md: seats/interview_minutes now come from the
+    // roster, not the company's own (now-legacy) columns — and this query
+    // is the one place that genuinely needs to be date-aware about it: a
+    // historical date should resolve the roster for whichever fair was
+    // actually active *that day* (fs.fair_date = the given date), not
+    // today's active fair, or a past day's Floor view would show today's
+    // capacity numbers against an ended cycle. Blank date (all-time view)
+    // falls back to "active fair for this company's Center", same
+    // live-only convention every other consumer uses.
     pool.query(`
       WITH ccs_scoped AS (
         -- deleted_at carried through, not pre-filtered, so on_hand/remaining
@@ -137,7 +146,7 @@ async function computeFloorStats({ date, centerId } = {}) {
         JOIN candidates cd ON cd.id = ccs.candidate_id
         WHERE ($1::date IS NULL OR cd.registered_at::date = $1::date)
       )
-      SELECT c.id, c.company_name, c.seats, c.interview_minutes,
+      SELECT c.id, c.company_name, r.seats, r.interview_minutes,
              COUNT(*) FILTER (WHERE ccs.status = 'Pending' AND ccs.checked_in_at IS NOT NULL
                AND ccs.ccs_deleted_at IS NULL AND ccs.cd_deleted_at IS NULL)::int AS on_hand,
              COUNT(*) FILTER (WHERE ccs.status IN ('Pending','Waitlisted','Dispatched')
@@ -155,8 +164,11 @@ async function computeFloorStats({ date, centerId } = {}) {
               ) t) AS on_hand_tokens
       FROM companies c
       LEFT JOIN ccs_scoped ccs ON ccs.company_id = c.id
+      LEFT JOIN fair_settings fs ON fs.center_id = c.center_id
+        AND (($1::date IS NOT NULL AND fs.fair_date = $1::date) OR ($1::date IS NULL AND fs.is_active = true))
+      LEFT JOIN fair_company_roster r ON r.company_id = c.id AND r.fair_settings_id = fs.id
       WHERE ($2::int IS NULL OR c.center_id = $2)
-      GROUP BY c.id
+      GROUP BY c.id, r.seats, r.interview_minutes
       ORDER BY c.company_name
     `, [dateFilter, centerFilter]),
     // Same text-cast reasoning as lib/insights.js: avoid node-pg's local-time

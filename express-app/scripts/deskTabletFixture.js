@@ -21,10 +21,14 @@ function check(label, ok, detail = '') {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// No fair_company_roster row needed here — nothing in this fixture's own
+// assertions depends on seats/interview_minutes/floor_number (dispatch()/
+// completeInterview() degrade gracefully to their existing no-roster
+// defaults, same as a company with no floor_number ever did).
 async function makeCompany(name) {
   const r = await pool.query(
     `INSERT INTO companies (company_name, location) VALUES ($1, 'Test Hall')
-     ON CONFLICT (company_name) DO UPDATE SET location = EXCLUDED.location RETURNING id`,
+     ON CONFLICT (center_id, company_name) DO UPDATE SET location = EXCLUDED.location RETURNING id`,
     [name]
   );
   return r.rows[0].id;

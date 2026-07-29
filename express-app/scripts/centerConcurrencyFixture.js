@@ -24,6 +24,7 @@ const registerCandidate = require('../lib/registerCandidate');
 const { computeFloorStats } = require('../lib/floorStats');
 const { computeInsights } = require('../lib/insights');
 const bcrypt = require('bcryptjs');
+const { ensureRoster } = require('./testRosterHelper');
 
 const API = process.env.FIXTURE_API_URL || 'http://localhost:3000/api';
 
@@ -108,6 +109,11 @@ async function main() {
   const fairDate = '2098-06-15';
   const fairA = await makeFair('__cc_fair_A', centerA, fairDate);
   const fairB = await makeFair('__cc_fair_B', centerB, fairDate);
+  // company_roster_plan.md: seats/interview_minutes now come from a roster
+  // row against each Center's own fair, not the (now-legacy) companies
+  // columns lib/floorStats.js's per-company target math would otherwise read.
+  await ensureRoster(fairA, companyA, { seats: 1, interview_minutes: 6, is_open: true });
+  await ensureRoster(fairB, companyB, { seats: 1, interview_minutes: 6, is_open: true });
 
   const candidateIds = [];
   const overlapMobile = '9199991111';
@@ -245,6 +251,10 @@ async function main() {
     await pool.query('DELETE FROM candidates WHERE id = ANY($1::int[])', [candidateIds]);
     if (userA) await pool.query('DELETE FROM users WHERE id = $1', [userA]);
     if (userB) await pool.query('DELETE FROM users WHERE id = $1', [userB]);
+    // Roster rows deleted explicitly first — company_id is ON DELETE
+    // RESTRICT there, and the fair_settings delete below (which would
+    // otherwise cascade them away) hasn't run yet at this point.
+    await pool.query('DELETE FROM fair_company_roster WHERE company_id = ANY($1::int[])', [[companyA, companyB]]);
     await pool.query('DELETE FROM companies WHERE id = ANY($1::int[])', [[companyA, companyB]]);
     // registerCandidate()'s Part B probe can auto-create a fair_batches row
     // via lib/batchAssignment.js's getOrCreateAvailableBatch() — has to go

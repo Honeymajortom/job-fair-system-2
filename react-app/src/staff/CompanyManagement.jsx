@@ -3,13 +3,13 @@ import { api } from '../api';
 import { useCenter } from './CenterContext';
 
 const emptyCompanyForm = {
-  company_name: '', description: '', location: '', floor_number: '', field: '', job_type: '',
-  min_qualification: '', max_qualification: '', seats: '', interview_minutes: '', center_id: '',
+  company_name: '', description: '', location: '', field: '', job_type: '',
+  min_qualification: '', max_qualification: '', center_id: '',
 };
 
 const emptyEditForm = {
-  company_name: '', description: '', location: '', floor_number: '', field: '', job_type: '',
-  min_qualification: '', max_qualification: '', seats: '', interview_minutes: '',
+  company_name: '', description: '', location: '', field: '', job_type: '',
+  min_qualification: '', max_qualification: '',
 };
 
 const emptyParamForm = { parameter_name: '', display_order: '' };
@@ -18,9 +18,23 @@ const emptyPostForm = {
   post_title: '', vacancies: '', qualification: '', gender: '', age_min: '', age_max: '',
 };
 
+const emptyRosterAddForm = { seats: '', interview_minutes: '', floor_number: '' };
+
+function fmtDate(iso) {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+// company_roster_plan.md, Phase 3 (the deferred UI split): companies are now
+// a permanent per-Center directory (this tab's "Directory" half — identity
+// fields only: name, description, location, field, job type, qualifications)
+// plus a per-fair-cycle roster (seats/interview_minutes/floor_number/is_open
+// — the fields describing *this cycle's* staffing, not the company's
+// permanent identity). A company can sit in the directory without being on
+// any roster at all — that's the real, distinct "not part of the current
+// cycle" state the backend rewire introduced.
 export default function CompanyManagement() {
   const { centers, effectiveCenterId } = useCenter();
-  const [roster, setRoster] = useState(null);
+  const [directory, setDirectory] = useState(null);
   const [companyForm, setCompanyForm] = useState(emptyCompanyForm);
   const [creating, setCreating] = useState(false);
 
@@ -28,12 +42,21 @@ export default function CompanyManagement() {
   const [detail, setDetail] = useState(null);
   const [editForm, setEditForm] = useState(emptyEditForm);
   const [savingEdit, setSavingEdit] = useState(false);
-  const [togglingOpen, setTogglingOpen] = useState(null);
 
   const [paramForm, setParamForm] = useState(emptyParamForm);
   const [postForm, setPostForm] = useState(emptyPostForm);
   const [editingPostId, setEditingPostId] = useState(null);
   const [editPost, setEditPost] = useState(emptyPostForm);
+
+  // Roster section — defaults to the Center's currently active fair (no
+  // click needed for normal day-to-day use); the Day dropdown only exists to
+  // look back at an ended cycle's roster, read-only.
+  const [fairs, setFairs] = useState([]);
+  const [selectedFairId, setSelectedFairId] = useState('');
+  const [roster, setRoster] = useState(null);
+  const [rosterBusy, setRosterBusy] = useState(false);
+  const [addCompanyId, setAddCompanyId] = useState('');
+  const [rosterAddForm, setRosterAddForm] = useState(emptyRosterAddForm);
 
   const [toast, setToast] = useState(null);
 
@@ -42,26 +65,48 @@ export default function CompanyManagement() {
     setTimeout(() => setToast(null), 2500);
   }
 
-  function loadRoster() {
-    api.getCompanies(effectiveCenterId).then(setRoster).catch((err) => showToast(err.message, true));
+  function loadDirectory() {
+    api.getCompanies(effectiveCenterId).then(setDirectory).catch((err) => showToast(err.message, true));
   }
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { loadRoster(); }, [effectiveCenterId]);
+  useEffect(() => { loadDirectory(); }, [effectiveCenterId]);
 
   // Pre-fills the create form's Center field from the Nav switcher whenever
   // it changes — a convenience default, not a lock; admin can still pick a
   // different Center for the company being created.
   useEffect(() => { setCompanyForm((f) => ({ ...f, center_id: effectiveCenterId || '' })); }, [effectiveCenterId]);
 
+  function loadFairs() {
+    api.getFairSettings(effectiveCenterId).then((rows) => {
+      setFairs(rows);
+      const active = rows.find((f) => f.is_active);
+      setSelectedFairId(active ? active.id : '');
+    }).catch((err) => showToast(err.message, true));
+  }
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { loadFairs(); }, [effectiveCenterId]);
+
+  function loadRoster(fairId) {
+    if (!fairId) { setRoster([]); return; }
+    api.getRoster(fairId).then(setRoster).catch((err) => showToast(err.message, true));
+  }
+
+  useEffect(() => { loadRoster(selectedFairId); }, [selectedFairId]);
+
+  const selectedFair = fairs.find((f) => f.id === selectedFairId);
+  const isActiveFairSelected = !!selectedFair && selectedFair.is_active;
+  const rosterCompanyIds = new Set((roster || []).map((r) => r.company_id));
+  const availableToAdd = (directory || []).filter((c) => !rosterCompanyIds.has(c.id));
+
   function loadDetail(id) {
     api.getCompany(id).then((c) => {
       setDetail(c);
       setEditForm({
         company_name: c.company_name, description: c.description || '', location: c.location || '',
-        floor_number: c.floor_number ?? '', field: c.field || '', job_type: c.job_type || '',
+        field: c.field || '', job_type: c.job_type || '',
         min_qualification: c.min_qualification || '', max_qualification: c.max_qualification || '',
-        seats: c.seats ?? '', interview_minutes: c.interview_minutes ?? '',
       });
     }).catch((err) => showToast(err.message, true));
   }
@@ -88,16 +133,10 @@ export default function CompanyManagement() {
     if (!companyForm.center_id) { showToast('Pick a center', true); return; }
     setCreating(true);
     try {
-      await api.createCompany({
-        ...companyForm,
-        center_id: Number(companyForm.center_id),
-        floor_number: companyForm.floor_number ? Number(companyForm.floor_number) : undefined,
-        seats: companyForm.seats ? Number(companyForm.seats) : undefined,
-        interview_minutes: companyForm.interview_minutes ? Number(companyForm.interview_minutes) : undefined,
-      });
+      await api.createCompany({ ...companyForm, center_id: Number(companyForm.center_id) });
       showToast(`${companyForm.company_name} added`);
       setCompanyForm({ ...emptyCompanyForm, center_id: effectiveCenterId || '' });
-      loadRoster();
+      loadDirectory();
     } catch (err) {
       showToast(err.message, true);
     } finally {
@@ -114,7 +153,8 @@ export default function CompanyManagement() {
         setExpandedId(null);
         setDetail(null);
       }
-      loadRoster();
+      loadDirectory();
+      loadRoster(selectedFairId);
     } catch (err) {
       showToast(err.message, true);
     }
@@ -124,15 +164,10 @@ export default function CompanyManagement() {
     e.preventDefault();
     setSavingEdit(true);
     try {
-      await api.updateCompany(expandedId, {
-        ...editForm,
-        floor_number: editForm.floor_number !== '' ? Number(editForm.floor_number) : undefined,
-        seats: editForm.seats !== '' ? Number(editForm.seats) : undefined,
-        interview_minutes: editForm.interview_minutes !== '' ? Number(editForm.interview_minutes) : undefined,
-      });
+      await api.updateCompany(expandedId, editForm);
       showToast('Company details saved');
       loadDetail(expandedId);
-      loadRoster();
+      loadDirectory();
     } catch (err) {
       showToast(err.message, true);
     } finally {
@@ -140,23 +175,58 @@ export default function CompanyManagement() {
     }
   }
 
-  // Optimistic: flip this row's Open/Closed immediately instead of waiting on
-  // the round trip + a full loadRoster() refetch, reconcile with the server's
-  // actual value on success, and roll just this row back + show an error
-  // toast if the request fails.
-  async function toggleOpen(company) {
-    const previous = company.is_open;
-    const next = !previous;
-    setRoster((rows) => rows.map((r) => (r.id === company.id ? { ...r, is_open: next } : r)));
-    setTogglingOpen(company.id);
+  async function addToRoster(e) {
+    e.preventDefault();
+    if (!addCompanyId) return;
+    setRosterBusy(true);
     try {
-      const res = await api.setCompanyOpenStatus(company.id, next);
-      setRoster((rows) => rows.map((r) => (r.id === company.id ? { ...r, is_open: res.is_open } : r)));
+      await api.upsertRoster(selectedFairId, {
+        company_id: Number(addCompanyId),
+        seats: rosterAddForm.seats ? Number(rosterAddForm.seats) : undefined,
+        interview_minutes: rosterAddForm.interview_minutes ? Number(rosterAddForm.interview_minutes) : undefined,
+        floor_number: rosterAddForm.floor_number !== '' ? Number(rosterAddForm.floor_number) : undefined,
+      });
+      showToast('Added to today\'s roster');
+      setAddCompanyId('');
+      setRosterAddForm(emptyRosterAddForm);
+      loadRoster(selectedFairId);
     } catch (err) {
-      setRoster((rows) => rows.map((r) => (r.id === company.id ? { ...r, is_open: previous } : r)));
       showToast(err.message, true);
     } finally {
-      setTogglingOpen(null);
+      setRosterBusy(false);
+    }
+  }
+
+  // Optimistic toggle, same convention this screen's toggle used before the
+  // roster split — flip immediately, reconcile with the server's actual
+  // value on success, roll back + toast on failure.
+  async function toggleRosterOpen(row) {
+    const previous = row.is_open;
+    const next = !previous;
+    setRoster((rows) => rows.map((r) => (r.company_id === row.company_id ? { ...r, is_open: next } : r)));
+    setRosterBusy(true);
+    try {
+      const res = await api.updateRoster(selectedFairId, row.company_id, { is_open: next });
+      setRoster((rows) => rows.map((r) => (r.company_id === row.company_id ? { ...r, is_open: res.is_open } : r)));
+    } catch (err) {
+      setRoster((rows) => rows.map((r) => (r.company_id === row.company_id ? { ...r, is_open: previous } : r)));
+      showToast(err.message, true);
+    } finally {
+      setRosterBusy(false);
+    }
+  }
+
+  async function removeFromRoster(row) {
+    if (!window.confirm(`Remove ${row.company_name} from today's roster? Candidates already booked here are untouched.`)) return;
+    setRosterBusy(true);
+    try {
+      await api.removeRoster(selectedFairId, row.company_id);
+      showToast(`${row.company_name} removed from today's roster`);
+      loadRoster(selectedFairId);
+    } catch (err) {
+      showToast(err.message, true);
+    } finally {
+      setRosterBusy(false);
     }
   }
 
@@ -255,31 +325,120 @@ export default function CompanyManagement() {
   return (
     <div className="s-body">
       <h2 className="screen-title">Companies</h2>
+
+      <div className="sec-label" style={{ marginBottom: 10 }}>
+        Today's roster {selectedFair && !isActiveFairSelected && '— viewing a past cycle, read-only'}
+      </div>
+      <div className="field" style={{ maxWidth: 260, marginBottom: 16 }}>
+        <label>Fair cycle</label>
+        <select value={selectedFairId} onChange={(e) => setSelectedFairId(e.target.value ? Number(e.target.value) : '')}>
+          <option value="">No cycle selected</option>
+          {fairs.map((f) => (
+            <option key={f.id} value={f.id}>{fmtDate(f.fair_date)}{f.is_active ? ' — active' : ''}</option>
+          ))}
+        </select>
+      </div>
+
+      {!selectedFairId && (
+        <p className="save-note" style={{ textAlign: 'left', marginBottom: 20 }}>
+          No fair cycle selected — start one from Settings → Fair, or pick a past cycle above to view its roster.
+        </p>
+      )}
+
+      {!!selectedFairId && (
+        <>
+          <div className="table-wrap" style={{ marginBottom: 16 }}>
+            <table className="data-table">
+              <thead>
+                <tr><th>Name</th><th>Floor</th><th>Seats / Interview</th><th>Desk</th>{isActiveFairSelected && <th></th>}</tr>
+              </thead>
+              <tbody>
+                {roster && roster.map((r) => (
+                  <tr key={r.company_id}>
+                    <td>{r.company_name}</td>
+                    <td className="mono">{r.floor_number ?? '—'}</td>
+                    <td className="mono">{r.seats ?? '—'} / {r.interview_minutes ?? '—'}m</td>
+                    <td>
+                      {isActiveFairSelected ? (
+                        <button
+                          className={`checkin-status ${r.is_open ? 'in' : 'out'}`}
+                          style={{ cursor: 'pointer', marginTop: 0 }}
+                          disabled={rosterBusy}
+                          onClick={() => toggleRosterOpen(r)}
+                          title="Toggle whether candidates can see and register for this company"
+                        >
+                          {r.is_open ? 'Open' : 'Closed'}
+                        </button>
+                      ) : (
+                        <span className={`checkin-status ${r.is_open ? 'in' : 'out'}`}>{r.is_open ? 'Open' : 'Closed'}</span>
+                      )}
+                    </td>
+                    {isActiveFairSelected && (
+                      <td>
+                        <button
+                          className="btn ghost"
+                          style={{ width: 'auto', padding: '8px 12px', color: 'var(--st-rejected)' }}
+                          disabled={rosterBusy}
+                          onClick={() => removeFromRoster(r)}
+                        >
+                          Remove
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+                {roster && !roster.length && (
+                  <tr><td colSpan={isActiveFairSelected ? 5 : 4} className="save-note">No companies on this cycle's roster yet.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {isActiveFairSelected && (
+            <>
+              <div className="sec-label" style={{ marginBottom: 8 }}>Add an existing company to today's roster</div>
+              <form onSubmit={addToRoster} style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'end', marginBottom: 24 }}>
+                <div className="field" style={{ maxWidth: 220 }}>
+                  <label>Company</label>
+                  <select value={addCompanyId} onChange={(e) => setAddCompanyId(e.target.value)} required>
+                    <option value="" disabled>Select a company…</option>
+                    {availableToAdd.map((c) => <option key={c.id} value={c.id}>{c.company_name}</option>)}
+                  </select>
+                </div>
+                <div className="field" style={{ maxWidth: 90 }}>
+                  <label>Seats</label>
+                  <input type="number" value={rosterAddForm.seats} onChange={(e) => setRosterAddForm({ ...rosterAddForm, seats: e.target.value })} placeholder="1" />
+                </div>
+                <div className="field" style={{ maxWidth: 110 }}>
+                  <label>Interview min</label>
+                  <input type="number" value={rosterAddForm.interview_minutes} onChange={(e) => setRosterAddForm({ ...rosterAddForm, interview_minutes: e.target.value })} placeholder="6" />
+                </div>
+                <div className="field" style={{ maxWidth: 100 }}>
+                  <label>Floor number</label>
+                  <input type="number" min="0" value={rosterAddForm.floor_number} onChange={(e) => setRosterAddForm({ ...rosterAddForm, floor_number: e.target.value })} placeholder="0" />
+                </div>
+                <button className="btn" style={{ width: 'auto', padding: '11px 18px' }} type="submit" disabled={rosterBusy || !availableToAdd.length}>
+                  {rosterBusy ? 'Adding…' : '+ Add to roster'}
+                </button>
+              </form>
+            </>
+          )}
+        </>
+      )}
+
+      <div className="sec-label" style={{ marginTop: 8, marginBottom: 10 }}>Directory — every company at this Center, any cycle</div>
       <div className="table-wrap scroll-5">
         <table className="data-table">
           <thead>
-            <tr><th>Name</th><th>Floor</th><th>Field</th><th>Qualification</th><th>Seats / Interview</th><th>Desk</th><th></th></tr>
+            <tr><th>Name</th><th>Field</th><th>Qualification</th><th></th></tr>
           </thead>
           <tbody>
-            {roster && roster.map((c) => (
+            {directory && directory.map((c) => (
               <Fragment key={c.id}>
                 <tr>
                   <td>{c.company_name}</td>
-                  <td className="mono">{c.floor_number ?? '—'}</td>
                   <td>{c.field || '—'}</td>
                   <td>{[c.min_qualification, c.max_qualification].filter(Boolean).join(' – ') || '—'}</td>
-                  <td className="mono">{c.seats ?? '—'} / {c.interview_minutes ?? '—'}m</td>
-                  <td>
-                    <button
-                      className={`checkin-status ${c.is_open ? 'in' : 'out'}`}
-                      style={{ cursor: 'pointer', marginTop: 0 }}
-                      disabled={togglingOpen === c.id}
-                      onClick={() => toggleOpen(c)}
-                      title="Toggle whether candidates can see and register for this company"
-                    >
-                      {c.is_open ? 'Open' : 'Closed'}
-                    </button>
-                  </td>
                   <td style={{ display: 'flex', gap: 6 }}>
                     <button className="btn ghost" style={{ width: 'auto', padding: '8px 12px' }} onClick={() => toggleExpand(c.id)}>
                       {expandedId === c.id ? 'Collapse' : 'Manage'}
@@ -295,7 +454,7 @@ export default function CompanyManagement() {
                 </tr>
                 {expandedId === c.id && (
                   <tr>
-                    <td colSpan={7}>
+                    <td colSpan={4}>
                       {!detail ? 'Loading…' : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 20, padding: '8px 0' }}>
                           <div>
@@ -313,10 +472,6 @@ export default function CompanyManagement() {
                                 <label>Location</label>
                                 <input value={editForm.location} onChange={(e) => setEditForm({ ...editForm, location: e.target.value })} placeholder="Hall A Desk 5" />
                               </div>
-                              <div className="field" style={{ maxWidth: 100 }}>
-                                <label>Floor number</label>
-                                <input type="number" min="0" value={editForm.floor_number} onChange={(e) => setEditForm({ ...editForm, floor_number: e.target.value })} placeholder="0" />
-                              </div>
                               <div className="field" style={{ maxWidth: 140 }}>
                                 <label>Field</label>
                                 <input value={editForm.field} onChange={(e) => setEditForm({ ...editForm, field: e.target.value })} placeholder="IT Services" />
@@ -332,14 +487,6 @@ export default function CompanyManagement() {
                               <div className="field" style={{ maxWidth: 120 }}>
                                 <label>Max qualification</label>
                                 <input value={editForm.max_qualification} onChange={(e) => setEditForm({ ...editForm, max_qualification: e.target.value })} />
-                              </div>
-                              <div className="field" style={{ maxWidth: 90 }}>
-                                <label>Seats</label>
-                                <input type="number" value={editForm.seats} onChange={(e) => setEditForm({ ...editForm, seats: e.target.value })} placeholder="1" />
-                              </div>
-                              <div className="field" style={{ maxWidth: 110 }}>
-                                <label>Interview min</label>
-                                <input type="number" value={editForm.interview_minutes} onChange={(e) => setEditForm({ ...editForm, interview_minutes: e.target.value })} placeholder="6" />
                               </div>
                               <button className="btn" style={{ width: 'auto', padding: '11px 18px' }} type="submit" disabled={savingEdit}>
                                 {savingEdit ? 'Saving…' : 'Save details'}
@@ -470,14 +617,14 @@ export default function CompanyManagement() {
                 )}
               </Fragment>
             ))}
-            {roster && !roster.length && (
-              <tr><td colSpan={7} className="save-note">No companies yet.</td></tr>
+            {directory && !directory.length && (
+              <tr><td colSpan={4} className="save-note">No companies yet.</td></tr>
             )}
           </tbody>
         </table>
       </div>
 
-      <div className="sec-label" style={{ marginTop: 24, marginBottom: 10 }}>Add company</div>
+      <div className="sec-label" style={{ marginTop: 24, marginBottom: 10 }}>Add company to directory</div>
       <form onSubmit={createCompany} style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'end' }}>
         <div className="field" style={{ maxWidth: 200 }}>
           <label>Name</label>
@@ -498,10 +645,6 @@ export default function CompanyManagement() {
           <label>Location</label>
           <input value={companyForm.location} onChange={(e) => setCompanyForm({ ...companyForm, location: e.target.value })} placeholder="Hall A Desk 5" />
         </div>
-        <div className="field" style={{ maxWidth: 100 }}>
-          <label>Floor number</label>
-          <input type="number" min="0" value={companyForm.floor_number} onChange={(e) => setCompanyForm({ ...companyForm, floor_number: e.target.value })} placeholder="0" />
-        </div>
         <div className="field" style={{ maxWidth: 140 }}>
           <label>Field</label>
           <input value={companyForm.field} onChange={(e) => setCompanyForm({ ...companyForm, field: e.target.value })} placeholder="IT Services" />
@@ -518,16 +661,8 @@ export default function CompanyManagement() {
           <label>Max qualification</label>
           <input value={companyForm.max_qualification} onChange={(e) => setCompanyForm({ ...companyForm, max_qualification: e.target.value })} />
         </div>
-        <div className="field" style={{ maxWidth: 90 }}>
-          <label>Seats</label>
-          <input type="number" value={companyForm.seats} onChange={(e) => setCompanyForm({ ...companyForm, seats: e.target.value })} placeholder="1" />
-        </div>
-        <div className="field" style={{ maxWidth: 110 }}>
-          <label>Interview min</label>
-          <input type="number" value={companyForm.interview_minutes} onChange={(e) => setCompanyForm({ ...companyForm, interview_minutes: e.target.value })} placeholder="6" />
-        </div>
         <button className="btn" style={{ width: 'auto', padding: '11px 18px' }} type="submit" disabled={creating}>
-          {creating ? 'Adding…' : '+ Add company'}
+          {creating ? 'Adding…' : '+ Add to directory'}
         </button>
       </form>
 

@@ -37,8 +37,17 @@ async function getOnHand(companyId) {
 // completeInterview() — the natural point where both drain rate (supply) and
 // on-hand (stock) have just moved.
 async function retunePingBuffer(companyId) {
+  // company_roster_plan.md: seats/interview_minutes now come from the roster
+  // row for whichever fair is currently active at this company's Center —
+  // live-only hot path, no historical/date dimension, so "active fair for
+  // this company's Center" is the right (and sufficient) resolution, same as
+  // lib/queueDispatcher.js's resolveSameFloor().
   const companyRes = await pool.query(
-    `SELECT seats, interview_minutes FROM companies WHERE id = $1`,
+    `SELECT r.seats, r.interview_minutes
+       FROM companies c
+       JOIN fair_settings fs ON fs.center_id = c.center_id AND fs.is_active = true
+       JOIN fair_company_roster r ON r.company_id = c.id AND r.fair_settings_id = fs.id
+      WHERE c.id = $1`,
     [companyId]
   );
   if (!companyRes.rows.length) return null;

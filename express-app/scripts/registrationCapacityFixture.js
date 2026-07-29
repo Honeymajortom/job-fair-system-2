@@ -10,6 +10,7 @@ const pool = require('../db');
 const redis = require('../lib/redisClient');
 const store = require('../lib/queueStore');
 const registerCandidate = require('../lib/registerCandidate');
+const { ensureRoster } = require('./testRosterHelper');
 
 let pass = 0, fail = 0;
 function check(label, ok, detail = '') {
@@ -26,16 +27,16 @@ async function main() {
   // hand-computing against the real default — keeps the math identical to
   // what registerCandidate() actually runs, just at a testable scale.
   const companyRes = await pool.query(
-    `INSERT INTO companies (company_name, location, seats, interview_minutes)
-     VALUES ('__test_cap_co', 'Test Hall', 1, 10)
-     ON CONFLICT (company_name) DO UPDATE SET seats = 1, interview_minutes = 10
+    `INSERT INTO companies (company_name, location)
+     VALUES ('__test_cap_co', 'Test Hall')
+     ON CONFLICT (center_id, company_name) DO UPDATE SET location = EXCLUDED.location
      RETURNING id`
   );
   const companyId = companyRes.rows[0].id;
   const sideCompanyRes = await pool.query(
-    `INSERT INTO companies (company_name, location, seats, interview_minutes)
-     VALUES ('__test_side_co', 'Test Hall', 5, 5)
-     ON CONFLICT (company_name) DO UPDATE SET seats = 5, interview_minutes = 5
+    `INSERT INTO companies (company_name, location)
+     VALUES ('__test_side_co', 'Test Hall')
+     ON CONFLICT (center_id, company_name) DO UPDATE SET location = EXCLUDED.location
      RETURNING id`
   );
   const sideCompanyId = sideCompanyRes.rows[0].id;
@@ -50,6 +51,11 @@ async function main() {
   const fairId = fairRes.rows[0].id;
   const originalHours = fairRes.rows[0].fair_hours;
   await pool.query(`UPDATE fair_settings SET fair_hours = 1 WHERE id = $1`, [fairId]); // capacity_j = 1*6*1=6, cap_sold=floor(0.9*6)=5
+  // company_roster_plan.md: seats/interview_minutes now come from a roster
+  // row against this exact active fair (registerCandidate() below resolves
+  // the same fairSettingsId internally).
+  await ensureRoster(fairId, companyId, { seats: 1, interview_minutes: 10, is_open: true });
+  await ensureRoster(fairId, sideCompanyId, { seats: 5, interview_minutes: 5, is_open: true });
 
   const created = [];
   try {
@@ -88,6 +94,7 @@ async function main() {
       await pool.query('DELETE FROM candidate_company_status WHERE candidate_id = ANY($1::int[])', [candIds]);
       await pool.query('DELETE FROM candidates WHERE id = ANY($1::int[])', [candIds]);
     }
+    await pool.query('DELETE FROM fair_company_roster WHERE company_id = ANY($1::int[])', [[companyId, sideCompanyId]]);
     await pool.query('DELETE FROM companies WHERE id = ANY($1::int[])', [[companyId, sideCompanyId]]);
     await redis.del('queue:' + companyId, 'queue:' + sideCompanyId, 'drain:' + companyId, 'drain:' + sideCompanyId);
     for (const cid of candIds) await redis.del('lock:' + cid);

@@ -51,13 +51,20 @@ router.get('/company-stats', asyncHandler(async (req, res) => {
   // soft-deleted — excluding them made these reports under-count anyone who'd
   // already left by the time the report was pulled. pending/at_desk describe
   // the moment, not history, so those keep excluding exited/deleted rows.
+  // company_roster_plan.md: this report groups per company across every
+  // cycle by default (no single fair_settings_id to key a roster join off,
+  // unlike master-report/candidate-summary's per-row candidates.fair_
+  // settings_id) — floor_number dropped from the output entirely rather than
+  // showing a potentially-stale/ambiguous value from whichever cycle happens
+  // to be active right now; it was display-only here, never used in any of
+  // this report's own funnel/capacity math.
   const result = await pool.query(
     `WITH ccs_scoped AS (
        SELECT ccs.*, cd.deleted_at AS cd_deleted_at FROM candidate_company_status ccs
        JOIN candidates cd ON cd.id = ccs.candidate_id
        WHERE ($2::date IS NULL OR cd.registered_at::date = $2::date)
      )
-     SELECT c.id, c.company_name, c.location, c.floor_number,
+     SELECT c.id, c.company_name, c.location,
             COUNT(ccs.id)::int AS assigned,
             COUNT(*) FILTER (WHERE ccs.status = 'Pending' AND ccs.deleted_at IS NULL AND ccs.cd_deleted_at IS NULL)::int AS pending,
             COUNT(*) FILTER (WHERE ccs.status = 'Dispatched' AND ccs.deleted_at IS NULL AND ccs.cd_deleted_at IS NULL)::int AS at_desk,
@@ -72,7 +79,7 @@ router.get('/company-stats', asyncHandler(async (req, res) => {
     [centerId || null, dateFilter]
   );
   if (req.query.format === 'csv') {
-    const headers = ['id', 'company_name', 'location', 'floor_number', 'assigned', 'pending', 'at_desk', 'completed', 'selected', 'no_shows'];
+    const headers = ['id', 'company_name', 'location', 'assigned', 'pending', 'at_desk', 'completed', 'selected', 'no_shows'];
     return res.type('text/csv').attachment('company-stats.csv').send(toCsv(result.rows, headers));
   }
   res.json(result.rows);

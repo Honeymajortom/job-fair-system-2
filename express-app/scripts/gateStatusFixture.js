@@ -7,6 +7,7 @@ const pool = require('../db');
 const redis = require('../lib/redisClient');
 const store = require('../lib/queueStore');
 const { computeGateStatus } = require('../lib/gateStatus');
+const { ensureActiveFair, ensureRoster, cleanupFair } = require('./testRosterHelper');
 
 let pass = 0, fail = 0;
 function check(label, ok, detail = '') {
@@ -14,15 +15,19 @@ function check(label, ok, detail = '') {
   else { fail++; console.log(`  FAIL ${label}${detail ? '  — ' + detail : ''}`); }
 }
 
-async function makeCompany(name) {
+// company_roster_plan.md: seats/interview_minutes now come from a roster
+// row, not the (now-legacy) companies columns — see testRosterHelper.js.
+async function makeCompany(name, fairId) {
   const r = await pool.query(
-    `INSERT INTO companies (company_name, location, seats, interview_minutes)
-     VALUES ($1, 'Test Hall', 1, 6)
-     ON CONFLICT (company_name) DO UPDATE SET seats = 1, interview_minutes = 6
+    `INSERT INTO companies (company_name, location)
+     VALUES ($1, 'Test Hall')
+     ON CONFLICT (center_id, company_name) DO UPDATE SET location = EXCLUDED.location
      RETURNING id`,
     [name]
   );
-  return r.rows[0].id;
+  const companyId = r.rows[0].id;
+  await ensureRoster(fairId, companyId);
+  return companyId;
 }
 
 async function makeCandidate(name, { checkedIn = true } = {}) {
@@ -46,7 +51,8 @@ async function book(candidateId, companyId, status, serial) {
 async function main() {
   console.log('=== Gate status fixture ===\n');
 
-  const companyId = await makeCompany('__test_gate_co');
+  const fair = await ensureActiveFair();
+  const companyId = await makeCompany('__test_gate_co', fair.fairId);
   const candidateIds = [];
 
   try {
@@ -107,8 +113,10 @@ async function main() {
   } finally {
     await pool.query('DELETE FROM candidate_company_status WHERE candidate_id = ANY($1::int[])', [candidateIds]);
     await pool.query('DELETE FROM candidates WHERE id = ANY($1::int[])', [candidateIds]);
+    await pool.query('DELETE FROM fair_company_roster WHERE company_id = $1', [companyId]);
     await pool.query('DELETE FROM companies WHERE id = $1', [companyId]);
     await redis.del(`queue:${companyId}`, `drain:${companyId}`, `pingbuf:${companyId}`);
+    await cleanupFair(fair);
   }
 
   console.log(`\n=== ${pass} passed, ${fail} failed ===`);

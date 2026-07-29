@@ -14,7 +14,7 @@ const MAX_COMPANIES = 3;
 // order can never deadlock waiting on each other's locks. Caller is
 // responsible for running this inside an open transaction (`client`) and
 // committing/rolling back around it.
-async function assignCompanies(client, { candidateId, company_ids, fairHours }) {
+async function assignCompanies(client, { candidateId, company_ids, fairHours, fairSettingsId }) {
   const assigned = [];
   const waitlisted = [];
 
@@ -27,12 +27,19 @@ async function assignCompanies(client, { candidateId, company_ids, fairHours }) 
     // Company lookup + booked-count merged into one round trip (was two
     // sequential queries) — cuts the time spent under this company's
     // advisory lock roughly in half per requested company.
+    // company_roster_plan.md: seats/interview_minutes now come from this
+    // specific cycle's roster row, not the company's own (now-legacy)
+    // columns — a company with no roster row for fairSettingsId isn't
+    // actually part of this cycle, so it's skipped exactly like "company not
+    // found" already was.
     const companyRes = await client.query(
-      `SELECT c.id, c.company_name, c.location, c.seats, c.interview_minutes,
+      `SELECT c.id, c.company_name, c.location, r.seats, r.interview_minutes,
               (SELECT COUNT(*)::int FROM candidate_company_status ccs
                 WHERE ccs.company_id = c.id AND ccs.status != 'Waitlisted' AND ccs.deleted_at IS NULL) AS booked
-       FROM companies c WHERE c.id = $1`,
-      [companyId]
+       FROM companies c
+       JOIN fair_company_roster r ON r.company_id = c.id AND r.fair_settings_id = $2
+       WHERE c.id = $1`,
+      [companyId, fairSettingsId]
     );
     if (!companyRes.rows.length) continue;
     const company = companyRes.rows[0];

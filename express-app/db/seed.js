@@ -74,49 +74,66 @@ async function seed() {
 
     // Fair settings for today, is_active = true so the soft-delete guard is live
     const fairExisting = await client.query('SELECT id FROM fair_settings WHERE fair_date = CURRENT_DATE');
+    let fairId;
     if (fairExisting.rows.length) {
-      console.log(`fair_settings for today already exists (id ${fairExisting.rows[0].id}), skipping.`);
+      fairId = fairExisting.rows[0].id;
+      console.log(`fair_settings for today already exists (id ${fairId}), skipping.`);
     } else {
       const fairRes = await client.query(
         `INSERT INTO fair_settings (fair_name, fair_date, is_active)
          VALUES ('SDC Job Fair (prototype)', CURRENT_DATE, true) RETURNING id, fair_date`
       );
-      console.log(`Seeded fair_settings for ${fairRes.rows[0].fair_date} (id ${fairRes.rows[0].id}).`);
+      fairId = fairRes.rows[0].id;
+      console.log(`Seeded fair_settings for ${fairRes.rows[0].fair_date} (id ${fairId}).`);
     }
 
     for (const c of COMPANIES) {
-      const existing = await client.query('SELECT id FROM companies WHERE company_name = $1', [c.company_name]);
-      let companyId;
+      const existing = await client.query('SELECT id, floor_number FROM companies WHERE company_name = $1', [c.company_name]);
+      let companyId, floorNumber;
       if (existing.rows.length) {
         companyId = existing.rows[0].id;
+        floorNumber = existing.rows[0].floor_number;
         console.log(`Company ${c.company_name} already exists (id ${companyId}), skipping slots/params re-insert.`);
-        continue;
+      } else {
+        const res = await client.query(
+          `INSERT INTO companies (company_name, description, location, field, job_type, min_qualification, max_qualification)
+           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+          [c.company_name, c.description, c.location, c.field, c.job_type, c.min_qualification, c.max_qualification]
+        );
+        companyId = res.rows[0].id;
+        floorNumber = c.floor_number;
+
+        // One multi-row INSERT per company instead of one round trip per param.
+        const paramValues = c.params.map((_, i) => `($1, $${i * 2 + 2}, $${i * 2 + 3})`).join(', ');
+        const paramArgs = c.params.flatMap((name, i) => [name, i]);
+        await client.query(
+          `INSERT INTO rating_parameters (company_id, parameter_name, display_order) VALUES ${paramValues}`,
+          [companyId, ...paramArgs]
+        );
+
+        // Same batching for the 10-slot grid — one INSERT instead of 10.
+        const slotTimes = buildSlotTimes();
+        const slotValues = slotTimes.map((_, i) => `($1, $${i + 2}, 15, 1)`).join(', ');
+        await client.query(
+          `INSERT INTO interview_slots (company_id, slot_start, duration_minutes, capacity) VALUES ${slotValues}`,
+          [companyId, ...slotTimes]
+        );
+
+        console.log(`Seeded ${c.company_name} (id ${companyId}) with ${c.params.length} rating params and 10 slots.`);
       }
 
-      const res = await client.query(
-        `INSERT INTO companies (company_name, description, location, floor_number, field, job_type, min_qualification, max_qualification)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-        [c.company_name, c.description, c.location, c.floor_number, c.field, c.job_type, c.min_qualification, c.max_qualification]
-      );
-      companyId = res.rows[0].id;
-
-      // One multi-row INSERT per company instead of one round trip per param.
-      const paramValues = c.params.map((_, i) => `($1, $${i * 2 + 2}, $${i * 2 + 3})`).join(', ');
-      const paramArgs = c.params.flatMap((name, i) => [name, i]);
+      // company_roster_plan.md: companies are a reusable directory now —
+      // every seed company gets a roster row for today's fair regardless of
+      // whether it was freshly created or already existed from a previous
+      // seed run. is_open stays false, matching the pre-roster column
+      // default: a fresh company (or a fresh cycle) still needs a manual
+      // open before candidates can see it.
       await client.query(
-        `INSERT INTO rating_parameters (company_id, parameter_name, display_order) VALUES ${paramValues}`,
-        [companyId, ...paramArgs]
+        `INSERT INTO fair_company_roster (fair_settings_id, company_id, seats, interview_minutes, floor_number, is_open)
+         VALUES ($1, $2, 1, 6, $3, false)
+         ON CONFLICT (fair_settings_id, company_id) DO NOTHING`,
+        [fairId, companyId, floorNumber]
       );
-
-      // Same batching for the 10-slot grid — one INSERT instead of 10.
-      const slotTimes = buildSlotTimes();
-      const slotValues = slotTimes.map((_, i) => `($1, $${i + 2}, 15, 1)`).join(', ');
-      await client.query(
-        `INSERT INTO interview_slots (company_id, slot_start, duration_minutes, capacity) VALUES ${slotValues}`,
-        [companyId, ...slotTimes]
-      );
-
-      console.log(`Seeded ${c.company_name} (id ${companyId}) with ${c.params.length} rating params and 10 slots.`);
     }
 
     await client.query('COMMIT');

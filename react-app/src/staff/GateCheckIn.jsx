@@ -343,11 +343,11 @@ export default function GateCheckIn() {
                 visual state change, not just a text swap. */}
             {!scanning ? (
               <button className="btn ghost" style={{ minHeight: 48 }} type="button" onClick={startCamera}>
-                📷 Start camera
+                Start camera
               </button>
             ) : (
               <button className="btn" style={{ minHeight: 48 }} type="button" onClick={stopCamera}>
-                📷 Stop camera
+                Stop camera
               </button>
             )}
           </div>

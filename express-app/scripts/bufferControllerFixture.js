@@ -14,6 +14,7 @@ const store = require('../lib/queueStore');
 const { getTravelBuffer } = require('../lib/travelBuffer');
 const { retunePingBuffer, MIN_BETA, MAX_BETA } = require('../lib/bufferController');
 const { resolveRung, DEFAULT_BETA } = require('../lib/pingLadder');
+const { ensureActiveFair, ensureRoster, cleanupFair } = require('./testRosterHelper');
 
 let pass = 0, fail = 0;
 function check(label, ok, detail = '') {
@@ -42,12 +43,16 @@ async function seedCheckedInPending(companyId, n) {
 
 async function main() {
   const companyRes = await pool.query(
-    `INSERT INTO companies (company_name, location, seats, interview_minutes)
-     VALUES ('__test_bufctl_co', 'Test Hall', 2, 6)
-     ON CONFLICT (company_name) DO UPDATE SET seats = 2, interview_minutes = 6
+    `INSERT INTO companies (company_name, location)
+     VALUES ('__test_bufctl_co', 'Test Hall')
+     ON CONFLICT (center_id, company_name) DO UPDATE SET location = EXCLUDED.location
      RETURNING id`
   );
   const companyId = companyRes.rows[0].id;
+  // company_roster_plan.md: seats/interview_minutes now come from a roster
+  // row, not the (now-legacy) companies columns — see testRosterHelper.js.
+  const fair = await ensureActiveFair();
+  await ensureRoster(fair.fairId, companyId, { seats: 2, interview_minutes: 6 });
   let seededIds = [];
 
   try {
@@ -118,8 +123,13 @@ async function main() {
   } finally {
     await pool.query('DELETE FROM candidate_company_status WHERE candidate_id = ANY($1::int[])', [seededIds]);
     await pool.query('DELETE FROM candidates WHERE id = ANY($1::int[])', [seededIds]);
+    // Roster row deleted explicitly first — company_id is ON DELETE RESTRICT
+    // there, so the companies delete below would otherwise fail whenever the
+    // fair above was reused rather than created (cleanupFair() a no-op then).
+    await pool.query('DELETE FROM fair_company_roster WHERE company_id = $1', [companyId]);
     await pool.query('DELETE FROM companies WHERE id = $1', [companyId]);
     await redis.del(`queue:${companyId}`, `drain:${companyId}`, `pingbuf:${companyId}`);
+    await cleanupFair(fair);
   }
 
   console.log(`\n=== ${pass} passed, ${fail} failed ===`);

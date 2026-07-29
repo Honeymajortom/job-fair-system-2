@@ -19,20 +19,37 @@ const { retunePingBuffer } = require('./bufferController');
 // yet (first dispatch of the day) or a company with no floor_number set both
 // default to same-floor: there's no signal to say otherwise, and same-floor
 // is the shorter, safer default — matches the timer's pre-floor-tracking behavior.
+// company_roster_plan.md: floor_number now comes from the roster row for
+// whichever fair is currently active at that company's Center, not the
+// company's own (now-legacy) column — this and retunePingBuffer() below are
+// both live-only hot paths with no historical/date dimension, so "active
+// fair for this company's Center" is sufficient (no roster row -> unknown
+// floor, same as the old null-floor_number case).
+async function resolveCompanyFloor(companyId) {
+  const res = await pool.query(
+    `SELECT r.floor_number
+       FROM companies c
+       JOIN fair_settings fs ON fs.center_id = c.center_id AND fs.is_active = true
+       JOIN fair_company_roster r ON r.company_id = c.id AND r.fair_settings_id = fs.id
+      WHERE c.id = $1`,
+    [companyId]
+  );
+  return res.rows[0]?.floor_number ?? null;
+}
+
 async function resolveSameFloor(candidateId, companyId) {
-  const targetRes = await pool.query('SELECT floor_number FROM companies WHERE id = $1', [companyId]);
-  const targetFloor = targetRes.rows[0]?.floor_number;
+  const targetFloor = await resolveCompanyFloor(companyId);
   if (targetFloor == null) return true;
 
   const lastRes = await pool.query(
-    `SELECT c.floor_number
+    `SELECT ccs.company_id
        FROM candidate_company_status ccs
-       JOIN companies c ON c.id = ccs.company_id
       WHERE ccs.candidate_id = $1 AND ccs.processed_at IS NOT NULL AND ccs.deleted_at IS NULL
       ORDER BY ccs.processed_at DESC LIMIT 1`,
     [candidateId]
   );
-  const lastFloor = lastRes.rows[0]?.floor_number;
+  if (!lastRes.rows.length) return true;
+  const lastFloor = await resolveCompanyFloor(lastRes.rows[0].company_id);
   return lastFloor == null || lastFloor === targetFloor;
 }
 

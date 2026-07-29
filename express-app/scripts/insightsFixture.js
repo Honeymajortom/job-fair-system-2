@@ -14,11 +14,15 @@ function check(label, ok, detail = '') {
   else { fail++; console.log(`  FAIL ${label}${detail ? '  — ' + detail : ''}`); }
 }
 
+// lib/insights.js never reads seats/interview_minutes/floor_number, so no
+// fair_company_roster row is needed here (unlike the dispatch/buffer/gate
+// fixtures) — just the ON CONFLICT target update for the rescoped
+// company_roster_plan.md uniqueness constraint.
 async function makeCompany(name) {
   const r = await pool.query(
-    `INSERT INTO companies (company_name, location, seats, interview_minutes)
-     VALUES ($1, 'Test Hall', 1, 6)
-     ON CONFLICT (company_name) DO UPDATE SET location = EXCLUDED.location
+    `INSERT INTO companies (company_name, location)
+     VALUES ($1, 'Test Hall')
+     ON CONFLICT (center_id, company_name) DO UPDATE SET location = EXCLUDED.location
      RETURNING id`,
     [name]
   );

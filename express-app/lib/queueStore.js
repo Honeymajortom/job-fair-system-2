@@ -107,6 +107,14 @@ async function setPingBuffer(companyId, minutes) {
   await redis.set(pingBufferKey(companyId), minutes);
 }
 
+// company_roster_plan.md: a company (re-)added to a fair cycle's roster must
+// start from fresh drain-rate/ping-buffer defaults — a carried-over tuned
+// value from a previous cycle would silently misdrive ETA/dispatch math
+// until enough interviews retuned it back.
+async function clearTunedState(companyId) {
+  await redis.del(drainKey(companyId), pingBufferKey(companyId));
+}
+
 // A desk that scanned the queue and found nobody eligible sits here, idle,
 // until either its own company's queue gains an eligible candidate (next
 // dispatch() call for this company will pop it) or a candidate finishing
@@ -127,6 +135,6 @@ module.exports = {
   enqueue, remove, recordMiss, topCandidates, queueSize, getPosition,
   acquireLock, releaseLock, isLocked, getLockDesk,
   updateDrainRate, getDrainRate,
-  getPingBuffer, setPingBuffer,
+  getPingBuffer, setPingBuffer, clearTunedState,
   markDeskWaiting, popWaitingDesk, clearDeskWaiting,
 };

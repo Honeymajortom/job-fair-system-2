@@ -15,10 +15,12 @@ function check(label, ok, detail = '') {
   else { fail++; console.log(`  FAIL ${label}${detail ? '  — ' + detail : ''}`); }
 }
 
+// No fair_company_roster row needed — reconcileQueues() only ever reads
+// candidate_company_status, never seats/interview_minutes/floor_number.
 async function makeCompany(name) {
   const r = await pool.query(
     `INSERT INTO companies (company_name, location) VALUES ($1, 'Test Hall')
-     ON CONFLICT (company_name) DO UPDATE SET location = EXCLUDED.location
+     ON CONFLICT (center_id, company_name) DO UPDATE SET location = EXCLUDED.location
      RETURNING id`,
     [name]
   );

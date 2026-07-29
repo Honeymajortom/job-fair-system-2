@@ -113,9 +113,10 @@ router.post('/candidates/:id/companies', authenticateJWT, requireRole('admin', '
     return res.status(400).json({ error: 'Select at least one company' });
   }
 
-  const candRes = await pool.query('SELECT id FROM candidates WHERE id = $1 AND deleted_at IS NULL', [req.params.id]);
+  const candRes = await pool.query('SELECT id, fair_settings_id FROM candidates WHERE id = $1 AND deleted_at IS NULL', [req.params.id]);
   if (!candRes.rows.length) return res.status(404).json({ error: 'Candidate not found' });
   const candidateId = candRes.rows[0].id;
+  const fairSettingsId = candRes.rows[0].fair_settings_id;
 
   const currentRes = await pool.query(
     'SELECT COUNT(*)::int AS n FROM candidate_company_status WHERE candidate_id = $1 AND deleted_at IS NULL',
@@ -125,16 +126,21 @@ router.post('/candidates/:id/companies', authenticateJWT, requireRole('admin', '
     return res.status(400).json({ error: `A candidate can have at most ${MAX_COMPANIES} companies` });
   }
 
-  const fairRes = await pool.query(
-    `SELECT fair_hours FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1`
-  );
+  // company_roster_plan.md: read the candidate's own fair cycle instead of a
+  // fresh "whichever fair is active" lookup — arbitrary once 2+ Centers each
+  // have a live fair, and wrong outright for a candidate from an ended cycle
+  // (this route has no checked_in_at requirement, so staff can use it before
+  // or well after a candidate's own fair has wound down).
+  const fairRes = fairSettingsId
+    ? await pool.query('SELECT fair_hours FROM fair_settings WHERE id = $1', [fairSettingsId])
+    : { rows: [] };
   const fairHours = fairRes.rows.length ? Number(fairRes.rows[0].fair_hours) : 8;
 
   const client = await pool.connect();
   let assigned, waitlisted;
   try {
     await client.query('BEGIN');
-    ({ assigned, waitlisted } = await assignCompanies(client, { candidateId, company_ids: companyIds, fairHours }));
+    ({ assigned, waitlisted } = await assignCompanies(client, { candidateId, company_ids: companyIds, fairHours, fairSettingsId }));
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

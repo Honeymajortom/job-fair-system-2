@@ -9,6 +9,7 @@ const pool = require('../db');
 const redis = require('../lib/redisClient');
 const store = require('../lib/queueStore');
 const dispatcher = require('../lib/queueDispatcher');
+const { ensureActiveFair, ensureRoster, cleanupFair } = require('./testRosterHelper');
 
 let pass = 0, fail = 0;
 function check(label, ok, detail = '') {
@@ -16,14 +17,20 @@ function check(label, ok, detail = '') {
   else { fail++; console.log(`  FAIL ${label}${detail ? '  — ' + detail : ''}`); }
 }
 
-async function makeCompany(name) {
+// company_roster_plan.md: a company's operational fields now need a real
+// fair_company_roster row, not just the (now-legacy) companies columns —
+// see testRosterHelper.js. fair is shared across every company this fixture
+// creates (one active fair reused/created up front in main()).
+async function makeCompany(name, fairId) {
   const r = await pool.query(
     `INSERT INTO companies (company_name, location) VALUES ($1, 'Test Hall')
-     ON CONFLICT (company_name) DO UPDATE SET location = EXCLUDED.location
+     ON CONFLICT (center_id, company_name) DO UPDATE SET location = EXCLUDED.location
      RETURNING id`,
     [name]
   );
-  return r.rows[0].id;
+  const companyId = r.rows[0].id;
+  await ensureRoster(fairId, companyId);
+  return companyId;
 }
 
 async function makeCandidate(name, { checkedIn }) {
@@ -56,8 +63,9 @@ async function ccsStatus(ccsId) {
 async function main() {
   console.log('=== Phase 1 fixture: queue + lock dispatcher ===\n');
 
-  const companyA = await makeCompany('__test_TCS');
-  const companyB = await makeCompany('__test_Infosys');
+  const fair = await ensureActiveFair();
+  const companyA = await makeCompany('__test_TCS', fair.fairId);
+  const companyB = await makeCompany('__test_Infosys', fair.fairId);
 
   const c1 = await makeCandidate('__test Priya', { checkedIn: true });   // onsite, serial 1 at A
   const c2 = await makeCandidate('__test Rahul', { checkedIn: true });   // onsite, serial 2 at A
@@ -116,11 +124,16 @@ async function main() {
   // cleanup — leave no test rows behind
   await pool.query('DELETE FROM candidate_company_status WHERE candidate_id = ANY($1::int[])', [[c1.id, c2.id, c3.id]]);
   await pool.query('DELETE FROM candidates WHERE id = ANY($1::int[])', [[c1.id, c2.id, c3.id]]);
+  // Roster row deleted explicitly first — company_id is ON DELETE RESTRICT
+  // there, so the companies delete below would otherwise fail whenever
+  // cleanupFair() below is a no-op (fair reused, not created by this run).
+  await pool.query('DELETE FROM fair_company_roster WHERE company_id = ANY($1::int[])', [[companyA, companyB]]);
   await pool.query('DELETE FROM companies WHERE id = ANY($1::int[])', [[companyA, companyB]]);
   for (const cid of [companyA, companyB]) {
     await redis.del('queue:' + cid, 'drain:' + cid, 'waiting_desks:' + cid);
   }
   for (const c of [c1, c2, c3]) await redis.del('lock:' + c.id);
+  await cleanupFair(fair);
 
   await pool.end();
   redis.disconnect();

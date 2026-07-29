@@ -18,6 +18,7 @@ const redis = require('../lib/redisClient');
 const store = require('../lib/queueStore');
 const dispatcher = require('../lib/queueDispatcher');
 const { computeFloorStats } = require('../lib/floorStats');
+const { ensureRoster } = require('./testRosterHelper');
 
 let pass = 0, fail = 0;
 function check(label, ok, detail = '') {
@@ -25,15 +26,20 @@ function check(label, ok, detail = '') {
   else { fail++; console.log(`  FAIL ${label}${detail ? '  — ' + detail : ''}`); }
 }
 
-async function makeCompany(name, { seats = 1, interviewMinutes = 6 } = {}) {
+// company_roster_plan.md: seats/interview_minutes now come from a roster row
+// against this fixture's own test fair (fairId, created below) rather than
+// the (now-legacy) companies columns.
+async function makeCompany(name, fairId, { seats = 1, interviewMinutes = 6 } = {}) {
   const r = await pool.query(
-    `INSERT INTO companies (company_name, location, seats, interview_minutes)
-     VALUES ($1, 'Test Hall', $2, $3)
-     ON CONFLICT (company_name) DO UPDATE SET seats = EXCLUDED.seats, interview_minutes = EXCLUDED.interview_minutes
+    `INSERT INTO companies (company_name, location)
+     VALUES ($1, 'Test Hall')
+     ON CONFLICT (center_id, company_name) DO UPDATE SET location = EXCLUDED.location
      RETURNING id`,
-    [name, seats, interviewMinutes]
+    [name]
   );
-  return r.rows[0].id;
+  const companyId = r.rows[0].id;
+  await ensureRoster(fairId, companyId, { seats, interview_minutes: interviewMinutes });
+  return companyId;
 }
 
 async function makeCandidate(name, { checkedIn = true } = {}) {
@@ -79,8 +85,8 @@ async function main() {
   // under the starvation threshold -> should NOT alert.
   // Company B: never completes an interview (falls back to seats/interview_
   // minutes), heavily overbooked -> SHOULD alert.
-  const companyA = await makeCompany('__test_floor_A', { seats: 1, interviewMinutes: 6 });
-  const companyB = await makeCompany('__test_floor_B', { seats: 1, interviewMinutes: 6 });
+  const companyA = await makeCompany('__test_floor_A', fairSettingsId, { seats: 1, interviewMinutes: 6 });
+  const companyB = await makeCompany('__test_floor_B', fairSettingsId, { seats: 1, interviewMinutes: 6 });
   const candidateIds = [];
 
   try {
@@ -146,6 +152,10 @@ async function main() {
   } finally {
     await pool.query('DELETE FROM candidate_company_status WHERE candidate_id = ANY($1::int[])', [candidateIds]);
     await pool.query('DELETE FROM candidates WHERE id = ANY($1::int[])', [candidateIds]);
+    // Roster rows deleted explicitly first — company_id is ON DELETE RESTRICT
+    // there, and the fair_settings delete below (which would otherwise
+    // cascade them away) hasn't run yet at this point.
+    await pool.query('DELETE FROM fair_company_roster WHERE company_id = ANY($1::int[])', [[companyA, companyB]]);
     await pool.query('DELETE FROM companies WHERE id = ANY($1::int[])', [[companyA, companyB]]);
     await pool.query('DELETE FROM fair_batches WHERE id = $1', [fairBatchId]);
     await pool.query('DELETE FROM fair_settings WHERE id = $1', [fairSettingsId]);

@@ -27,12 +27,21 @@ const DEFAULT_RATING_PARAMETERS = [
 // belongs to exactly one center permanently, so this also naturally narrows
 // the Desk tab's company picker for floor_manager/registration_staff/
 // volunteer, and still includes company_hr's own company either way).
+// company_roster_plan.md: seats/interview_minutes/floor_number/is_open now
+// come from the roster row for a specific fair cycle, not the company's
+// (now-legacy) own columns — an optional ?fair_settings_id= picks a specific
+// cycle (Phase 3's roster UI, or a historical look-back), defaulting to
+// "whichever fair is active for this company's own Center" otherwise. A
+// company with no roster row for the resolved fair (not part of that cycle)
+// reports null for those four fields — a real, distinct state from "1 seat."
 router.get('/companies', authenticateJWT, asyncHandler(async (req, res) => {
   const centerId = resolveCenterFilter(req);
+  const fairSettingsId = req.query.fair_settings_id ? Number(req.query.fair_settings_id) : null;
   const result = await pool.query(`
     SELECT
-      c.id, c.company_name, c.description, c.location, c.floor_number, c.is_open, c.field, c.job_type,
+      c.id, c.company_name, c.description, c.location, c.field, c.job_type,
       c.min_qualification, c.max_qualification, c.max_queue_limit, c.center_id,
+      r.seats, r.interview_minutes, r.floor_number, r.is_open, r.fair_settings_id AS roster_fair_settings_id,
       COUNT(s.id) FILTER (WHERE s.id IS NOT NULL) AS total_slots,
       COUNT(s.id) FILTER (
         WHERE s.id IS NOT NULL
@@ -40,16 +49,29 @@ router.get('/companies', authenticateJWT, asyncHandler(async (req, res) => {
                WHERE ccs.slot_id = s.id AND ccs.deleted_at IS NULL) < s.capacity
       ) AS open_slots
     FROM companies c
+    LEFT JOIN fair_settings fs ON fs.center_id = c.center_id
+      AND (($2::int IS NULL AND fs.is_active = true) OR fs.id = $2::int)
+    LEFT JOIN fair_company_roster r ON r.company_id = c.id AND r.fair_settings_id = fs.id
     LEFT JOIN interview_slots s ON s.company_id = c.id
     WHERE ($1::int IS NULL OR c.center_id = $1)
-    GROUP BY c.id
+    GROUP BY c.id, r.seats, r.interview_minutes, r.floor_number, r.is_open, r.fair_settings_id
     ORDER BY c.company_name
-  `, [centerId || null]);
+  `, [centerId || null, fairSettingsId]);
   res.json(result.rows);
 }));
 
 router.get('/companies/:id', authenticateJWT, asyncHandler(async (req, res) => {
-  const companyRes = await pool.query('SELECT * FROM companies WHERE id = $1', [req.params.id]);
+  const fairSettingsId = req.query.fair_settings_id ? Number(req.query.fair_settings_id) : null;
+  const companyRes = await pool.query(`
+    SELECT c.id, c.company_name, c.description, c.location, c.field, c.job_type,
+           c.min_qualification, c.max_qualification, c.max_queue_limit, c.center_id, c.created_at,
+           r.seats, r.interview_minutes, r.floor_number, r.is_open, r.fair_settings_id AS roster_fair_settings_id
+    FROM companies c
+    LEFT JOIN fair_settings fs ON fs.center_id = c.center_id
+      AND (($2::int IS NULL AND fs.is_active = true) OR fs.id = $2::int)
+    LEFT JOIN fair_company_roster r ON r.company_id = c.id AND r.fair_settings_id = fs.id
+    WHERE c.id = $1
+  `, [req.params.id, fairSettingsId]);
   if (!companyRes.rows.length) return res.status(404).json({ error: 'Company not found' });
 
   const paramsRes = await pool.query(
@@ -94,15 +116,17 @@ router.post('/companies', authenticateJWT, requireRole('admin'), asyncHandler(as
     return res.status(400).json({ error: 'floor_number must be a non-negative integer' });
   }
 
+  const client = await pool.connect();
   try {
+    await client.query('BEGIN');
     // center_id defaults to the sole seeded Center — fair_cycle_isolation_
     // plan.md Phase 0 (a company is tied to exactly one Center permanently).
     // Optional body param accepted now for forward-compat with Phase 4's
     // real picker; nothing sends it yet.
-    const result = await pool.query(
-      `INSERT INTO companies (company_name, description, location, floor_number, field, job_type, min_qualification, max_qualification, max_queue_limit, seats, interview_minutes, center_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8, COALESCE($9, 7), COALESCE($10, 1), COALESCE($11, 6), COALESCE($12, (SELECT id FROM centers ORDER BY id LIMIT 1))) RETURNING *`,
-      [company_name, description || null, location || null, floor_number != null ? floor_number : null, field || null, job_type || null, min_qualification || null, max_qualification || null, max_queue_limit || null, seats || null, interview_minutes || null, center_id || null]
+    const result = await client.query(
+      `INSERT INTO companies (company_name, description, location, field, job_type, min_qualification, max_qualification, max_queue_limit, center_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7, COALESCE($8, 7), COALESCE($9, (SELECT id FROM centers ORDER BY id LIMIT 1))) RETURNING *`,
+      [company_name, description || null, location || null, field || null, job_type || null, min_qualification || null, max_qualification || null, max_queue_limit || null, center_id || null]
     );
     const company = result.rows[0];
 
@@ -110,36 +134,54 @@ router.post('/companies', authenticateJWT, requireRole('admin'), asyncHandler(as
     // PARAMETERS list, just written in a single statement.
     const values = DEFAULT_RATING_PARAMETERS.map((_, i) => `($1, $${i * 2 + 2}, $${i * 2 + 3})`).join(', ');
     const params = DEFAULT_RATING_PARAMETERS.flatMap((name, i) => [name, i]);
-    await pool.query(
+    await client.query(
       `INSERT INTO rating_parameters (company_id, parameter_name, display_order) VALUES ${values}`,
       [company.id, ...params]
     );
 
+    // company_roster_plan.md: seats/interview_minutes/floor_number still
+    // accepted as optional convenience params on create — if this Center has
+    // an active fair right now, this inserts the company's first roster row
+    // in the same transaction, so first-time entry stays a single form
+    // submit instead of a separate "now add it to today's roster" step.
+    // is_open stays false regardless (a brand-new company always needs an
+    // explicit open, same default the legacy column always had).
+    const fairRes = await client.query('SELECT id FROM fair_settings WHERE center_id = $1 AND is_active = true', [company.center_id]);
+    if (fairRes.rows.length) {
+      await client.query(
+        `INSERT INTO fair_company_roster (fair_settings_id, company_id, seats, interview_minutes, floor_number, is_open)
+         VALUES ($1, $2, COALESCE($3, 1), COALESCE($4, 6), $5, false)`,
+        [fairRes.rows[0].id, company.id, seats || null, interview_minutes || null, floor_number != null ? floor_number : null]
+      );
+    }
+
+    await client.query('COMMIT');
     res.status(201).json(company);
   } catch (err) {
-    if (err.code === '23505') return res.status(409).json({ error: 'A company with that name already exists' });
+    await client.query('ROLLBACK');
+    if (err.code === '23505') return res.status(409).json({ error: 'A company with that name already exists at this center' });
     if (err.code === '23514' && err.constraint === 'companies_floor_number_nonnegative') {
       return res.status(400).json({ error: 'floor_number must be a non-negative integer' });
     }
     if (err.code === '23514') return res.status(400).json({ error: 'interview_minutes must be a positive integer' });
     throw err;
+  } finally {
+    client.release();
   }
 }));
 
 // Admin: edit a company's own fields — the create form (POST /companies)
 // was the only way to set these; nothing let you fix a typo'd location or
 // add a floor number after the fact. Same partial-update (COALESCE) shape
-// as the postings PUT below, and the same interview_minutes/floor_number
-// validation as POST /companies, since this can change either one too.
+// as the postings PUT below. company_roster_plan.md: this is now directory-
+// fields-only — seats/interview_minutes/floor_number/is_open moved to the
+// per-cycle roster (PUT/POST /fair-settings/:id/roster[/:companyId] in
+// routes/fair.js); a request that still sends those four is silently
+// ignored rather than erroring, since the Companies tab's edit form hasn't
+// been split yet (company_roster_plan.md's deferred UI phase) and shouldn't
+// break in the meantime.
 router.put('/companies/:id', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
-  const { company_name, description, location, floor_number, field, job_type, min_qualification, max_qualification, max_queue_limit, seats, interview_minutes, is_open } = req.body;
-
-  if (interview_minutes != null && !(Number.isInteger(interview_minutes) && interview_minutes > 0)) {
-    return res.status(400).json({ error: 'interview_minutes must be a positive integer' });
-  }
-  if (floor_number != null && !(Number.isInteger(floor_number) && floor_number >= 0)) {
-    return res.status(400).json({ error: 'floor_number must be a non-negative integer' });
-  }
+  const { company_name, description, location, field, job_type, min_qualification, max_qualification, max_queue_limit } = req.body;
 
   try {
     const result = await pool.query(
@@ -147,30 +189,21 @@ router.put('/companies/:id', authenticateJWT, requireRole('admin'), asyncHandler
          company_name = COALESCE($1, company_name),
          description = COALESCE($2, description),
          location = COALESCE($3, location),
-         floor_number = COALESCE($4, floor_number),
-         field = COALESCE($5, field),
-         job_type = COALESCE($6, job_type),
-         min_qualification = COALESCE($7, min_qualification),
-         max_qualification = COALESCE($8, max_qualification),
-         max_queue_limit = COALESCE($9, max_queue_limit),
-         seats = COALESCE($10, seats),
-         interview_minutes = COALESCE($11, interview_minutes),
-         is_open = COALESCE($12, is_open)
-       WHERE id = $13
+         field = COALESCE($4, field),
+         job_type = COALESCE($5, job_type),
+         min_qualification = COALESCE($6, min_qualification),
+         max_qualification = COALESCE($7, max_qualification),
+         max_queue_limit = COALESCE($8, max_queue_limit)
+       WHERE id = $9
        RETURNING *`,
-      [company_name || null, description || null, location || null, floor_number != null ? floor_number : null,
+      [company_name || null, description || null, location || null,
        field || null, job_type || null, min_qualification || null, max_qualification || null,
-       max_queue_limit || null, seats || null, interview_minutes || null,
-       typeof is_open === 'boolean' ? is_open : null, req.params.id]
+       max_queue_limit || null, req.params.id]
     );
     if (!result.rows.length) return res.status(404).json({ error: 'Company not found' });
     res.json(result.rows[0]);
   } catch (err) {
-    if (err.code === '23505') return res.status(409).json({ error: 'A company with that name already exists' });
-    if (err.code === '23514' && err.constraint === 'companies_floor_number_nonnegative') {
-      return res.status(400).json({ error: 'floor_number must be a non-negative integer' });
-    }
-    if (err.code === '23514') return res.status(400).json({ error: 'interview_minutes must be a positive integer' });
+    if (err.code === '23505') return res.status(409).json({ error: 'A company with that name already exists at this center' });
     throw err;
   }
 }));
@@ -179,12 +212,22 @@ router.put('/companies/:id', authenticateJWT, requireRole('admin'), asyncHandler
 // running today" toggle — the thing candidates' GET /qr/companies checks.
 // Separate from the general edit above so company_hr, who can't touch any
 // other company field, can still flip their own without an admin in the loop.
+// company_roster_plan.md: is_open now lives on the active fair's roster row,
+// not the company itself — 404s clearly (instead of silently no-op-ing) if
+// this company has no roster row for the Center's currently active fair.
 router.put('/companies/:id/open-status', authenticateJWT, requireRole('admin', 'company_hr'), requireCompanyScope((req) => req.params.id), asyncHandler(async (req, res) => {
   const { is_open } = req.body;
   if (typeof is_open !== 'boolean') return res.status(400).json({ error: 'is_open must be a boolean' });
 
-  const result = await pool.query('UPDATE companies SET is_open = $1 WHERE id = $2 RETURNING id, company_name, is_open', [is_open, req.params.id]);
-  if (!result.rows.length) return res.status(404).json({ error: 'Company not found' });
+  const result = await pool.query(
+    `UPDATE fair_company_roster r SET is_open = $1
+     FROM fair_settings fs
+     WHERE r.fair_settings_id = fs.id AND r.company_id = $2
+       AND fs.center_id = (SELECT center_id FROM companies WHERE id = $2) AND fs.is_active = true
+     RETURNING r.company_id AS id, (SELECT company_name FROM companies WHERE id = $2) AS company_name, r.is_open`,
+    [is_open, req.params.id]
+  );
+  if (!result.rows.length) return res.status(404).json({ error: 'This company is not on the current fair\'s roster' });
   res.json(result.rows[0]);
 }));
 

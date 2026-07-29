@@ -172,7 +172,7 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
     // does pick.
     const fairHours = fair ? Number(fair.fair_hours) : 8;
     if (companyIds.length) {
-      const result = await assignCompanies(client, { candidateId, company_ids: companyIds, fairHours });
+      const result = await assignCompanies(client, { candidateId, company_ids: companyIds, fairHours, fairSettingsId: activeFairId });
       assigned.push(...result.assigned);
       waitlisted.push(...result.waitlisted);
     }

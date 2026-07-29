@@ -192,34 +192,43 @@ router.get('/qr/companies', readIpLimit, ensureDeviceCookie, redisCache(60), asy
   // behavior rather than an empty list, since this is a read-only, low-
   // sensitivity endpoint and a single-Center deployment has no wrong answer
   // to scope against anyway.
+  // company_roster_plan.md (item 4): a candidate should only ever be offered
+  // companies actually on their own fair cycle's roster, not the full
+  // historical per-Center directory — this is the roster-aware sequel to the
+  // Center-scoping fix below (found the same session a stale Center-1
+  // company was bleeding into Center 2's live fair; this closes the same
+  // class of leak across fair *cycles* at the same Center, not just Centers).
   let centerId = null;
+  let fairSettingsId = null;
   if (req.query.qr) {
     const tokenNo = verifyQr(String(req.query.qr));
     if (tokenNo) {
       const centerRes = await pool.query(
-        `SELECT fs.center_id FROM candidates cd
+        `SELECT fs.center_id, cd.fair_settings_id FROM candidates cd
           JOIN fair_settings fs ON fs.id = cd.fair_settings_id
          WHERE cd.token_no = $1 AND cd.deleted_at IS NULL`,
         [tokenNo]
       );
       centerId = centerRes.rows[0]?.center_id ?? null;
+      fairSettingsId = centerRes.rows[0]?.fair_settings_id ?? null;
     }
   }
 
   const result = await pool.query(
-    `SELECT c.id, c.company_name, c.description, c.location, c.floor_number, c.field, c.job_type,
+    `SELECT c.id, c.company_name, c.description, c.location, r.floor_number, c.field, c.job_type,
             c.min_qualification, c.max_qualification,
             COALESCE(SUM(GREATEST(s.capacity - t.taken, 0)), 0)::int AS open_slots
      FROM companies c
+     JOIN fair_company_roster r ON r.company_id = c.id AND ($2::int IS NULL OR r.fair_settings_id = $2)
      LEFT JOIN interview_slots s ON s.company_id = c.id AND s.slot_start >= now()
      LEFT JOIN LATERAL (
        SELECT COUNT(*)::int AS taken FROM candidate_company_status ccs
        WHERE ccs.slot_id = s.id AND ccs.deleted_at IS NULL
      ) t ON true
-     WHERE c.is_open = true AND ($1::int IS NULL OR c.center_id = $1)
-     GROUP BY c.id
+     WHERE r.is_open = true AND ($1::int IS NULL OR c.center_id = $1)
+     GROUP BY c.id, r.floor_number
      ORDER BY c.company_name`,
-    [centerId]
+    [centerId, fairSettingsId]
   );
   // Queue-system Phase 4: open_slots above is stale for the new capacity-gate
   // model (it only ever counted interview_slots rows) — left untouched per
@@ -388,7 +397,7 @@ router.post('/qr/select-companies/:qr', selectCompaniesLimit, asyncHandler(async
   if (!tokenNo) return res.status(401).json({ error: 'Invalid or forged link' });
 
   const candRes = await pool.query(
-    'SELECT id, checked_in_at FROM candidates WHERE token_no = $1 AND deleted_at IS NULL',
+    'SELECT id, checked_in_at, fair_settings_id FROM candidates WHERE token_no = $1 AND deleted_at IS NULL',
     [tokenNo]
   );
   if (!candRes.rows.length) return res.status(404).json({ error: 'Candidate not found' });
@@ -414,16 +423,19 @@ router.post('/qr/select-companies/:qr', selectCompaniesLimit, asyncHandler(async
     return res.status(400).json({ error: `Select at most ${MAX_COMPANIES} companies` });
   }
 
-  const fairRes = await pool.query(
-    `SELECT fair_hours FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1`
-  );
+  // company_roster_plan.md: read the candidate's own fair cycle (set at
+  // registration) instead of a fresh "whichever fair is active" lookup —
+  // arbitrary once 2+ Centers each have a live fair.
+  const fairRes = candidate.fair_settings_id
+    ? await pool.query('SELECT fair_hours FROM fair_settings WHERE id = $1', [candidate.fair_settings_id])
+    : { rows: [] };
   const fairHours = fairRes.rows.length ? Number(fairRes.rows[0].fair_hours) : 8;
 
   const client = await pool.connect();
   let assigned, waitlisted;
   try {
     await client.query('BEGIN');
-    ({ assigned, waitlisted } = await assignCompanies(client, { candidateId: candidate.id, company_ids: companyIds, fairHours }));
+    ({ assigned, waitlisted } = await assignCompanies(client, { candidateId: candidate.id, company_ids: companyIds, fairHours, fairSettingsId: candidate.fair_settings_id }));
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
@@ -551,7 +563,7 @@ router.post('/qr/recover', recoverMobile, recoverIp, asyncHandler(async (req, re
 // see readTokenLimit/scheduleIpLimit above.
 router.get('/qr/schedule/:token', readTokenLimit, scheduleIpLimit, redisCache(15), asyncHandler(async (req, res) => {
   const candRes = await pool.query(
-    `SELECT cd.id, cd.name, cd.token_no, cd.checked_in_at, cd.travel_time_minutes,
+    `SELECT cd.id, cd.name, cd.token_no, cd.checked_in_at, cd.travel_time_minutes, cd.fair_settings_id,
             b.batch_number, b.arrival_time, b.status AS batch_status
      FROM candidates cd
      LEFT JOIN fair_batches b ON b.id = cd.batch_id
@@ -561,15 +573,22 @@ router.get('/qr/schedule/:token', readTokenLimit, scheduleIpLimit, redisCache(15
   if (!candRes.rows.length) return res.status(404).json({ error: 'Schedule not found' });
   const cand = candRes.rows[0];
 
+  // company_roster_plan.md: seats/interview_minutes/floor_number/is_open now
+  // come from this candidate's own fair cycle's roster row, not the
+  // company's (now-legacy) columns — the candidate's own fair_settings_id
+  // (set at registration) is the right key here, not "whichever fair is
+  // active now": this page still has to render correctly for a candidate
+  // whose own fair has since ended (e.g. the post-fair exit-QR screen).
   const slotsRes = await pool.query(
-    `SELECT s.slot_start AS time, c.company_name AS company, c.location, c.floor_number, ccs.status,
-            ccs.company_id, ccs.serial, c.seats, c.interview_minutes, ccs.interview_started_at, c.is_open
+    `SELECT s.slot_start AS time, c.company_name AS company, c.location, r.floor_number, ccs.status,
+            ccs.company_id, ccs.serial, r.seats, r.interview_minutes, ccs.interview_started_at, r.is_open
      FROM candidate_company_status ccs
      JOIN companies c ON c.id = ccs.company_id
+     LEFT JOIN fair_company_roster r ON r.company_id = c.id AND r.fair_settings_id = $2
      LEFT JOIN interview_slots s ON s.id = ccs.slot_id
      WHERE ccs.candidate_id = $1 AND ccs.deleted_at IS NULL
      ORDER BY s.slot_start ASC NULLS LAST`,
-    [cand.id]
+    [cand.id, cand.fair_settings_id]
   );
 
   // Queue-system Phase 4: position/eta_minutes/rung only apply to serial-based

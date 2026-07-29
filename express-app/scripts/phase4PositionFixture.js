@@ -11,6 +11,7 @@ const redis = require('../lib/redisClient');
 const store = require('../lib/queueStore');
 const { resolveRung } = require('../lib/pingLadder');
 const registerCandidate = require('../lib/registerCandidate');
+const { ensureActiveFair, ensureRoster, cleanupFair } = require('./testRosterHelper');
 
 const API = 'http://localhost:3000';
 let pass = 0, fail = 0;
@@ -25,7 +26,7 @@ async function partA_position() {
   const companyRes = await pool.query(
     `INSERT INTO companies (company_name, location, seats, interview_minutes)
      VALUES ('__test_pos_co', 'Test Hall', 1, 6)
-     ON CONFLICT (company_name) DO UPDATE SET seats = 1, interview_minutes = 6
+     ON CONFLICT (center_id, company_name) DO UPDATE SET seats = 1, interview_minutes = 6
      RETURNING id`
   );
   const companyId = companyRes.rows[0].id;
@@ -58,7 +59,7 @@ async function partB_rungPrecedence() {
   const companyRes = await pool.query(
     `INSERT INTO companies (company_name, location, seats, interview_minutes)
      VALUES ('__test_rung_co', 'Test Hall', 1, 6)
-     ON CONFLICT (company_name) DO UPDATE SET seats = 1, interview_minutes = 6
+     ON CONFLICT (center_id, company_name) DO UPDATE SET seats = 1, interview_minutes = 6
      RETURNING id`
   );
   const companyId = companyRes.rows[0].id;
@@ -116,9 +117,9 @@ async function partC_httpSchedule() {
   // after this fixture was originally written (same class of staleness the
   // mobile-format fix above addresses).
   const companyRes = await pool.query(
-    `INSERT INTO companies (company_name, location, seats, interview_minutes, is_open)
-     VALUES ('__test_sched_co', 'Test Hall', 1, 10, true)
-     ON CONFLICT (company_name) DO UPDATE SET seats = 1, interview_minutes = 10, is_open = true
+    `INSERT INTO companies (company_name, location)
+     VALUES ('__test_sched_co', 'Test Hall')
+     ON CONFLICT (center_id, company_name) DO UPDATE SET location = EXCLUDED.location
      RETURNING id`
   );
   const companyId = companyRes.rows[0].id;
@@ -128,6 +129,10 @@ async function partC_httpSchedule() {
   const fairId = fairRes.rows[0].id;
   const originalHours = fairRes.rows[0].fair_hours;
   await pool.query(`UPDATE fair_settings SET fair_hours = 1 WHERE id = $1`, [fairId]); // capacity=1*6*1=6, cap_sold=floor(0.9*6)=5
+  // company_roster_plan.md: seats/interview_minutes/is_open now come from a
+  // roster row tied to this exact fair (registerCandidate() below resolves
+  // its own fairSettingsId from this same active-fair lookup).
+  await ensureRoster(fairId, companyId, { seats: 1, interview_minutes: 10, is_open: true });
 
   const created = [];
   try {
@@ -169,6 +174,7 @@ async function partC_httpSchedule() {
       await pool.query('DELETE FROM candidate_company_status WHERE candidate_id = ANY($1::int[])', [candIds]);
       await pool.query('DELETE FROM candidates WHERE id = ANY($1::int[])', [candIds]);
     }
+    await pool.query('DELETE FROM fair_company_roster WHERE company_id = $1', [companyId]);
     await pool.query('DELETE FROM companies WHERE id = $1', [companyId]);
     await redis.del(`queue:${companyId}`, `drain:${companyId}`);
     for (const cid of candIds) await redis.del(`lock:${cid}`);

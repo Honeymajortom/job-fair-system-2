@@ -526,3 +526,61 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_candidates_mobile
 -- ---------------------------------------------------------------------------
 ALTER TABLE candidate_company_status
   ADD COLUMN IF NOT EXISTS candidate_interested BOOLEAN;
+
+-- ---------------------------------------------------------------------------
+-- company_roster_plan.md — companies become a permanent, reusable per-Center
+-- directory (create once, name never collides again); each fair cycle
+-- explicitly opts a directory company in via its own roster row carrying
+-- that cycle's operational values (seats/interview_minutes/floor_number/
+-- is_open — the fields describing *today's* staffing, not the company's
+-- permanent identity). Root cause fixed: companies.company_name was never
+-- reset between fair cycles, unlike candidates (POST /fair-settings/:id/
+-- archive already purges those) — re-entering a company for a new cycle
+-- collided with the same-named row from a previous cycle that never went
+-- away.
+--
+-- companies.seats/interview_minutes/floor_number/is_open/max_queue_limit are
+-- deliberately left physically in place, unread by app code after this
+-- lands — a passive rollback safety net until a full live fair cycle has run
+-- on the roster path (see company_roster_plan.md's "Explicitly deferred").
+-- ---------------------------------------------------------------------------
+
+-- Rescope company_name uniqueness from global to per-Center — a company can
+-- now share a name with one at a different Center (previously impossible),
+-- and is no longer permanently burned at one Center once real archival/reuse
+-- happens.
+ALTER TABLE companies DROP CONSTRAINT IF EXISTS companies_company_name_key;
+ALTER TABLE companies DROP CONSTRAINT IF EXISTS companies_center_company_name_key;
+ALTER TABLE companies ADD CONSTRAINT companies_center_company_name_key UNIQUE (center_id, company_name);
+
+CREATE TABLE IF NOT EXISTS fair_company_roster (
+  id                 SERIAL PRIMARY KEY,
+  fair_settings_id   INTEGER NOT NULL REFERENCES fair_settings(id) ON DELETE CASCADE,
+  company_id         INTEGER NOT NULL REFERENCES companies(id) ON DELETE RESTRICT,
+  seats              INTEGER NOT NULL DEFAULT 1,
+  interview_minutes  INTEGER NOT NULL DEFAULT 6 CHECK (interview_minutes > 0),
+  floor_number       INTEGER CHECK (floor_number >= 0),
+  is_open            BOOLEAN NOT NULL DEFAULT false,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (fair_settings_id, company_id)
+);
+CREATE INDEX IF NOT EXISTS idx_roster_company ON fair_company_roster(company_id);
+
+-- One-time backfill: every company with no roster row *at all* yet (this
+-- migration reruns on every deploy with no migration-tracking table, so this
+-- guard — not just "no row for the target fair" — keeps a company an admin
+-- later removed from a roster from being silently re-added next deploy)
+-- gets one against the most recent fair_settings row at its own Center,
+-- carrying over its legacy seats/interview_minutes/floor_number/is_open.
+-- "Most recent" rather than strictly "is_active" — this can run between
+-- fairs, while nothing is active anywhere, and the goal here is "don't
+-- regress an existing, still-relevant cycle's data," not "only backfill
+-- during a live fair." A company whose Center has no fair_settings row at
+-- all yet (or none left, e.g. after an archival cleanup) simply gets no
+-- roster row — a real, distinct "not part of any current cycle" state.
+INSERT INTO fair_company_roster (fair_settings_id, company_id, seats, interview_minutes, floor_number, is_open)
+SELECT DISTINCT ON (c.id) fs.id, c.id, c.seats, c.interview_minutes, c.floor_number, c.is_open
+FROM companies c
+JOIN fair_settings fs ON fs.center_id = c.center_id
+WHERE NOT EXISTS (SELECT 1 FROM fair_company_roster r WHERE r.company_id = c.id)
+ORDER BY c.id, fs.fair_date DESC;
