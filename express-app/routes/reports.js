@@ -72,7 +72,8 @@ router.get('/company-stats', asyncHandler(async (req, res) => {
     [centerId || null, dateFilter]
   );
   if (req.query.format === 'csv') {
-    return res.type('text/csv').attachment('company-stats.csv').send(toCsv(result.rows));
+    const headers = ['id', 'company_name', 'location', 'floor_number', 'assigned', 'pending', 'at_desk', 'completed', 'selected', 'no_shows'];
+    return res.type('text/csv').attachment('company-stats.csv').send(toCsv(result.rows, headers));
   }
   res.json(result.rows);
 }));
@@ -94,7 +95,7 @@ router.get('/qual-distribution', asyncHandler(async (req, res) => {
     [centerId || null, dateFilter]
   );
   if (req.query.format === 'csv') {
-    return res.type('text/csv').attachment('qual-distribution.csv').send(toCsv(result.rows));
+    return res.type('text/csv').attachment('qual-distribution.csv').send(toCsv(result.rows, ['qualification', 'count']));
   }
   res.json(result.rows);
 }));
@@ -114,7 +115,7 @@ router.get('/field-distribution', asyncHandler(async (req, res) => {
     [centerId || null, dateFilter]
   );
   if (req.query.format === 'csv') {
-    return res.type('text/csv').attachment('field-distribution.csv').send(toCsv(result.rows));
+    return res.type('text/csv').attachment('field-distribution.csv').send(toCsv(result.rows, ['field', 'count']));
   }
   res.json(result.rows);
 }));
@@ -145,7 +146,9 @@ router.get('/master-report', asyncHandler(async (req, res) => {
     [centerId || null, dateFilter]
   );
   if (req.query.format === 'csv') {
-    return res.type('text/csv').attachment('master-report.csv').send(toCsv(result.rows));
+    const headers = ['token_no', 'name', 'mobile', 'qualification', 'field', 'employment_status', 'batch_number',
+      'checked_in', 'company_name', 'slot_start', 'status', 'ratings', 'feedback_text', 'feedback_by', 'processed_at'];
+    return res.type('text/csv').attachment('master-report.csv').send(toCsv(result.rows, headers));
   }
   res.json(result.rows);
 }));
@@ -175,7 +178,9 @@ router.get('/candidate-summary', asyncHandler(async (req, res) => {
     [centerId || null, dateFilter]
   );
   if (req.query.format === 'csv') {
-    return res.type('text/csv').attachment('candidate-summary.csv').send(toCsv(result.rows));
+    const headers = ['token_no', 'name', 'qualification', 'field', 'batch_number', 'checked_in',
+      'companies_assigned', 'interviews_done', 'selections', 'no_shows'];
+    return res.type('text/csv').attachment('candidate-summary.csv').send(toCsv(result.rows, headers));
   }
   res.json(result.rows);
 }));
@@ -202,7 +207,8 @@ router.get('/rating-report', asyncHandler(async (req, res) => {
     [centerId || null, dateFilter]
   );
   if (req.query.format === 'csv') {
-    return res.type('text/csv').attachment('rating-report.csv').send(toCsv(result.rows));
+    const headers = ['company_name', 'parameter', 'avg_rating', 'ratings_count'];
+    return res.type('text/csv').attachment('rating-report.csv').send(toCsv(result.rows, headers));
   }
   res.json(result.rows);
 }));

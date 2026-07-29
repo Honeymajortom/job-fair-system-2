@@ -65,20 +65,33 @@ export default function Reports() {
         </select>
       </div>
       <div className="report-grid">
-        <div className="report-card" style={{ borderColor: 'var(--system)' }}>
-          <div>
-            <h3>Today's Master Data</h3>
-            <p>Master report for today only — one click, regardless of whatever the Day filter above is set to.</p>
-          </div>
-          <a
-            className="dl-btn"
-            href={`/api/master-report?format=csv${effectiveCenterId ? `&center_id=${effectiveCenterId}` : ''}&date=${todayStr()}`}
-            download={`master-report-${todayStr()}.csv`}
-          >
-            <DownloadIcon />
-            Download CSV
-          </a>
-        </div>
+        {(() => {
+          // Falls back to real today when no Day is picked above (the
+          // original "one click, today only" behavior); once a Day is
+          // selected, this card downloads that day's master data instead,
+          // so the Center/Date pickers actually control what "Today's
+          // Master Data" means rather than being silently ignored.
+          const masterDate = date || todayStr();
+          return (
+            <div className="report-card" style={{ borderColor: 'var(--system)' }}>
+              <div>
+                <h3>Today's Master Data</h3>
+                <p>
+                  Master report for {date ? fmtDate(masterDate) : 'today'} — one click
+                  {date ? '' : ', regardless of whatever the Day filter above is set to'}.
+                </p>
+              </div>
+              <a
+                className="dl-btn"
+                href={`/api/master-report?format=csv${effectiveCenterId ? `&center_id=${effectiveCenterId}` : ''}&date=${masterDate}`}
+                download={`${masterDate} Master Data.csv`}
+              >
+                <DownloadIcon />
+                Download CSV
+              </a>
+            </div>
+          );
+        })()}
         {REPORTS.map((r) => (
           <div key={r.slug} className="report-card">
             <div>
