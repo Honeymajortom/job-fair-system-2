@@ -192,6 +192,14 @@ router.post('/fair-settings/:id/archive', authenticateJWT, requireRole('admin'),
       await client.query('DELETE FROM candidates WHERE id = ANY($1::int[])', [candIds]);
     }
 
+    // Arrival-wave rows have no reporting value once a cycle ends (unlike
+    // candidates/bookings) — left behind otherwise, they'd pile up forever on
+    // the Gate tab's batch list with nothing to ever clean them up. Safe to
+    // run after the candidates delete above: candidates.batch_id is the only
+    // FK into this table (ON DELETE RESTRICT), and none reference this fair's
+    // batches anymore by this point.
+    await client.query('DELETE FROM fair_batches WHERE fair_settings_id = $1', [fairId]);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
@@ -366,16 +374,25 @@ router.post('/batches/generate', authenticateJWT, requireRole('admin', 'registra
   res.status(201).json(result.rows);
 }));
 
-// All staff roles: batch list with live check-in counts. centerId scopes via
-// fair_settings_id -> fair_settings.center_id (fair_batches has no center_id
-// of its own — it belongs to exactly one fair, which belongs to exactly one
-// center).
+// All staff roles: batch list with live check-in counts — the Gate tab's
+// "Today's arrival batches" panel. centerId scopes via fair_settings_id ->
+// fair_settings.center_id (fair_batches has no center_id of its own — it
+// belongs to exactly one fair, which belongs to exactly one center).
+//
+// Scoped to each center's own currently *active* fair only — every fair
+// cycle gets its own fresh batch waves (batch numbering restarts at 1,
+// anchored to that cycle's own first arrival), but nothing previously
+// filtered this list by cycle, so every past day's batches piled up here
+// forever alongside today's real ones. An admin viewing "all centers"
+// (centerId null) still only ever sees each center's *own* active fair's
+// batches, never a blended history — same "is_active" join every other
+// live-only consumer in this codebase already uses.
 router.get('/batches', authenticateJWT, asyncHandler(async (req, res) => {
   const centerId = resolveCenterFilter(req);
   const result = await pool.query(
     `SELECT fb.* FROM fair_batches fb
-     LEFT JOIN fair_settings fs ON fs.id = fb.fair_settings_id
-     WHERE ($1::int IS NULL OR fs.center_id = $1)
+     JOIN fair_settings fs ON fs.id = fb.fair_settings_id
+     WHERE fs.is_active = true AND ($1::int IS NULL OR fs.center_id = $1)
      ORDER BY fb.fair_date, fb.batch_number`,
     [centerId || null]
   );
