@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { useCenter } from './CenterContext';
 
@@ -22,6 +22,63 @@ const emptyRosterAddForm = { seats: '', interview_minutes: '', floor_number: '' 
 
 function fmtDate(iso) {
   return new Date(`${iso}T00:00:00`).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+const BULK_TEMPLATE_HEADER = ['company_name', 'description', 'location', 'field', 'job_type', 'min_qualification', 'max_qualification', 'seats', 'interview_minutes', 'floor_number'];
+const BULK_NUMERIC_FIELDS = new Set(['seats', 'interview_minutes', 'floor_number']);
+
+// Minimal RFC4180-ish CSV parser — quoted fields (with embedded commas/
+// newlines/escaped "" quotes) supported, no external dependency, matching
+// this codebase's hand-rolled convention elsewhere (no chart library in
+// Insights, no CSV library on the export side in reports.js either).
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let field = '';
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; } else inQuotes = false;
+      } else {
+        field += c;
+      }
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ',') {
+      row.push(field); field = '';
+    } else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(field); field = '';
+      rows.push(row); row = [];
+    } else {
+      field += c;
+    }
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.length > 1 || r[0] !== '');
+}
+
+// Header row decides the field names (order-independent, unlike the fixed
+// column order BULK_TEMPLATE_HEADER downloads with) — so a spreadsheet
+// export with reordered or a subset of columns still parses correctly, as
+// long as the header names match.
+function csvToCompanyRows(text) {
+  const rows = parseCsv(text);
+  if (!rows.length) return [];
+  const header = rows[0].map((h) => h.trim().toLowerCase().replace(/\s+/g, '_'));
+  return rows.slice(1)
+    .filter((r) => r.some((v) => v.trim() !== ''))
+    .map((r) => {
+      const obj = {};
+      header.forEach((key, i) => {
+        const raw = (r[i] ?? '').trim();
+        if (raw === '') return;
+        obj[key] = BULK_NUMERIC_FIELDS.has(key) ? Number(raw) : raw;
+      });
+      return obj;
+    });
 }
 
 // company_roster_plan.md, Phase 3 (the deferred UI split): companies are now
@@ -58,6 +115,19 @@ export default function CompanyManagement() {
   const [addCompanyId, setAddCompanyId] = useState('');
   const [rosterAddForm, setRosterAddForm] = useState(emptyRosterAddForm);
 
+  // Bulk import (CSV) — Directory-only, mirrors the single "Add to
+  // directory" form's fields plus a batch-wide Center (companies are tied to
+  // exactly one Center, and a CSV export from HR/placement-cell tooling has
+  // no reason to carry that column). Parsed client-side on file select, not
+  // on submit, so the row count/errors are visible before committing.
+  const [bulkCenterId, setBulkCenterId] = useState('');
+  const [bulkRows, setBulkRows] = useState([]);
+  const [bulkFileName, setBulkFileName] = useState('');
+  const [bulkParseError, setBulkParseError] = useState(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResult, setBulkResult] = useState(null);
+  const bulkFileInputRef = useRef(null);
+
   const [toast, setToast] = useState(null);
 
   function showToast(text, isErr) {
@@ -76,6 +146,7 @@ export default function CompanyManagement() {
   // it changes — a convenience default, not a lock; admin can still pick a
   // different Center for the company being created.
   useEffect(() => { setCompanyForm((f) => ({ ...f, center_id: effectiveCenterId || '' })); }, [effectiveCenterId]);
+  useEffect(() => { setBulkCenterId(effectiveCenterId || ''); }, [effectiveCenterId]);
 
   function loadFairs() {
     api.getFairSettings(effectiveCenterId).then((rows) => {
@@ -141,6 +212,72 @@ export default function CompanyManagement() {
       showToast(err.message, true);
     } finally {
       setCreating(false);
+    }
+  }
+
+  function downloadBulkTemplate() {
+    const csv = `${BULK_TEMPLATE_HEADER.join(',')}\n` +
+      'Acme Robotics,Robotics & automation,Hall A Desk 5,Engineering,Full-time,B.Tech,M.Tech,2,8,1\n';
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'companies_template.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleBulkFile(e) {
+    const file = e.target.files[0];
+    setBulkResult(null);
+    if (!file) { setBulkRows([]); setBulkFileName(''); setBulkParseError(null); return; }
+    setBulkFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = csvToCompanyRows(String(reader.result));
+        if (!parsed.length) {
+          setBulkRows([]);
+          setBulkParseError('No data rows found — check the file has a header row plus at least one company.');
+          return;
+        }
+        const withoutName = parsed.filter((r) => !r.company_name).length;
+        if (withoutName) {
+          setBulkRows([]);
+          setBulkParseError(`${withoutName} row(s) are missing company_name — every row needs one.`);
+          return;
+        }
+        setBulkParseError(null);
+        setBulkRows(parsed);
+      } catch {
+        setBulkRows([]);
+        setBulkParseError('Could not read that file as CSV.');
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  async function runBulkImport() {
+    if (!bulkCenterId) { showToast('Pick a center', true); return; }
+    if (!bulkRows.length) return;
+    setBulkBusy(true);
+    setBulkResult(null);
+    try {
+      const payload = bulkRows.map((r) => ({ ...r, center_id: Number(bulkCenterId) }));
+      const res = await api.createCompaniesBulk(payload);
+      setBulkResult(res);
+      showToast(
+        `${res.created.length} added${res.failed.length ? `, ${res.failed.length} failed` : ''}`,
+        res.created.length === 0 && res.failed.length > 0
+      );
+      setBulkRows([]);
+      setBulkFileName('');
+      if (bulkFileInputRef.current) bulkFileInputRef.current.value = '';
+      loadDirectory();
+    } catch (err) {
+      showToast(err.message, true);
+    } finally {
+      setBulkBusy(false);
     }
   }
 
@@ -665,6 +802,67 @@ export default function CompanyManagement() {
           {creating ? 'Adding…' : '+ Add to directory'}
         </button>
       </form>
+
+      <div className="sec-label" style={{ marginTop: 24, marginBottom: 10 }}>Bulk import (CSV)</div>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'end', marginBottom: 10 }}>
+        <div className="field" style={{ maxWidth: 160 }}>
+          <label>Center</label>
+          <select value={bulkCenterId} onChange={(e) => setBulkCenterId(e.target.value)} required>
+            <option value="" disabled>Select a center…</option>
+            {centers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+        <div className="field" style={{ maxWidth: 260 }}>
+          <label>CSV file</label>
+          <input ref={bulkFileInputRef} type="file" accept=".csv,text/csv" onChange={handleBulkFile} />
+        </div>
+        <button type="button" className="btn ghost" style={{ width: 'auto', padding: '11px 18px' }} onClick={downloadBulkTemplate}>
+          Download template
+        </button>
+        <button
+          type="button"
+          className="btn"
+          style={{ width: 'auto', padding: '11px 18px' }}
+          disabled={bulkBusy || !bulkRows.length}
+          onClick={runBulkImport}
+        >
+          {bulkBusy ? 'Importing…' : bulkRows.length ? `Import ${bulkRows.length} companies` : 'Import'}
+        </button>
+      </div>
+      <p className="save-note" style={{ textAlign: 'left', marginBottom: 16 }}>
+        Columns: {BULK_TEMPLATE_HEADER.join(', ')}. Only <code>company_name</code> is required — everything else
+        is optional, same as adding one company by hand. Each row gets the standard rating parameters and, if the
+        picked Center has an active fair, a first roster row (closed by default) — same as the single-company form above.
+      </p>
+      {bulkParseError && <div className="error-note" style={{ marginBottom: 16 }}>{bulkParseError}</div>}
+      {bulkFileName && !bulkParseError && !bulkResult && (
+        <p className="save-note" style={{ textAlign: 'left', marginBottom: 16 }}>
+          {bulkFileName}: {bulkRows.length} row{bulkRows.length === 1 ? '' : 's'} ready to import.
+        </p>
+      )}
+      {bulkResult && (
+        <div style={{ marginBottom: 20 }}>
+          <p className="save-note" style={{ textAlign: 'left' }}>
+            {bulkResult.created.length} added, {bulkResult.failed.length} failed.
+          </p>
+          {!!bulkResult.failed.length && (
+            <div className="table-wrap scroll-5">
+              <table className="data-table">
+                <thead><tr><th>Row</th><th>Name</th><th>Error</th></tr></thead>
+                <tbody>
+                  {bulkResult.failed.map((f) => (
+                    <tr key={f.row}>
+                      <td className="mono">{f.row}</td>
+                      <td>{f.company_name || '—'}</td>
+                      <td>{f.error}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {toast && <div className={`toast${toast.isErr ? ' err' : ''}`}>{toast.text}</div>}
     </div>

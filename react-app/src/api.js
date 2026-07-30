@@ -106,6 +106,7 @@ export const api = {
   getCompanies: (centerId) => request(`/companies${qs({ center_id: centerId })}`),
   getCompany: (id) => request(`/companies/${id}`),
   createCompany: (payload) => request('/companies', { method: 'POST', body: JSON.stringify(payload) }),
+  createCompaniesBulk: (rows) => request('/companies/bulk', { method: 'POST', body: JSON.stringify({ rows }) }),
   updateCompany: (id, payload) => request(`/companies/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   setCompanyOpenStatus: (id, is_open) => request(`/companies/${id}/open-status`, { method: 'PUT', body: JSON.stringify({ is_open }) }),
   closeDesk: (id, payload) => request(`/companies/${id}/close-desk`, { method: 'POST', body: JSON.stringify(payload) }),

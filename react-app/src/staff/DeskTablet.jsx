@@ -321,17 +321,32 @@ export default function DeskTablet() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
         <h2 className="screen-title" style={{ margin: 0 }}>Desk {deskId}</h2>
         {isOpen !== null && (
-          <button
-            className={`checkin-status ${isOpen ? 'in' : 'out'}`}
-            style={{ cursor: 'pointer', marginTop: 0 }}
-            disabled={togglingOpen || closingFeedback || closing}
-            onClick={isOpen ? startClosing : reopenDesk}
-            title={isOpen ? 'Close Desk — a short feedback form is required first' : 'Whether candidates can currently see and register for this company'}
-          >
-            {isOpen ? 'Desk open — Close Desk' : 'Desk closed — hidden from candidates'}
-          </button>
+          isOpen ? (
+            <button
+              className="checkin-status in"
+              style={{ cursor: 'pointer', marginTop: 0 }}
+              disabled={togglingOpen || closingFeedback || closing}
+              onClick={startClosing}
+              title="Close Desk — a short feedback form is required first"
+            >
+              Desk open — Close Desk
+            </button>
+          ) : (
+            <span className="checkin-status out" style={{ marginTop: 0 }}>Desk closed — hidden from candidates</span>
+          )
         )}
       </div>
+
+      {isOpen === false && (
+        <div style={{ marginTop: 10 }}>
+          <button className="btn" style={{ width: 'auto', padding: '11px 18px' }} disabled={togglingOpen} onClick={reopenDesk}>
+            {togglingOpen ? 'Reopening…' : 'Reopen Desk'}
+          </button>
+          <p className="save-note" style={{ textAlign: 'left', marginTop: 8 }}>
+            Candidates can't see or book this company until you reopen it.
+          </p>
+        </div>
+      )}
 
       {closingFeedback && <CloseDeskFeedback onSubmit={submitCloseDesk} onCancel={cancelClosing} />}
 

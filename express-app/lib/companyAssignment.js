@@ -38,10 +38,19 @@ async function assignCompanies(client, { candidateId, company_ids, fairHours, fa
     // columns — a company with no roster row for fairSettingsId isn't
     // actually part of this cycle, so it's skipped exactly like "company not
     // found" already was.
+    // booked is scoped to this fair cycle (via candidate_company_status ->
+    // candidates.fair_settings_id) — companies are now a permanent, reusable
+    // per-Center directory (company_roster_plan.md), so an unscoped count
+    // would keep accumulating every past cycle's bookings for this company
+    // forever (unless staff manually archives old fairs), eventually pushing
+    // every new candidate straight to Waitlisted long before this cycle's
+    // real capacity is reached.
     const companyRes = await client.query(
       `SELECT c.id, c.company_name, c.location, r.seats, r.interview_minutes,
               (SELECT COUNT(*)::int FROM candidate_company_status ccs
-                WHERE ccs.company_id = c.id AND ccs.status != 'Waitlisted' AND ccs.deleted_at IS NULL) AS booked
+                JOIN candidates cd ON cd.id = ccs.candidate_id
+                WHERE ccs.company_id = c.id AND ccs.status != 'Waitlisted' AND ccs.deleted_at IS NULL
+                  AND cd.fair_settings_id = $2) AS booked
        FROM companies c
        JOIN fair_company_roster r ON r.company_id = c.id AND r.fair_settings_id = $2
        WHERE c.id = $1`,

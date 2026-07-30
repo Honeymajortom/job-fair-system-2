@@ -93,78 +93,136 @@ router.get('/companies/:id', authenticateJWT, asyncHandler(async (req, res) => {
   res.json({ ...companyRes.rows[0], rating_parameters: paramsRes.rows, slots: slotsRes.rows, posts: postsRes.rows });
 }));
 
-// Admin: create a company. seats/interview_minutes feed the queue-system
-// booking-cap gate (new_architecture.md §4: capacity_j = seats *
-// (60/interview_minutes) * fair_hours) — default to 1 seat / 6-min
-// interviews (sim's baseline) so an unconfigured company still gets a
-// sane, non-zero cap instead of silently waitlisting everyone.
-router.post('/companies', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
-  const { company_name, description, location, floor_number, field, job_type, min_qualification, max_qualification, max_queue_limit, seats, interview_minutes, center_id } = req.body;
-  if (!company_name) return res.status(400).json({ error: 'company_name is required' });
+// Shared by the single-create route and the bulk-import route below. Runs
+// entirely on the caller's `client` inside whatever transaction the caller
+// opened — a single row's failure inside a bulk import must only roll back
+// that row's own transaction, not every row already committed before it.
+// Throws on validation/DB failure; callers translate that into a per-row (or
+// single) HTTP error the same way, via companyInsertError() below.
+async function insertCompanyRow(client, { company_name, description, location, floor_number, field, job_type, min_qualification, max_qualification, max_queue_limit, seats, interview_minutes, center_id }) {
+  if (!company_name) { const e = new Error('company_name is required'); e.httpStatus = 400; throw e; }
   // Red-team L3: interview_minutes feeds `60 / interview_minutes` in the
   // booking-cap math (registerCandidate.js) — 0 or negative breaks that
   // divisor (Infinity/NaN, or a negative cap that silently waitlists
   // everyone). The DB CHECK constraint is the hard backstop; this just gives
   // a clean 400 instead of a raw constraint-violation error.
   if (interview_minutes != null && !(Number.isInteger(interview_minutes) && interview_minutes > 0)) {
-    return res.status(400).json({ error: 'interview_minutes must be a positive integer' });
+    const e = new Error('interview_minutes must be a positive integer'); e.httpStatus = 400; throw e;
   }
   // Ground floor is 0, not 1 — reject negatives before they hit the DB
   // CHECK constraint. `floor_number || null` below would silently turn a
   // valid 0 into null (0 is falsy), so this uses an explicit null check.
   if (floor_number != null && !(Number.isInteger(floor_number) && floor_number >= 0)) {
-    return res.status(400).json({ error: 'floor_number must be a non-negative integer' });
+    const e = new Error('floor_number must be a non-negative integer'); e.httpStatus = 400; throw e;
   }
 
+  // center_id defaults to the sole seeded Center — fair_cycle_isolation_
+  // plan.md Phase 0 (a company is tied to exactly one Center permanently).
+  const result = await client.query(
+    `INSERT INTO companies (company_name, description, location, field, job_type, min_qualification, max_qualification, max_queue_limit, center_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7, COALESCE($8, 7), COALESCE($9, (SELECT id FROM centers ORDER BY id LIMIT 1))) RETURNING *`,
+    [company_name, description || null, location || null, field || null, job_type || null, min_qualification || null, max_qualification || null, max_queue_limit || null, center_id || null]
+  );
+  const company = result.rows[0];
+
+  // One multi-row INSERT instead of 5 round trips — same DEFAULT_RATING_
+  // PARAMETERS list, just written in a single statement.
+  const values = DEFAULT_RATING_PARAMETERS.map((_, i) => `($1, $${i * 2 + 2}, $${i * 2 + 3})`).join(', ');
+  const params = DEFAULT_RATING_PARAMETERS.flatMap((name, i) => [name, i]);
+  await client.query(
+    `INSERT INTO rating_parameters (company_id, parameter_name, display_order) VALUES ${values}`,
+    [company.id, ...params]
+  );
+
+  // company_roster_plan.md: seats/interview_minutes/floor_number still
+  // accepted as optional convenience params on create — if this Center has
+  // an active fair right now, this inserts the company's first roster row
+  // in the same transaction, so first-time entry stays a single form
+  // submit instead of a separate "now add it to today's roster" step.
+  // is_open stays false regardless (a brand-new company always needs an
+  // explicit open, same default the legacy column always had).
+  const fairRes = await client.query('SELECT id FROM fair_settings WHERE center_id = $1 AND is_active = true', [company.center_id]);
+  if (fairRes.rows.length) {
+    await client.query(
+      `INSERT INTO fair_company_roster (fair_settings_id, company_id, seats, interview_minutes, floor_number, is_open)
+       VALUES ($1, $2, COALESCE($3, 1), COALESCE($4, 6), $5, false)`,
+      [fairRes.rows[0].id, company.id, seats || null, interview_minutes || null, floor_number != null ? floor_number : null]
+    );
+  }
+
+  return company;
+}
+
+// Translates insertCompanyRow()'s thrown errors (validation, or a raw PG
+// error) into a { status, error } pair — same mapping the single-create
+// route always did inline, now shared with the bulk route so a bad row in a
+// large import reports the same reason a single bad create would.
+function companyInsertError(err) {
+  if (err.httpStatus) return { status: err.httpStatus, error: err.message };
+  if (err.code === '23505') return { status: 409, error: 'A company with that name already exists at this center' };
+  if (err.code === '23514' && err.constraint === 'companies_floor_number_nonnegative') {
+    return { status: 400, error: 'floor_number must be a non-negative integer' };
+  }
+  if (err.code === '23514') return { status: 400, error: 'interview_minutes must be a positive integer' };
+  return null; // not a recognized create-time failure — rethrow as a real 500
+}
+
+// Admin: create a company. seats/interview_minutes feed the queue-system
+// booking-cap gate (new_architecture.md §4: capacity_j = seats *
+// (60/interview_minutes) * fair_hours) — default to 1 seat / 6-min
+// interviews (sim's baseline) so an unconfigured company still gets a
+// sane, non-zero cap instead of silently waitlisting everyone.
+router.post('/companies', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    // center_id defaults to the sole seeded Center — fair_cycle_isolation_
-    // plan.md Phase 0 (a company is tied to exactly one Center permanently).
-    // Optional body param accepted now for forward-compat with Phase 4's
-    // real picker; nothing sends it yet.
-    const result = await client.query(
-      `INSERT INTO companies (company_name, description, location, field, job_type, min_qualification, max_qualification, max_queue_limit, center_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7, COALESCE($8, 7), COALESCE($9, (SELECT id FROM centers ORDER BY id LIMIT 1))) RETURNING *`,
-      [company_name, description || null, location || null, field || null, job_type || null, min_qualification || null, max_qualification || null, max_queue_limit || null, center_id || null]
-    );
-    const company = result.rows[0];
-
-    // One multi-row INSERT instead of 5 round trips — same DEFAULT_RATING_
-    // PARAMETERS list, just written in a single statement.
-    const values = DEFAULT_RATING_PARAMETERS.map((_, i) => `($1, $${i * 2 + 2}, $${i * 2 + 3})`).join(', ');
-    const params = DEFAULT_RATING_PARAMETERS.flatMap((name, i) => [name, i]);
-    await client.query(
-      `INSERT INTO rating_parameters (company_id, parameter_name, display_order) VALUES ${values}`,
-      [company.id, ...params]
-    );
-
-    // company_roster_plan.md: seats/interview_minutes/floor_number still
-    // accepted as optional convenience params on create — if this Center has
-    // an active fair right now, this inserts the company's first roster row
-    // in the same transaction, so first-time entry stays a single form
-    // submit instead of a separate "now add it to today's roster" step.
-    // is_open stays false regardless (a brand-new company always needs an
-    // explicit open, same default the legacy column always had).
-    const fairRes = await client.query('SELECT id FROM fair_settings WHERE center_id = $1 AND is_active = true', [company.center_id]);
-    if (fairRes.rows.length) {
-      await client.query(
-        `INSERT INTO fair_company_roster (fair_settings_id, company_id, seats, interview_minutes, floor_number, is_open)
-         VALUES ($1, $2, COALESCE($3, 1), COALESCE($4, 6), $5, false)`,
-        [fairRes.rows[0].id, company.id, seats || null, interview_minutes || null, floor_number != null ? floor_number : null]
-      );
-    }
-
+    const company = await insertCompanyRow(client, req.body);
     await client.query('COMMIT');
     res.status(201).json(company);
   } catch (err) {
     await client.query('ROLLBACK');
-    if (err.code === '23505') return res.status(409).json({ error: 'A company with that name already exists at this center' });
-    if (err.code === '23514' && err.constraint === 'companies_floor_number_nonnegative') {
-      return res.status(400).json({ error: 'floor_number must be a non-negative integer' });
-    }
-    if (err.code === '23514') return res.status(400).json({ error: 'interview_minutes must be a positive integer' });
+    const mapped = companyInsertError(err);
+    if (mapped) return res.status(mapped.status).json({ error: mapped.error });
     throw err;
+  } finally {
+    client.release();
+  }
+}));
+
+// Admin: bulk-import companies — CompanyManagement.jsx's CSV upload. One
+// connection, but each row gets its own transaction (via insertCompanyRow),
+// so a bad row (duplicate name, bad interview_minutes) fails just that row
+// instead of aborting the whole batch — the natural behavior for "I pasted a
+// spreadsheet and one row has a typo," not an all-or-nothing import. Row
+// order in the response mirrors the request so the caller can map failures
+// back to the CSV line that produced them.
+router.post('/companies/bulk', authenticateJWT, requireRole('admin'), asyncHandler(async (req, res) => {
+  const { rows } = req.body;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return res.status(400).json({ error: 'rows must be a non-empty array' });
+  }
+  if (rows.length > 500) {
+    return res.status(400).json({ error: 'Import is limited to 500 rows at a time' });
+  }
+
+  const client = await pool.connect();
+  const created = [];
+  const failed = [];
+  try {
+    for (let i = 0; i < rows.length; i++) {
+      try {
+        await client.query('BEGIN');
+        const company = await insertCompanyRow(client, rows[i]);
+        await client.query('COMMIT');
+        created.push(company);
+      } catch (err) {
+        await client.query('ROLLBACK');
+        const mapped = companyInsertError(err);
+        if (!mapped) throw err; // an unrecognized failure aborts the whole import, same as any other 500 would
+        failed.push({ row: i + 1, company_name: rows[i]?.company_name || null, error: mapped.error });
+      }
+    }
+    res.status(207).json({ created, failed });
   } finally {
     client.release();
   }

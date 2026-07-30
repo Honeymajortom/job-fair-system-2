@@ -305,14 +305,16 @@ router.post('/candidates/:id/companies/:companyId/reactivate', authenticateJWT, 
   // lookup (the latter is only ever a fallback, for a legacy candidate with no
   // fair_settings_id).
   const fairRes = await pool.query(
-    `SELECT fs.fair_hours FROM candidates cd
+    `SELECT fs.id, fs.fair_hours FROM candidates cd
       LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
      WHERE cd.id = $1`,
     [candidateId]
   );
+  let fairSettingsId = fairRes.rows[0]?.id ?? null;
   let fairHours = fairRes.rows[0]?.fair_hours;
   if (fairHours == null) {
-    const fallbackRes = await pool.query(`SELECT fair_hours FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1`);
+    const fallbackRes = await pool.query(`SELECT id, fair_hours FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1`);
+    fairSettingsId = fallbackRes.rows.length ? fallbackRes.rows[0].id : null;
     fairHours = fallbackRes.rows.length ? fallbackRes.rows[0].fair_hours : 8;
   }
   fairHours = Number(fairHours);
@@ -341,17 +343,27 @@ router.post('/candidates/:id/companies/:companyId/reactivate', authenticateJWT, 
     // Same capacity/waitlist gate every other booking goes through
     // (lib/companyAssignment.js) — excludes this row itself from the "already
     // booked" count, since it's about to be re-decided, not double-counted
-    // against its own prior occupancy.
+    // against its own prior occupancy. seats/interview_minutes come from this
+    // candidate's own fair cycle's roster row (company_roster_plan.md), not
+    // the companies table's now-legacy columns; booked is scoped to the same
+    // cycle via candidates.fair_settings_id, for the same reason
+    // lib/companyAssignment.js's own booked count is — companies are a
+    // permanent, reusable per-Center directory now, so an unscoped count
+    // would keep accumulating every past cycle's bookings forever.
     const companyRes = await client.query(
-      `SELECT c.seats, c.interview_minutes,
+      `SELECT r.seats, r.interview_minutes,
               (SELECT COUNT(*)::int FROM candidate_company_status ccs
-                WHERE ccs.company_id = c.id AND ccs.status != 'Waitlisted' AND ccs.deleted_at IS NULL AND ccs.id != $2) AS booked
-         FROM companies c WHERE c.id = $1`,
-      [companyId, ccsId]
+                JOIN candidates cd ON cd.id = ccs.candidate_id
+                WHERE ccs.company_id = c.id AND ccs.status != 'Waitlisted' AND ccs.deleted_at IS NULL
+                  AND ccs.id != $2 AND cd.fair_settings_id = $3) AS booked
+         FROM companies c
+         JOIN fair_company_roster r ON r.company_id = c.id AND r.fair_settings_id = $3
+        WHERE c.id = $1`,
+      [companyId, ccsId, fairSettingsId]
     );
     if (!companyRes.rows.length) {
       await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'Company not found' });
+      return res.status(404).json({ error: 'Company not found or not on this cycle\'s roster' });
     }
     const company = companyRes.rows[0];
     const capacity = company.seats * (60 / company.interview_minutes) * fairHours;
