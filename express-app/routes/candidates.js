@@ -10,7 +10,7 @@ const { verifyQr } = require('../lib/checkinSig');
 const queueStore = require('../lib/queueStore');
 const { emit } = require('../lib/events');
 const { RESUME_DIR } = require('../lib/resumeStorage');
-const { assignCompanies, MAX_COMPANIES } = require('../lib/companyAssignment');
+const { assignCompanies } = require('../lib/companyAssignment');
 const { resolveCenterFilter } = require('../lib/centerScope');
 const { normalizeMobile } = require('../lib/mobile');
 const { DONE_STATUSES } = require('../lib/pingLadder');
@@ -84,6 +84,14 @@ router.get('/candidates/:token', authenticateJWT, asyncHandler(async (req, res) 
   if (!candidateRes.rows.length) return res.status(404).json({ error: 'Candidate not found' });
   const candidate = candidateRes.rows[0];
 
+  // candidate_and_desk_improvements_plan.md §A: CandidateLookup.jsx's staff-
+  // side add-companies picker needs the candidate's own fair cycle's
+  // configured cap, not a hardcoded frontend constant.
+  const capRes = candidate.fair_settings_id
+    ? await pool.query('SELECT max_companies_per_candidate FROM fair_settings WHERE id = $1', [candidate.fair_settings_id])
+    : { rows: [] };
+  const maxCompanies = capRes.rows.length ? capRes.rows[0].max_companies_per_candidate : 3;
+
   const statusRes = await pool.query(
     `SELECT ccs.id, ccs.status, ccs.ratings, ccs.feedback_text, ccs.processed_at, ccs.misses,
             ccs.serial, ccs.dispatched_at, ccs.interview_started_at,
@@ -97,7 +105,20 @@ router.get('/candidates/:token', authenticateJWT, asyncHandler(async (req, res) 
     [candidate.id]
   );
 
-  res.json({ ...candidate, companies: statusRes.rows });
+  // candidate_and_desk_improvements_plan.md §B: CandidateLookup.jsx's
+  // work-experience section and the Desk's auto-resume fallback both read
+  // this off the one endpoint they already call.
+  const workExperienceRes = await pool.query(
+    'SELECT id, company_name, years, months FROM candidate_work_experience WHERE candidate_id = $1 ORDER BY created_at',
+    [candidate.id]
+  );
+
+  res.json({
+    ...candidate,
+    companies: statusRes.rows,
+    max_companies_per_candidate: maxCompanies,
+    work_experience: workExperienceRes.rows,
+  });
 }));
 
 // Admin / Registration Staff: manual company reassignment — the staff-side
@@ -118,23 +139,27 @@ router.post('/candidates/:id/companies', authenticateJWT, requireRole('admin', '
   const candidateId = candRes.rows[0].id;
   const fairSettingsId = candRes.rows[0].fair_settings_id;
 
-  const currentRes = await pool.query(
-    'SELECT COUNT(*)::int AS n FROM candidate_company_status WHERE candidate_id = $1 AND deleted_at IS NULL',
-    [candidateId]
-  );
-  if (currentRes.rows[0].n + companyIds.length > MAX_COMPANIES) {
-    return res.status(400).json({ error: `A candidate can have at most ${MAX_COMPANIES} companies` });
-  }
-
   // company_roster_plan.md: read the candidate's own fair cycle instead of a
   // fresh "whichever fair is active" lookup — arbitrary once 2+ Centers each
   // have a live fair, and wrong outright for a candidate from an ended cycle
   // (this route has no checked_in_at requirement, so staff can use it before
   // or well after a candidate's own fair has wound down).
+  // candidate_and_desk_improvements_plan.md §A: max_companies_per_candidate is
+  // now per-fair-cycle (admin-configurable), not a hardcoded constant — fetched
+  // alongside fair_hours since both come off the same fair_settings row.
   const fairRes = fairSettingsId
-    ? await pool.query('SELECT fair_hours FROM fair_settings WHERE id = $1', [fairSettingsId])
+    ? await pool.query('SELECT fair_hours, max_companies_per_candidate FROM fair_settings WHERE id = $1', [fairSettingsId])
     : { rows: [] };
   const fairHours = fairRes.rows.length ? Number(fairRes.rows[0].fair_hours) : 8;
+  const maxCompanies = fairRes.rows.length ? fairRes.rows[0].max_companies_per_candidate : 3;
+
+  const currentRes = await pool.query(
+    'SELECT COUNT(*)::int AS n FROM candidate_company_status WHERE candidate_id = $1 AND deleted_at IS NULL',
+    [candidateId]
+  );
+  if (currentRes.rows[0].n + companyIds.length > maxCompanies) {
+    return res.status(400).json({ error: `A candidate can have at most ${maxCompanies} companies` });
+  }
 
   const client = await pool.connect();
   let assigned, waitlisted;
@@ -220,6 +245,42 @@ router.delete('/candidates/:id/companies/:companyId', authenticateJWT, requireRo
     }
   }
 
+  res.json({ ok: true });
+}));
+
+// candidate_and_desk_improvements_plan.md §B: the staff-side realization of
+// "facility to add company and years/months" — appends one work-experience
+// entry to a candidate who's already registered (correcting/extending what
+// they gave at registration time). No soft-delete/outcome lifecycle to
+// preserve here (unlike a company booking), so this is a plain insert/hard
+// delete pair, same shape as the company add/remove routes above minus the
+// capacity/waitlist machinery those need and this doesn't.
+router.post('/candidates/:id/work-experience', authenticateJWT, requireRole('admin', 'registration_staff'), asyncHandler(async (req, res) => {
+  const { company_name, years, months } = req.body;
+  if (!company_name || !String(company_name).trim()) {
+    return res.status(400).json({ error: 'company_name is required' });
+  }
+  const y = years == null || years === '' ? 0 : Number(years);
+  const m = months == null || months === '' ? 0 : Number(months);
+  if (!Number.isFinite(y) || y < 0) return res.status(400).json({ error: 'years must be 0 or greater' });
+  if (!Number.isFinite(m) || m < 0 || m > 11) return res.status(400).json({ error: 'months must be between 0 and 11' });
+
+  const candRes = await pool.query('SELECT id FROM candidates WHERE id = $1 AND deleted_at IS NULL', [req.params.id]);
+  if (!candRes.rows.length) return res.status(404).json({ error: 'Candidate not found' });
+
+  const result = await pool.query(
+    'INSERT INTO candidate_work_experience (candidate_id, company_name, years, months) VALUES ($1,$2,$3,$4) RETURNING id, company_name, years, months',
+    [req.params.id, String(company_name).trim(), y, m]
+  );
+  res.status(201).json(result.rows[0]);
+}));
+
+router.delete('/candidates/:id/work-experience/:entryId', authenticateJWT, requireRole('admin', 'registration_staff'), asyncHandler(async (req, res) => {
+  const result = await pool.query(
+    'DELETE FROM candidate_work_experience WHERE id = $1 AND candidate_id = $2 RETURNING id',
+    [req.params.entryId, req.params.id]
+  );
+  if (!result.rows.length) return res.status(404).json({ error: 'Work experience entry not found' });
   res.json({ ok: true });
 }));
 
@@ -342,7 +403,7 @@ router.get('/candidates/:token/resume', authenticateJWT, requireRole('admin', 'f
   if (!companyId) return res.status(400).json({ error: 'company_id is required' });
 
   const candRes = await pool.query(
-    'SELECT id, resume_uploaded_at FROM candidates WHERE token_no = $1 AND deleted_at IS NULL',
+    'SELECT id, resume_uploaded_at, resume_ext FROM candidates WHERE token_no = $1 AND deleted_at IS NULL',
     [req.params.token]
   );
   if (!candRes.rows.length) return res.status(404).json({ error: 'Candidate not found' });
@@ -359,7 +420,14 @@ router.get('/candidates/:token/resume', authenticateJWT, requireRole('admin', 'f
     return res.status(403).json({ error: 'Resume is only viewable after the interview has started' });
   }
 
-  res.sendFile(path.join(RESUME_DIR, `${req.params.token}.pdf`));
+  // candidate_and_desk_improvements_plan.md §C: PDF or image now, so both the
+  // on-disk extension and the Content-Type are resolved from resume_ext
+  // instead of a hardcoded `.pdf` — sendFile's automatic MIME inference
+  // already worked for PDF alone, but an explicit type is needed now that
+  // more than one kind exists.
+  const ext = candidate.resume_ext || 'pdf';
+  res.type(ext === 'pdf' ? 'application/pdf' : `image/${ext === 'jpg' ? 'jpeg' : ext}`);
+  res.sendFile(path.join(RESUME_DIR, `${req.params.token}.${ext}`));
 }));
 
 // Admin / Floor Manager: emergency batch reschedule (Waiting Room drag-and-drop)

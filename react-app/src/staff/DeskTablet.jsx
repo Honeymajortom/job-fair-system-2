@@ -6,6 +6,7 @@ import { useSocket, useSocketEvent } from './SocketContext';
 import IncomingCard from './IncomingCard';
 import CountdownRing from './CountdownRing';
 import InterviewTimer from './InterviewTimer';
+import CloseDeskFeedback from './CloseDeskFeedback';
 import OfflineBanner from '../common/OfflineBanner';
 import './Desk.css';
 
@@ -26,8 +27,21 @@ async function fetchCandidateDetails(token, companyId) {
     qualification: full.qualification,
     missedCalls: co ? co.misses : 0,
     // GET /api/candidates/:token already SELECT *s the candidates row, so
-    // this needs zero backend changes beyond the resume_uploaded_at column.
+    // this needs zero backend changes beyond the resume_uploaded_at/
+    // resume_ext columns.
     hasResume: !!full.resume_uploaded_at,
+    resumeExt: full.resume_ext,
+    // candidate_and_desk_improvements_plan.md §B — IncomingCard's compact
+    // "Experience" summary line.
+    employmentStatus: full.employment_status,
+    workExperience: full.work_experience,
+    // §C's auto-resume fallback (AutoResumeCard) — shown instead of "No
+    // resume" when hasResume is false, built from fields already collected
+    // at registration.
+    age: full.age,
+    gender: full.gender,
+    isSdc: full.is_sdc,
+    travelTimeMinutes: full.travel_time_minutes,
   };
 }
 
@@ -49,6 +63,11 @@ export default function DeskTablet() {
   const [skipping, setSkipping] = useState(false);
   const [upNext, setUpNext] = useState(null);
   const [completedToday, setCompletedToday] = useState(null);
+  // candidate_and_desk_improvements_plan.md §D: the closing direction of the
+  // toggle routes through CloseDeskFeedback.jsx instead of flipping instantly —
+  // this just tracks whether that form is currently showing.
+  const [closingFeedback, setClosingFeedback] = useState(false);
+  const [closing, setClosing] = useState(false);
 
   useEffect(() => {
     joinDesk({ companyId, deskId });
@@ -92,19 +111,43 @@ export default function DeskTablet() {
   // it), and roll back to the prior value + surface an error toast if the
   // request fails — a company_hr mid-desk shouldn't see a spinner for a
   // toggle this simple.
-  async function toggleDeskOpen() {
+  // candidate_and_desk_improvements_plan.md §D: only the *opening* direction
+  // is this instant anymore — closing (see startClosing/submitCloseDesk
+  // below) routes through a required feedback form instead.
+  async function reopenDesk() {
     const previous = isOpen;
-    const next = !isOpen;
-    setIsOpen(next);
+    setIsOpen(true);
     setTogglingOpen(true);
     try {
-      const res = await api.setCompanyOpenStatus(companyId, next);
+      const res = await api.setCompanyOpenStatus(companyId, true);
       setIsOpen(res.is_open);
     } catch (err) {
       setIsOpen(previous);
       showToast(err.message, true);
     } finally {
       setTogglingOpen(false);
+    }
+  }
+
+  function startClosing() {
+    setClosingFeedback(true);
+  }
+
+  function cancelClosing() {
+    setClosingFeedback(false);
+  }
+
+  // Closing is a no-op until this actually submits — canceling the form
+  // (above) leaves is_open untouched, by design (candidate_and_desk_
+  // improvements_plan.md §D's Decision: feedback is required to close).
+  async function submitCloseDesk(feedback) {
+    setClosing(true);
+    try {
+      const res = await api.closeDesk(companyId, feedback);
+      setIsOpen(res.is_open);
+      setClosingFeedback(false);
+    } finally {
+      setClosing(false);
     }
   }
 
@@ -281,14 +324,16 @@ export default function DeskTablet() {
           <button
             className={`checkin-status ${isOpen ? 'in' : 'out'}`}
             style={{ cursor: 'pointer', marginTop: 0 }}
-            disabled={togglingOpen}
-            onClick={toggleDeskOpen}
-            title="Whether candidates can currently see and register for this company"
+            disabled={togglingOpen || closingFeedback || closing}
+            onClick={isOpen ? startClosing : reopenDesk}
+            title={isOpen ? 'Close Desk — a short feedback form is required first' : 'Whether candidates can currently see and register for this company'}
           >
-            {isOpen ? 'Desk open — candidates can register' : 'Desk closed — hidden from candidates'}
+            {isOpen ? 'Desk open — Close Desk' : 'Desk closed — hidden from candidates'}
           </button>
         )}
       </div>
+
+      {closingFeedback && <CloseDeskFeedback onSubmit={submitCloseDesk} onCancel={cancelClosing} />}
 
       <div className="tablet-grid">
         <AnimatePresence mode="wait">

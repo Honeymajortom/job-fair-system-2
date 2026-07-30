@@ -1,8 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 
-const MAX_COMPANIES = 3;
-
 // Rendered inline by LivePosition.jsx once a candidate is checked in but
 // hasn't picked companies yet (data.checked_in && data.slots.length === 0) —
 // not its own route. Adapted from the old CompanyTiles.jsx (v1's pre-check-in
@@ -10,20 +8,30 @@ const MAX_COMPANIES = 3;
 // before it, per the new candidate journey. Booking-cap enforcement
 // (new_architecture.md §3.1) still happens server-side, not here — a pick
 // past the cap comes back Waitlisted rather than the tile being pre-disabled.
+// candidate_and_desk_improvements_plan.md §A: the cap is admin-configurable
+// per fair cycle now (fair_settings.max_companies_per_candidate) — read off
+// GET /qr/companies's response instead of a hardcoded constant, defaulting to
+// 3 only for the brief moment before that response lands.
 export default function SelectCompanies({ qr, onDone }) {
   const [companies, setCompanies] = useState(null);
+  const [maxCompanies, setMaxCompanies] = useState(3);
   const [selected, setSelected] = useState([]);
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    api.qrCompanies(qr).then(setCompanies).catch((err) => setError(err.message));
+    api.qrCompanies(qr)
+      .then((res) => {
+        setCompanies(res.companies);
+        setMaxCompanies(res.max_companies_per_candidate);
+      })
+      .catch((err) => setError(err.message));
   }, [qr]);
 
   function toggle(id) {
     setSelected((prev) => {
       if (prev.includes(id)) return prev.filter((x) => x !== id);
-      if (prev.length >= MAX_COMPANIES) return prev;
+      if (prev.length >= maxCompanies) return prev;
       return [...prev, id];
     });
   }
@@ -44,7 +52,7 @@ export default function SelectCompanies({ qr, onDone }) {
   return (
     <>
       <p className="desk-call-note calm" style={{ marginTop: 0 }}>
-        You're checked in! Now pick up to {MAX_COMPANIES} companies to join the queue for.
+        You're checked in! Now pick up to {maxCompanies} companies to join the queue for.
       </p>
       {error && <div className="error-note">{error}</div>}
       {!companies && !error && <div className="save-note">Loading companies…</div>}
@@ -72,7 +80,7 @@ export default function SelectCompanies({ qr, onDone }) {
       })}
       <div className="sticky-cta">
         <button className="btn" disabled={selected.length === 0 || submitting} onClick={submit}>
-          {submitting ? 'Joining…' : `Join the queue · ${selected.length} of ${MAX_COMPANIES} selected`}
+          {submitting ? 'Joining…' : `Join the queue · ${selected.length} of ${maxCompanies} selected`}
         </button>
       </div>
     </>

@@ -134,7 +134,11 @@ async function computeFloorStats({ date, centerId } = {}) {
     // today's active fair, or a past day's Floor view would show today's
     // capacity numbers against an ended cycle. Blank date (all-time view)
     // falls back to "active fair for this company's Center", same
-    // live-only convention every other consumer uses.
+    // live-only convention every other consumer uses. Both the fair_settings
+    // and fair_company_roster joins below are INNER, not LEFT — a company
+    // with no roster row for the resolved fair (never added to this cycle's
+    // roster, or no fair resolves at all) is excluded from Floor entirely,
+    // not shown with null seats/interview_minutes.
     pool.query(`
       WITH ccs_scoped AS (
         -- deleted_at carried through, not pre-filtered, so on_hand/remaining
@@ -164,9 +168,9 @@ async function computeFloorStats({ date, centerId } = {}) {
               ) t) AS on_hand_tokens
       FROM companies c
       LEFT JOIN ccs_scoped ccs ON ccs.company_id = c.id
-      LEFT JOIN fair_settings fs ON fs.center_id = c.center_id
+      JOIN fair_settings fs ON fs.center_id = c.center_id
         AND (($1::date IS NOT NULL AND fs.fair_date = $1::date) OR ($1::date IS NULL AND fs.is_active = true))
-      LEFT JOIN fair_company_roster r ON r.company_id = c.id AND r.fair_settings_id = fs.id
+      JOIN fair_company_roster r ON r.company_id = c.id AND r.fair_settings_id = fs.id
       WHERE ($2::int IS NULL OR c.center_id = $2)
       GROUP BY c.id, r.seats, r.interview_minutes
       ORDER BY c.company_name

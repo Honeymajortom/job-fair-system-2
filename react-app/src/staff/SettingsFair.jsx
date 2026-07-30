@@ -19,8 +19,16 @@ export default function SettingsFair() {
   const { selectedCenterId, effectiveCenterId } = useCenter();
   const [fairSettings, setFairSettings] = useState(null);
   const [fairDate, setFairDate] = useState('');
+  // candidate_and_desk_improvements_plan.md §A: max_companies_per_candidate
+  // already existed on fair_settings (readable/writable via this same
+  // POST/PUT pair) but had no admin-facing form field anywhere — this is that
+  // field, both at fair-creation time and as an inline edit once a fair is
+  // active.
+  const [maxCompanies, setMaxCompanies] = useState(3);
   const [startingFair, setStartingFair] = useState(false);
   const [endingFair, setEndingFair] = useState(false);
+  const [savingCap, setSavingCap] = useState(false);
+  const [capDraft, setCapDraft] = useState('');
   const [archivingId, setArchivingId] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
   const [toast, setToast] = useState(null);
@@ -50,13 +58,38 @@ export default function SettingsFair() {
     if (!selectedCenterId) { window.alert('Select a Center (Settings → Centers) before starting a job fair.'); return; }
     setStartingFair(true);
     try {
-      await api.activateFair({ fair_date: fairDate, center_id: Number(selectedCenterId) });
+      const activated = await api.activateFair({ fair_date: fairDate, center_id: Number(selectedCenterId) });
+      // /fair-settings/activate itself only takes fair_date/fair_name/center_id
+      // — max_companies_per_candidate is set as a follow-up PUT against the
+      // row it just created/reactivated, same route the inline edit below uses.
+      if (Number(maxCompanies) !== 3) {
+        await api.updateFairSettings(activated.id, { max_companies_per_candidate: Number(maxCompanies) });
+      }
       showToast(`Job fair started for ${fmtDate(fairDate)}`);
       loadFairSettings();
     } catch (err) {
       showToast(err.message, true);
     } finally {
       setStartingFair(false);
+    }
+  }
+
+  async function saveCap() {
+    if (!activeFair) return;
+    const n = Number(capDraft);
+    if (!Number.isInteger(n) || n <= 0) {
+      showToast('Enter a whole number greater than 0', true);
+      return;
+    }
+    setSavingCap(true);
+    try {
+      await api.updateFairSettings(activeFair.id, { max_companies_per_candidate: n });
+      showToast(`Max companies per candidate set to ${n}`);
+      loadFairSettings();
+    } catch (err) {
+      showToast(err.message, true);
+    } finally {
+      setSavingCap(false);
     }
   }
 
@@ -126,6 +159,14 @@ export default function SettingsFair() {
   const activeFair = fairSettings && fairSettings.find((f) => f.is_active);
   const archivableFairs = fairSettings ? fairSettings.filter((f) => !f.is_active && f.candidate_count > 0) : [];
 
+  // Keeps the inline cap editor's draft in sync with whatever's actually
+  // stored — re-syncs whenever a different fair becomes active or the value
+  // itself changes server-side (e.g. after saveCap's own reload).
+  useEffect(() => {
+    if (activeFair) setCapDraft(String(activeFair.max_companies_per_candidate));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeFair?.id, activeFair?.max_companies_per_candidate]);
+
   return (
     <div>
       <div className="sec-label" style={{ marginBottom: 10 }}>Job fair</div>
@@ -139,12 +180,36 @@ export default function SettingsFair() {
             <button className="btn ghost" style={{ width: 'auto', padding: '10px 14px' }} disabled={endingFair} onClick={endFair}>
               {endingFair ? 'Ending…' : 'End job fair'}
             </button>
+            <div className="field" style={{ maxWidth: 160, marginBottom: 0 }}>
+              <label>Max companies per candidate</label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  type="number"
+                  min={1}
+                  value={capDraft}
+                  onChange={(e) => setCapDraft(e.target.value)}
+                  style={{ width: 70 }}
+                />
+                <button
+                  className="btn ghost"
+                  style={{ width: 'auto', padding: '10px 14px' }}
+                  disabled={savingCap || Number(capDraft) === activeFair.max_companies_per_candidate}
+                  onClick={saveCap}
+                >
+                  {savingCap ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </div>
           </div>
         ) : (
           <form onSubmit={startFair} style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'end' }}>
             <div className="field" style={{ maxWidth: 180, marginBottom: 0 }}>
               <label>Fair date</label>
               <input type="date" value={fairDate} onChange={(e) => setFairDate(e.target.value)} />
+            </div>
+            <div className="field" style={{ maxWidth: 160, marginBottom: 0 }}>
+              <label>Max companies per candidate</label>
+              <input type="number" min={1} value={maxCompanies} onChange={(e) => setMaxCompanies(e.target.value)} />
             </div>
             <button className="btn" style={{ width: 'auto', padding: '10px 14px' }} type="submit" disabled={startingFair}>
               {startingFair ? 'Starting…' : 'Start job fair'}

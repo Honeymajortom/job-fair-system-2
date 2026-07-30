@@ -3,6 +3,7 @@ import { Navigate, useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import SiteCredit from './SiteCredit.jsx';
 import OfflineBanner from '../common/OfflineBanner';
+import WorkExperienceFields from '../common/WorkExperienceFields';
 
 const TRAVEL_PRESETS = [10, 25, 45, 60];
 const RESUME_MAX_BYTES = 5 * 1024 * 1024; // matches the server's multer limit — catch it client-side first
@@ -21,7 +22,8 @@ function formatBytes(n) {
 export default function DetailsForm() {
   const navigate = useNavigate();
 
-  const [form, setForm] = useState({ name: '', mobile: '', age: '', qualification: '', travel_time_minutes: '', gender: '', is_sdc: '' });
+  const [form, setForm] = useState({ name: '', mobile: '', age: '', qualification: '', travel_time_minutes: '', gender: '', is_sdc: '', employment_status: '' });
+  const [workExperience, setWorkExperience] = useState([]);
   const [resumeFile, setResumeFile] = useState(null);
   const [resumeError, setResumeError] = useState(null);
   const [dragOver, setDragOver] = useState(false);
@@ -42,13 +44,25 @@ export default function DetailsForm() {
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
+  // candidate_and_desk_improvements_plan.md §B: the work-experience "add a
+  // company + years/months" facility only shows for Working/Experienced —
+  // Studying/Fresher have nothing to list.
+  const showWorkExperience = form.employment_status === 'Working' || form.employment_status === 'Experienced';
+
   // Client-side mirror of the server's own checks (PDF-only, 5MB cap) — same
   // reasoning as elsewhere in this app: catch it before a wasted round trip,
   // not instead of the server check (the server never trusts this).
+  // candidate_and_desk_improvements_plan.md §C: PDF or a photo of the resume —
+  // mirrors the server's own mimetype+extension check (routes/public.js's
+  // resolveResumeExt), same "catch it client-side first" reasoning as before.
   function handleResumeFile(file) {
     if (!file) return;
-    if (file.type !== 'application/pdf' || !file.name.toLowerCase().endsWith('.pdf')) {
-      setResumeError('Only PDF files are accepted.');
+    const name = file.name.toLowerCase();
+    const isPdf = file.type === 'application/pdf' && name.endsWith('.pdf');
+    const isPng = file.type === 'image/png' && name.endsWith('.png');
+    const isJpg = file.type === 'image/jpeg' && /\.(jpg|jpeg)$/.test(name);
+    if (!isPdf && !isPng && !isJpg) {
+      setResumeError('Only PDF or image (JPG/PNG) files are accepted.');
       return;
     }
     if (file.size > RESUME_MAX_BYTES) {
@@ -80,6 +94,8 @@ export default function DetailsForm() {
         travel_time_minutes: form.travel_time_minutes ? Number(form.travel_time_minutes) : undefined,
         gender: form.gender || undefined,
         is_sdc: form.is_sdc === '' ? undefined : form.is_sdc === 'yes',
+        employment_status: form.employment_status || undefined,
+        work_experience: showWorkExperience ? workExperience.filter((e) => e.company_name.trim()) : undefined,
       });
       // The check-in QR is only ever handed out here, at registration — the
       // live schedule endpoint deliberately won't echo it back (red-team
@@ -165,6 +181,19 @@ export default function DetailsForm() {
           </select>
         </div>
         <div className="field">
+          <label>Employment status</label>
+          <select required value={form.employment_status} onChange={(e) => set('employment_status', e.target.value)}>
+            <option value="" disabled>Select…</option>
+            <option value="Fresher">Fresher</option>
+            <option value="Studying">Studying</option>
+            <option value="Working">Working</option>
+            <option value="Experienced">Experienced</option>
+          </select>
+        </div>
+        {showWorkExperience && (
+          <WorkExperienceFields entries={workExperience} onChange={setWorkExperience} />
+        )}
+        <div className="field">
           <label>Travel time to venue</label>
           <select value={form.travel_time_minutes} onChange={(e) => set('travel_time_minutes', e.target.value)}>
             <option value="">Not sure</option>
@@ -189,7 +218,7 @@ export default function DetailsForm() {
               }}
             >
               <span className="ic">📄</span>
-              <span className="txt">Tap to choose a PDF, or drag one here</span>
+              <span className="txt">Tap to choose a PDF or photo of your resume, or drag one here</span>
               <span className="hint">Optional — you can skip this and still register</span>
             </div>
           ) : (
@@ -205,7 +234,7 @@ export default function DetailsForm() {
           <input
             ref={fileInputRef}
             type="file"
-            accept="application/pdf"
+            accept="application/pdf,image/jpeg,image/png"
             style={{ display: 'none' }}
             onChange={(e) => handleResumeFile(e.target.files[0])}
           />

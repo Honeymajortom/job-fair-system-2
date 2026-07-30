@@ -584,3 +584,83 @@ FROM companies c
 JOIN fair_settings fs ON fs.center_id = c.center_id
 WHERE NOT EXISTS (SELECT 1 FROM fair_company_roster r WHERE r.company_id = c.id)
 ORDER BY c.id, fs.fair_date DESC;
+
+-- ---------------------------------------------------------------------------
+-- candidate_and_desk_improvements_plan.md §A — fair_settings.
+-- max_companies_per_candidate already existed on this table (stage-2's
+-- original design) and was already readable/writable via GET/POST/PUT
+-- /fair-settings and /fair-settings/activate — but nothing that actually
+-- *enforced* the "pick up to N companies" cap ever read it: companyAssignment.js
+-- and its three callers (registerCandidate.js, routes/candidates.js,
+-- routes/public.js) all used their own hardcoded `MAX_COMPANIES = 3` constant
+-- instead, same dead-column pattern as employment_status was for §B. This
+-- column was already correctly configurable end-to-end; it just had zero
+-- effect. Only a missing positive-value guard is added here (the column had
+-- no CHECK before, just NOT NULL DEFAULT 3) — same idiom as
+-- companies_interview_minutes_positive above.
+-- ---------------------------------------------------------------------------
+ALTER TABLE fair_settings DROP CONSTRAINT IF EXISTS fair_settings_max_companies_positive;
+ALTER TABLE fair_settings ADD CONSTRAINT fair_settings_max_companies_positive
+  CHECK (max_companies_per_candidate > 0);
+
+-- ---------------------------------------------------------------------------
+-- candidate_and_desk_improvements_plan.md §B — employment_status was live in
+-- registerCandidate.js/reports.js but had no UI ever setting it, so every row
+-- in production reads the default 'Fresher'. 'Other' is dropped (nothing has
+-- ever set it — no real data lost) and replaced with 'Experienced'; 'Studying'
+-- and 'Working' are kept. When 'Working' or 'Experienced', the candidate can
+-- list one or more past companies via candidate_work_experience below — a
+-- repeatable "add" facility, not a flat pair of years/months columns, since
+-- more than one past employer must be representable.
+-- ---------------------------------------------------------------------------
+ALTER TABLE candidates DROP CONSTRAINT IF EXISTS candidates_employment_status_check;
+ALTER TABLE candidates ADD CONSTRAINT candidates_employment_status_check
+  CHECK (employment_status IN ('Studying', 'Working', 'Fresher', 'Experienced'));
+
+CREATE TABLE IF NOT EXISTS candidate_work_experience (
+  id             SERIAL PRIMARY KEY,
+  candidate_id   INTEGER NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+  company_name   VARCHAR NOT NULL,
+  years          SMALLINT NOT NULL DEFAULT 0 CHECK (years >= 0),
+  months         SMALLINT NOT NULL DEFAULT 0 CHECK (months BETWEEN 0 AND 11),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_work_experience_candidate ON candidate_work_experience(candidate_id);
+
+-- ---------------------------------------------------------------------------
+-- candidate_and_desk_improvements_plan.md §C — resume upload was PDF-only
+-- end to end (multer fileFilter, a hardcoded `${token}.pdf` on-disk filename,
+-- and the serving route's own hardcoded `.pdf` path). Once an image is also
+-- accepted, both the serving route and the Desk UI (<iframe> vs <img>) need
+-- to know which kind was actually stored, without re-sniffing file bytes on
+-- every read — one nullable column, set alongside resume_uploaded_at at
+-- upload time, same "doubles as existence+type metadata" idiom already used
+-- by resume_uploaded_at itself.
+-- ---------------------------------------------------------------------------
+ALTER TABLE candidates
+  ADD COLUMN IF NOT EXISTS resume_ext VARCHAR CHECK (resume_ext IN ('pdf', 'jpg', 'jpeg', 'png'));
+
+-- ---------------------------------------------------------------------------
+-- candidate_and_desk_improvements_plan.md §D — Company HR's "Close Desk"
+-- action now requires a short feedback form before is_open actually flips to
+-- false (routes/companies.js's POST /companies/:id/close-desk). One row per
+-- company per fair cycle: UNIQUE(company_id, fair_settings_id) makes a
+-- reopen-then-reclose the same cycle an upsert rather than a pile of
+-- duplicate rows, same reasoning candidate_feedback's UNIQUE(candidate_id)
+-- already uses. ON DELETE SET NULL (not CASCADE) so a submitted row outlives
+-- a company/fair-cycle hard delete, matching candidate_feedback's own
+-- candidate_id column.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS company_hr_feedback (
+  id                      SERIAL PRIMARY KEY,
+  company_id              INTEGER REFERENCES companies(id) ON DELETE SET NULL,
+  fair_settings_id        INTEGER REFERENCES fair_settings(id) ON DELETE SET NULL,
+  candidate_quality       SMALLINT NOT NULL CHECK (candidate_quality BETWEEN 1 AND 5),
+  venue_rating            SMALLINT NOT NULL CHECK (venue_rating BETWEEN 1 AND 5),
+  app_performance_rating  SMALLINT NOT NULL CHECK (app_performance_rating BETWEEN 1 AND 5),
+  volunteer_satisfaction  SMALLINT NOT NULL CHECK (volunteer_satisfaction BETWEEN 1 AND 5),
+  future_interest         VARCHAR NOT NULL CHECK (future_interest IN
+                             ('Definitely Yes', 'Probably Yes', 'Maybe', 'Probably No', 'Definitely No')),
+  submitted_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (company_id, fair_settings_id)
+);

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { AnimatePresence, m } from 'framer-motion';
+import AutoResumeCard from './AutoResumeCard';
 
 const OUTCOMES = ['Selected', 'Rejected', 'Shortlisted', 'Hold'];
 
@@ -65,6 +66,15 @@ export default function IncomingCard({ candidate, companyId, ratingParameters, i
         {[
           ['Name', candidate.name],
           ['Qual', candidate.qualification || '—'],
+          // candidate_and_desk_improvements_plan.md §B: a compact summary here
+          // ("Fresher"/"Studying", or "Working — N companies") — the full
+          // per-entry list belongs in the resume view (real resume or the
+          // auto-resume fallback), not crammed into this grid.
+          ['Experience', candidate.employmentStatus
+            ? (candidate.employmentStatus === 'Working' || candidate.employmentStatus === 'Experienced')
+              ? `${candidate.employmentStatus} — ${candidate.workExperience?.length || 0} compan${candidate.workExperience?.length === 1 ? 'y' : 'ies'}`
+              : candidate.employmentStatus
+            : '—'],
           ['Missed calls', candidate.missedCalls ?? 0],
           ['Coming from', candidate.comingFrom],
         ].map(([label, value]) => (
@@ -93,13 +103,24 @@ export default function IncomingCard({ candidate, companyId, ratingParameters, i
             <div className="resume-box">
               <div className="resume-box-head">📄 Resume</div>
               {candidate.hasResume ? (
-                <iframe
-                  title={`${candidate.token} resume`}
-                  className="resume-frame"
-                  src={`/api/candidates/${candidate.token}/resume?company_id=${companyId}`}
-                />
+                // candidate_and_desk_improvements_plan.md §C: resume_ext
+                // decides <iframe> (PDF) vs <img> (jpg/jpeg/png) — same
+                // endpoint URL either way, only the tag changes.
+                candidate.resumeExt && candidate.resumeExt !== 'pdf' ? (
+                  <img
+                    alt={`${candidate.token} resume`}
+                    className="resume-frame"
+                    src={`/api/candidates/${candidate.token}/resume?company_id=${companyId}`}
+                  />
+                ) : (
+                  <iframe
+                    title={`${candidate.token} resume`}
+                    className="resume-frame"
+                    src={`/api/candidates/${candidate.token}/resume?company_id=${companyId}`}
+                  />
+                )
               ) : (
-                <p className="save-note" style={{ textAlign: 'left', padding: '14px 12px' }}>No resume</p>
+                <AutoResumeCard candidate={candidate} />
               )}
             </div>
             <button className="btn ok" onClick={() => setPickingOutcome(true)}>

@@ -9,7 +9,7 @@ const requireRole = require('../middleware/requireRole');
 const rateLimit = require('../middleware/rateLimit');
 const redisCache = require('../middleware/redisCache');
 const registerCandidate = require('../lib/registerCandidate');
-const { assignCompanies, MAX_COMPANIES } = require('../lib/companyAssignment');
+const { assignCompanies } = require('../lib/companyAssignment');
 const { normalizeMobile, isValidMobile } = require('../lib/mobile');
 const store = require('../lib/queueStore');
 const { resolveRung } = require('../lib/pingLadder');
@@ -89,23 +89,36 @@ const acknowledgeLimit = rateLimit({ prefix: 'acknowledge', windowSec: 600, max:
 // fix a misclick is normal, this is just a backstop.
 const companyInterestLimit = rateLimit({ prefix: 'company-interest', windowSec: 600, max: 5, key: (req) => verifyQr(req.params.qr) });
 
-// PDF-only (mimetype + extension check, no magic-byte sniffing — matches
-// this project's minimal-dependency style), 5MB cap. Filename is always
-// `${req.verifiedToken}.pdf` — set by the route handler below only *after*
+// candidate_and_desk_improvements_plan.md §C: PDF or image (jpg/jpeg/png) —
+// mimetype + extension check, no magic-byte sniffing, same minimal-dependency
+// style as the PDF-only check this replaces. 5MB cap unchanged. Filename is
+// `${req.verifiedToken}.{ext}` — set by the route handler below only *after*
 // verifyQr() has confirmed the signature, never taken from the URL directly
 // (red-team finding, 2026-07-15: token_no is sequential/guessable, so trusting
 // it bare here would let anyone overwrite any candidate's resume by just
 // enumerating A-1, A-2, A-3…, same class of bug the check-in QR's HMAC
 // already exists to prevent — this route just hadn't reused that precedent).
+// resolveExt() decides the on-disk extension from the upload's own mimetype/
+// name — used by both fileFilter (to accept/reject) and diskStorage.filename
+// (multer's filename callback only gets `file`, not whatever fileFilter
+// computed, so this is a plain function shared by both rather than a value
+// stashed on req).
+function resolveResumeExt(file) {
+  if (file.mimetype === 'application/pdf' && file.originalname.toLowerCase().endsWith('.pdf')) return 'pdf';
+  if (file.mimetype === 'image/png' && file.originalname.toLowerCase().endsWith('.png')) return 'png';
+  if (file.mimetype === 'image/jpeg' && /\.(jpg|jpeg)$/i.test(file.originalname)) return 'jpg';
+  return null;
+}
+
 const resumeUpload = multer({
   storage: multer.diskStorage({
     destination: RESUME_DIR,
-    filename: (req, _file, cb) => cb(null, `${req.verifiedToken}.pdf`),
+    filename: (req, file, cb) => cb(null, `${req.verifiedToken}.${resolveResumeExt(file)}`),
   }),
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    const isPdf = file.mimetype === 'application/pdf' && file.originalname.toLowerCase().endsWith('.pdf');
-    cb(isPdf ? null : new Error('Only PDF files are allowed'), isPdf);
+    const ext = resolveResumeExt(file);
+    cb(ext ? null : new Error('Only PDF or image (JPG/PNG) files are allowed'), Boolean(ext));
   },
 });
 
@@ -238,7 +251,19 @@ router.get('/qr/companies', readIpLimit, ensureDeviceCookie, redisCache(60), asy
     ...row,
     queue_depth: await store.queueSize(row.id),
   })));
-  res.json(rows);
+
+  // candidate_and_desk_improvements_plan.md §A: SelectCompanies.jsx's "pick up
+  // to N" cap is admin-configurable per fair cycle now, not a hardcoded
+  // frontend constant — rides alongside the company list this endpoint
+  // already returns rather than a second round trip. Falls back to the schema
+  // default (3) when fairSettingsId couldn't be resolved (no/invalid ?qr=),
+  // same as this route's other unscoped fallbacks above.
+  const capRes = fairSettingsId
+    ? await pool.query('SELECT max_companies_per_candidate FROM fair_settings WHERE id = $1', [fairSettingsId])
+    : { rows: [] };
+  const maxCompanies = capRes.rows.length ? capRes.rows[0].max_companies_per_candidate : 3;
+
+  res.json({ companies: rows, max_companies_per_candidate: maxCompanies });
 }));
 
 // Public: self-registration — the morning-spike path. Limiters run first so
@@ -300,7 +325,11 @@ router.post('/qr/resume/:qr', resumeUploadLimit, asyncHandler(async (req, res) =
   }
   if (!req.file) return res.status(400).json({ error: 'resume file is required' });
 
-  await pool.query('UPDATE candidates SET resume_uploaded_at = now() WHERE token_no = $1', [tokenNo]);
+  // candidate_and_desk_improvements_plan.md §C: the serving route (routes/
+  // candidates.js) and the Desk UI (<iframe> vs <img>) both need to know
+  // which kind was actually stored — resolveResumeExt(req.file) here is the
+  // same function fileFilter/diskStorage.filename already used to decide it.
+  await pool.query('UPDATE candidates SET resume_uploaded_at = now(), resume_ext = $2 WHERE token_no = $1', [tokenNo, resolveResumeExt(req.file)]);
   res.json({ ok: true });
 }));
 
@@ -419,17 +448,22 @@ router.post('/qr/select-companies/:qr', selectCompaniesLimit, asyncHandler(async
   if (!Array.isArray(companyIds) || companyIds.length === 0) {
     return res.status(400).json({ error: 'Select at least one company' });
   }
-  if (companyIds.length > MAX_COMPANIES) {
-    return res.status(400).json({ error: `Select at most ${MAX_COMPANIES} companies` });
-  }
 
   // company_roster_plan.md: read the candidate's own fair cycle (set at
   // registration) instead of a fresh "whichever fair is active" lookup —
   // arbitrary once 2+ Centers each have a live fair.
+  // candidate_and_desk_improvements_plan.md §A: max_companies_per_candidate is
+  // per-fair-cycle (admin-configurable) now, fetched alongside fair_hours off
+  // the same row instead of the old hardcoded MAX_COMPANIES constant.
   const fairRes = candidate.fair_settings_id
-    ? await pool.query('SELECT fair_hours FROM fair_settings WHERE id = $1', [candidate.fair_settings_id])
+    ? await pool.query('SELECT fair_hours, max_companies_per_candidate FROM fair_settings WHERE id = $1', [candidate.fair_settings_id])
     : { rows: [] };
   const fairHours = fairRes.rows.length ? Number(fairRes.rows[0].fair_hours) : 8;
+  const maxCompanies = fairRes.rows.length ? fairRes.rows[0].max_companies_per_candidate : 3;
+
+  if (companyIds.length > maxCompanies) {
+    return res.status(400).json({ error: `Select at most ${maxCompanies} companies` });
+  }
 
   const client = await pool.connect();
   let assigned, waitlisted;

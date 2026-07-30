@@ -1,4 +1,10 @@
-const MAX_COMPANIES = 3;
+// candidate_and_desk_improvements_plan.md §A: the "pick up to N companies" cap
+// used to live here as a bare MAX_COMPANIES constant, duplicated across every
+// caller. It's now per-fair-cycle (fair_settings.max_companies_per_candidate,
+// admin-configurable) — each caller below fetches it from the relevant
+// fair_settings row itself and enforces it before calling assignCompanies(),
+// which only ever handled per-company capacity/waitlist, never the candidate-
+// wide "how many companies total" cap.
 
 // Extracted from registerCandidate.js's Gate 2 (new_architecture.md §3.1/§4) so
 // it can run either inside registration's own transaction (company_ids picked
@@ -87,4 +93,4 @@ async function assignCompanies(client, { candidateId, company_ids, fairHours, fa
   return { assigned, waitlisted };
 }
 
-module.exports = { assignCompanies, MAX_COMPANIES };
+module.exports = { assignCompanies };

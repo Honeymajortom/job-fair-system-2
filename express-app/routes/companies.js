@@ -231,6 +231,81 @@ router.put('/companies/:id/open-status', authenticateJWT, requireRole('admin', '
   res.json(result.rows[0]);
 }));
 
+const FUTURE_INTEREST_VALUES = ['Definitely Yes', 'Probably Yes', 'Maybe', 'Probably No', 'Definitely No'];
+
+// candidate_and_desk_improvements_plan.md §D: Company HR's "Close Desk"
+// button — unlike the plain instant PUT /open-status toggle above (which
+// admin also uses, proxy-closing on HR's behalf), this is the path
+// DeskTablet.jsx's own close action goes through: a short feedback form is
+// required before is_open actually flips to false. Kept as its own route
+// rather than an optional-feedback-body branch on PUT /open-status, so that
+// route stays a plain simple toggle for the admin-proxy case.
+// requireCompanyScope confines company_hr to its own company_id, same as
+// PUT /open-status; admin may also call this directly (e.g. closing on HR's
+// behalf while still capturing feedback) but the UI only wires it from
+// DeskTablet.jsx.
+router.post('/companies/:id/close-desk', authenticateJWT, requireRole('admin', 'company_hr'), requireCompanyScope((req) => req.params.id), asyncHandler(async (req, res) => {
+  const { candidate_quality, venue_rating, app_performance_rating, volunteer_satisfaction, future_interest } = req.body;
+  const ratings = { candidate_quality, venue_rating, app_performance_rating, volunteer_satisfaction };
+  for (const [key, value] of Object.entries(ratings)) {
+    if (!Number.isInteger(value) || value < 1 || value > 5) {
+      return res.status(400).json({ error: `${key} must be a whole number from 1 to 5` });
+    }
+  }
+  if (!FUTURE_INTEREST_VALUES.includes(future_interest)) {
+    return res.status(400).json({ error: `future_interest must be one of: ${FUTURE_INTEREST_VALUES.join(', ')}` });
+  }
+
+  const client = await pool.connect();
+  let is_open;
+  try {
+    await client.query('BEGIN');
+
+    const fairRes = await client.query(
+      `SELECT fs.id FROM fair_settings fs
+       WHERE fs.center_id = (SELECT center_id FROM companies WHERE id = $1) AND fs.is_active = true`,
+      [req.params.id]
+    );
+    if (!fairRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'No active fair for this company\'s Center' });
+    }
+    const fairSettingsId = fairRes.rows[0].id;
+
+    await client.query(
+      `INSERT INTO company_hr_feedback
+         (company_id, fair_settings_id, candidate_quality, venue_rating, app_performance_rating, volunteer_satisfaction, future_interest)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (company_id, fair_settings_id) DO UPDATE SET
+         candidate_quality = EXCLUDED.candidate_quality, venue_rating = EXCLUDED.venue_rating,
+         app_performance_rating = EXCLUDED.app_performance_rating, volunteer_satisfaction = EXCLUDED.volunteer_satisfaction,
+         future_interest = EXCLUDED.future_interest, submitted_at = now()`,
+      [req.params.id, fairSettingsId, candidate_quality, venue_rating, app_performance_rating, volunteer_satisfaction, future_interest]
+    );
+
+    const rosterRes = await client.query(
+      `UPDATE fair_company_roster SET is_open = false
+       WHERE company_id = $1 AND fair_settings_id = $2
+       RETURNING is_open`,
+      [req.params.id, fairSettingsId]
+    );
+    if (!rosterRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'This company is not on the current fair\'s roster' });
+    }
+    is_open = rosterRes.rows[0].is_open;
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  res.json({ id: Number(req.params.id), is_open });
+}));
+
 // Admin: delete a company — hard delete (companies aren't fair-scoped or
 // soft-deleted like candidates are). FK RESTRICT on interview_slots and
 // candidate_company_status is the real guard here — Postgres raises 23001

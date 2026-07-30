@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 
-const MAX_COMPANIES = 3;
 const REMOVABLE_STATUSES = ['Pending', 'Waitlisted'];
 // "Done with interviews" for the reassurance note below — mirrors
 // lib/pingLadder.js's DONE_STATUSES, minus the need to import a backend file
@@ -30,6 +29,14 @@ export default function CandidateLookup({ initialToken = '' }) {
   const [toAdd, setToAdd] = useState([]);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
+
+  // candidate_and_desk_improvements_plan.md §B: the staff-side "facility to
+  // add company and years/months" — for a candidate who already registered,
+  // not just at registration time.
+  const [weCompany, setWeCompany] = useState('');
+  const [weYears, setWeYears] = useState('');
+  const [weMonths, setWeMonths] = useState('');
+  const [weBusy, setWeBusy] = useState(false);
 
   // company_roster_plan.md: only companies actually on the looked-up
   // candidate's own fair cycle's roster are offered here — not the full
@@ -177,18 +184,57 @@ export default function CandidateLookup({ initialToken = '' }) {
     }
   }
 
+  // candidate_and_desk_improvements_plan.md §A: the cap is admin-configurable
+  // per fair cycle (fair_settings.max_companies_per_candidate) — GET
+  // /candidates/:token now returns the looked-up candidate's own resolved
+  // value instead of a hardcoded frontend constant.
+  const maxCompanies = candidate ? candidate.max_companies_per_candidate : 3;
+
+  // candidate_and_desk_improvements_plan.md §B: append/remove one work-
+  // experience entry against an already-registered candidate. Re-looks-up on
+  // success (same reasoning as reassignCompany above) rather than patching
+  // optimistically — simpler than reconstructing the entry's server-assigned
+  // id client-side.
+  async function addWorkExperienceEntry(e) {
+    e.preventDefault();
+    if (!candidate || !weCompany.trim()) return;
+    setWeBusy(true);
+    try {
+      await api.addWorkExperience(candidate.id, { company_name: weCompany.trim(), years: weYears || 0, months: weMonths || 0 });
+      setWeCompany(''); setWeYears(''); setWeMonths('');
+      await lookupByToken(null, candidate.token_no);
+    } catch (err) {
+      showToast(err.message, true);
+    } finally {
+      setWeBusy(false);
+    }
+  }
+
+  async function removeWorkExperienceEntry(entryId) {
+    if (!candidate) return;
+    setWeBusy(true);
+    try {
+      await api.removeWorkExperience(candidate.id, entryId);
+      await lookupByToken(null, candidate.token_no);
+    } catch (err) {
+      showToast(err.message, true);
+    } finally {
+      setWeBusy(false);
+    }
+  }
+
   function toggleAdd(id) {
     setToAdd((prev) => {
       if (prev.includes(id)) return prev.filter((x) => x !== id);
       const activeCount = candidate ? candidate.companies.length : 0;
-      if (activeCount + prev.length >= MAX_COMPANIES) return prev;
+      if (activeCount + prev.length >= maxCompanies) return prev;
       return [...prev, id];
     });
   }
 
   const activeCompanyIds = candidate ? new Set(candidate.companies.map((c) => c.company_id)) : new Set();
   const availableToAdd = companies.filter((c) => !activeCompanyIds.has(c.id));
-  const atCap = candidate && candidate.companies.length >= MAX_COMPANIES;
+  const atCap = candidate && candidate.companies.length >= maxCompanies;
   const settledCount = candidate ? candidate.companies.filter((c) => SETTLED_STATUSES.includes(c.status)).length : 0;
 
   return (
@@ -260,6 +306,7 @@ export default function CandidateLookup({ initialToken = '' }) {
               <div><span className="kv-label">Age</span><span className="kv-val">{candidate.age ?? '—'}</span></div>
               <div><span className="kv-label">Qualification</span><span className="kv-val">{candidate.qualification || '—'}</span></div>
               <div><span className="kv-label">Field</span><span className="kv-val">{candidate.field || '—'}</span></div>
+              <div><span className="kv-label">Employment status</span><span className="kv-val">{candidate.employment_status || '—'}</span></div>
               <div><span className="kv-label">Gender</span><span className="kv-val">{candidate.gender || '—'}</span></div>
               <div>
                 <span className="kv-label">SDC candidate</span>
@@ -327,7 +374,7 @@ export default function CandidateLookup({ initialToken = '' }) {
             </div>
 
             <div className="sec-label" style={{ marginTop: 16, marginBottom: 8 }}>
-              Add companies {atCap && '— at the 3-company limit'}
+              Add companies {atCap && `— at the ${maxCompanies}-company limit`}
             </div>
             {settledCount > 0 && !atCap && (
               <p className="save-note" style={{ marginTop: 0, marginBottom: 10, textAlign: 'left' }}>
@@ -358,6 +405,53 @@ export default function CandidateLookup({ initialToken = '' }) {
                 </button>
               </>
             )}
+          </div>
+
+          <div className="manage-companies-panel">
+            <div className="sec-label" style={{ marginBottom: 8 }}>Work experience</div>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead><tr><th>Company</th><th>Duration</th><th></th></tr></thead>
+                <tbody>
+                  {candidate.work_experience.map((w) => (
+                    <tr key={w.id}>
+                      <td>{w.company_name}</td>
+                      <td>{w.years}y {w.months}m</td>
+                      <td>
+                        <button
+                          className="btn ghost"
+                          style={{ width: 'auto', padding: '6px 12px', color: 'var(--st-rejected)' }}
+                          disabled={weBusy}
+                          onClick={() => removeWorkExperienceEntry(w.id)}
+                        >
+                          Remove
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {!candidate.work_experience.length && (
+                    <tr><td colSpan={3} className="save-note">No work experience on file.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <form onSubmit={addWorkExperienceEntry} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'end', marginTop: 10 }}>
+              <div className="field" style={{ maxWidth: 200, marginBottom: 0 }}>
+                <label>Company name</label>
+                <input value={weCompany} onChange={(e) => setWeCompany(e.target.value)} />
+              </div>
+              <div className="field" style={{ maxWidth: 90, marginBottom: 0 }}>
+                <label>Years</label>
+                <input type="number" min={0} value={weYears} onChange={(e) => setWeYears(e.target.value)} />
+              </div>
+              <div className="field" style={{ maxWidth: 90, marginBottom: 0 }}>
+                <label>Months</label>
+                <input type="number" min={0} max={11} value={weMonths} onChange={(e) => setWeMonths(e.target.value)} />
+              </div>
+              <button className="btn ghost" style={{ width: 'auto', padding: '10px 16px' }} type="submit" disabled={!weCompany.trim() || weBusy}>
+                {weBusy ? 'Saving…' : '+ Add entry'}
+              </button>
+            </form>
           </div>
         </div>
       )}

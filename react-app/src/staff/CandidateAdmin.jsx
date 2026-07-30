@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { api } from '../api';
 import { useAuth } from './AuthContext';
 import { useCenter } from './CenterContext';
+import WorkExperienceFields from '../common/WorkExperienceFields';
 
 const GENDERS = ['Male', 'Female', 'Other'];
 
@@ -15,7 +16,10 @@ const GENDERS = ['Male', 'Female', 'Other'];
 export default function CandidateAdmin() {
   const { user } = useAuth();
   const { centers, selectedCenterId } = useCenter();
-  const [form, setForm] = useState({ name: '', mobile: '', age: '', qualification: '', gender: '', is_sdc: '', travel_time_minutes: '' });
+  const [form, setForm] = useState({ name: '', mobile: '', age: '', qualification: '', gender: '', is_sdc: '', travel_time_minutes: '', employment_status: '' });
+  const [workExperience, setWorkExperience] = useState([]);
+  // candidate_and_desk_improvements_plan.md §B — same condition as DetailsForm.jsx
+  const showWorkExperience = form.employment_status === 'Working' || form.employment_status === 'Experienced';
   // Only shown/required when the Nav switcher is on "All centers" and 2+
   // Centers exist — fair_cycle_isolation_plan.md Phase 5 follow-up:
   // registerCandidate() needs to know which Center's active fair to book
@@ -63,10 +67,13 @@ export default function CandidateAdmin() {
         gender: form.gender || undefined,
         is_sdc: form.is_sdc === '' ? undefined : form.is_sdc === 'yes',
         travel_time_minutes: form.travel_time_minutes ? Number(form.travel_time_minutes) : undefined,
+        employment_status: form.employment_status || undefined,
+        work_experience: showWorkExperience ? workExperience.filter((e) => e.company_name.trim()) : undefined,
         center_id: selectedCenterId || centerId || undefined,
       });
       showToast(`Registered ${result.token} — check them in and assign companies on the Gate tab`);
-      setForm({ name: '', mobile: '', age: '', qualification: '', gender: '', is_sdc: '', travel_time_minutes: '' });
+      setForm({ name: '', mobile: '', age: '', qualification: '', gender: '', is_sdc: '', travel_time_minutes: '', employment_status: '' });
+      setWorkExperience([]);
     } catch (err) {
       setRegisterError(err.message);
     } finally {
@@ -150,6 +157,21 @@ export default function CandidateAdmin() {
           <label>Travel time (min)</label>
           <input type="number" value={form.travel_time_minutes} onChange={(e) => set('travel_time_minutes', e.target.value)} />
         </div>
+        <div className="field" style={{ maxWidth: 160 }}>
+          <label>Employment status</label>
+          <select value={form.employment_status} onChange={(e) => set('employment_status', e.target.value)} required>
+            <option value="" disabled>Select…</option>
+            <option value="Fresher">Fresher</option>
+            <option value="Studying">Studying</option>
+            <option value="Working">Working</option>
+            <option value="Experienced">Experienced</option>
+          </select>
+        </div>
+        {showWorkExperience && (
+          <div style={{ flexBasis: '100%' }}>
+            <WorkExperienceFields entries={workExperience} onChange={setWorkExperience} />
+          </div>
+        )}
         {user.role === 'admin' && !selectedCenterId && centers.length > 1 && (
           <div className="field" style={{ maxWidth: 160 }}>
             <label>Center</label>

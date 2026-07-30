@@ -22,6 +22,11 @@ const REPORTS = [
   { path: '/rating-report', slug: 'rating-report', title: 'Rating report', desc: 'Average star rating per company × evaluation parameter.' },
   { path: '/qual-distribution', slug: 'qual-distribution', title: 'Qualification distribution', desc: 'Registered candidates grouped by highest qualification.' },
   { path: '/field-distribution', slug: 'field-distribution', title: 'Field distribution', desc: 'Registered candidates grouped by field of study.' },
+  // candidate_and_desk_improvements_plan.md §D: not day-scoped like the six
+  // above (a desk closes once per fair cycle, not per registration day) —
+  // the shared `&date=` query param this map appends below is simply unread
+  // by that route, same as every report ignores params it doesn't use.
+  { path: '/company-hr-feedback-report', slug: 'company-hr-feedback-report', title: 'Company HR feedback', desc: 'Close-desk feedback per company: candidate quality, venue, app performance, volunteer support, future interest.' },
 ];
 
 function DownloadIcon() {
@@ -56,7 +61,7 @@ export default function Reports() {
 
   return (
     <>
-      <p className="sec-label" style={{ marginBottom: 16 }}>Six exports · CSV · scoped to the current Center, optionally to one day</p>
+      <p className="sec-label" style={{ marginBottom: 16 }}>Seven exports · CSV · scoped to the current Center, optionally to one day</p>
       <div className="field" style={{ maxWidth: 260, marginBottom: 16 }}>
         <label>Day</label>
         <select value={date} onChange={(e) => setDate(e.target.value)}>

@@ -2,12 +2,15 @@ const pool = require('../db');
 const { signToken } = require('./checkinSig');
 const queueStore = require('./queueStore');
 const { getOrCreateAvailableBatch } = require('./batchAssignment');
-const { assignCompanies, MAX_COMPANIES } = require('./companyAssignment');
+const { assignCompanies } = require('./companyAssignment');
 const { normalizeMobile, isValidMobile } = require('./mobile');
 const { emit } = require('./events');
 const { DONE_STATUSES } = require('./pingLadder');
 
-const EMPLOYMENT_STATUSES = ['Studying', 'Working', 'Fresher', 'Other'];
+// candidate_and_desk_improvements_plan.md §B: 'Other' dropped (nothing has
+// ever set it), 'Experienced' added. When 'Working' or 'Experienced', the
+// candidate can list one or more past companies via work_experience below.
+const EMPLOYMENT_STATUSES = ['Studying', 'Working', 'Fresher', 'Experienced'];
 const GENDERS = ['Male', 'Female', 'Other'];
 
 // Shared registration core — the one atomic transaction behind both the staff
@@ -28,7 +31,7 @@ const GENDERS = ['Male', 'Female', 'Other'];
 // below picks arbitrarily among every active fair regardless of Center, the
 // same ambiguity Phase 0 first flagged and Phase 5's fixture confirmed still
 // existed in this function specifically.
-async function registerCandidate({ name, mobile, age, qualification, field, employment_status, company_ids, travel_time_minutes, gender, is_sdc, centerId }) {
+async function registerCandidate({ name, mobile, age, qualification, field, employment_status, work_experience, company_ids, travel_time_minutes, gender, is_sdc, centerId }) {
   if (!name || !name.trim()) return { status: 400, body: { error: 'name is required' } };
   // Company selection is optional at registration time (new_architecture.md's
   // Gate-flow candidate journey: pick companies after checking in at the Gate,
@@ -37,9 +40,10 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
   // registration (or any caller that still wants to pick up front) keeps
   // working unchanged if it passes company_ids.
   const companyIds = Array.isArray(company_ids) ? company_ids : [];
-  if (companyIds.length > MAX_COMPANIES) {
-    return { status: 400, body: { error: `Select at most ${MAX_COMPANIES} companies` } };
-  }
+  // candidate_and_desk_improvements_plan.md §A: max_companies_per_candidate is
+  // per-fair-cycle now (admin-configurable), not a hardcoded constant — the
+  // actual cap check happens further down, once the active fair row (and
+  // therefore its configured cap) has been resolved.
   // Mobile is optional here (staff manual entry, flow D, can omit it) but if
   // one is given it has to be a real 10-digit number — the re-registration
   // guard below is keyed entirely on mobile, so an unvalidated format
@@ -72,6 +76,24 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
     travelTimeMinutes = Math.round(n);
   }
   const status = employment_status && EMPLOYMENT_STATUSES.includes(employment_status) ? employment_status : 'Fresher';
+  // candidate_and_desk_improvements_plan.md §B: work_experience is the
+  // repeatable "add a company + years/months" facility, only meaningful when
+  // status is Working/Experienced but validated regardless of status if any
+  // entries were actually sent — an empty/omitted array is fine either way.
+  const workExperience = Array.isArray(work_experience) ? work_experience : [];
+  for (const entry of workExperience) {
+    if (!entry || typeof entry.company_name !== 'string' || !entry.company_name.trim()) {
+      return { status: 400, body: { error: 'Each work experience entry needs a company name' } };
+    }
+    const years = entry.years == null || entry.years === '' ? 0 : Number(entry.years);
+    const months = entry.months == null || entry.months === '' ? 0 : Number(entry.months);
+    if (!Number.isFinite(years) || years < 0) {
+      return { status: 400, body: { error: 'Work experience years must be 0 or greater' } };
+    }
+    if (!Number.isFinite(months) || months < 0 || months > 11) {
+      return { status: 400, body: { error: 'Work experience months must be between 0 and 11' } };
+    }
+  }
   // Both optional (Insights dashboard fields) — an unrecognized/omitted value
   // just stores NULL ("Unknown") rather than failing the whole registration.
   const genderValue = GENDERS.includes(gender) ? gender : null;
@@ -95,12 +117,18 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
     // can key fair_batches off the real fair row instead of the bare date —
     // Phase 0, needed now that fair_date alone stopped being globally unique.
     const fairRes = await client.query(
-      `SELECT id, to_char(fair_date, 'YYYY-MM-DD') AS fair_date, fair_hours, batch_size, batch_interval_minutes
+      `SELECT id, to_char(fair_date, 'YYYY-MM-DD') AS fair_date, fair_hours, batch_size, batch_interval_minutes, max_companies_per_candidate
        FROM fair_settings WHERE is_active = true AND ($1::int IS NULL OR center_id = $1) ORDER BY fair_date DESC LIMIT 1`,
       [centerId || null]
     );
     const fair = fairRes.rows[0] || null;
     const activeFairId = fair ? fair.id : null;
+    const maxCompanies = fair ? fair.max_companies_per_candidate : 3;
+
+    if (companyIds.length > maxCompanies) {
+      await client.query('ROLLBACK');
+      return { status: 400, body: { error: `Select at most ${maxCompanies} companies` } };
+    }
 
     if (normMobile) {
       // Scoped to the active fair cycle (fair_cycle_isolation_plan.md Phase
@@ -163,6 +191,17 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
       [tokenNo, name.trim(), normMobile, age || null, qualification || null, field || null, status, batch ? batch.id : null, activeFairId, signToken(tokenNo), travelTimeMinutes, genderValue, isSdc]
     );
     candidateId = candidateRes.rows[0].id;
+
+    // candidate_and_desk_improvements_plan.md §B: one row per work-experience
+    // entry, same transaction as the candidate insert itself — nothing reads
+    // these until the whole registration commits.
+    for (const entry of workExperience) {
+      await client.query(
+        'INSERT INTO candidate_work_experience (candidate_id, company_name, years, months) VALUES ($1,$2,$3,$4)',
+        [candidateId, entry.company_name.trim(), entry.years == null || entry.years === '' ? 0 : Number(entry.years),
+         entry.months == null || entry.months === '' ? 0 : Number(entry.months)]
+      );
+    }
 
     // Gate 2 (new_architecture.md §3.1/§4), skipped entirely when no companies
     // were picked at registration time (the new Gate-flow candidate journey —

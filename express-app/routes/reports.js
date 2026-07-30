@@ -13,7 +13,7 @@ const router = express.Router();
 // Reports are Admin-only (permission matrix) and every GET is served through
 // the 20s Redis cache — v3.0 §0 #4: the read replica is deleted; at 1000 rows
 // the primary + cache covers reporting load with room to spare.
-router.use(['/company-stats', '/qual-distribution', '/field-distribution', '/master-report', '/candidate-summary', '/rating-report', '/insights'],
+router.use(['/company-stats', '/qual-distribution', '/field-distribution', '/master-report', '/candidate-summary', '/rating-report', '/company-hr-feedback-report', '/insights'],
   authenticateJWT, requireRole('admin'), redisCache(20));
 
 // Shared ?date= validation for the six reports below — same YYYY-MM-DD
@@ -138,6 +138,8 @@ router.get('/master-report', asyncHandler(async (req, res) => {
   // the one report where under-counting would be most visible/damaging.
   const result = await pool.query(
     `SELECT cd.token_no, cd.name, cd.mobile, cd.qualification, cd.field, cd.employment_status,
+            (SELECT string_agg(cwe.company_name || ' (' || cwe.years || 'y ' || cwe.months || 'm)', '; ' ORDER BY cwe.created_at)
+               FROM candidate_work_experience cwe WHERE cwe.candidate_id = cd.id) AS work_experience,
             b.batch_number, cd.checked_in_at IS NOT NULL AS checked_in,
             c.company_name, s.slot_start, ccs.status, ccs.ratings, ccs.feedback_text,
             u.username AS feedback_by, ccs.processed_at
@@ -153,7 +155,7 @@ router.get('/master-report', asyncHandler(async (req, res) => {
     [centerId || null, dateFilter]
   );
   if (req.query.format === 'csv') {
-    const headers = ['token_no', 'name', 'mobile', 'qualification', 'field', 'employment_status', 'batch_number',
+    const headers = ['token_no', 'name', 'mobile', 'qualification', 'field', 'employment_status', 'work_experience', 'batch_number',
       'checked_in', 'company_name', 'slot_start', 'status', 'ratings', 'feedback_text', 'feedback_by', 'processed_at'];
     return res.type('text/csv').attachment('master-report.csv').send(toCsv(result.rows, headers));
   }
@@ -168,7 +170,9 @@ router.get('/candidate-summary', asyncHandler(async (req, res) => {
   // Historical: same reasoning as master-report above — this rollup should
   // still include a candidate (and their real outcomes) after they exit.
   const result = await pool.query(
-    `SELECT cd.token_no, cd.name, cd.qualification, cd.field,
+    `SELECT cd.token_no, cd.name, cd.qualification, cd.field, cd.employment_status,
+            (SELECT string_agg(cwe.company_name || ' (' || cwe.years || 'y ' || cwe.months || 'm)', '; ' ORDER BY cwe.created_at)
+               FROM candidate_work_experience cwe WHERE cwe.candidate_id = cd.id) AS work_experience,
             b.batch_number, cd.checked_in_at IS NOT NULL AS checked_in,
             COUNT(ccs.id)::int AS companies_assigned,
             COUNT(*) FILTER (WHERE ccs.status IN ('Selected','Rejected','Shortlisted','Hold'))::int AS interviews_done,
@@ -185,7 +189,7 @@ router.get('/candidate-summary', asyncHandler(async (req, res) => {
     [centerId || null, dateFilter]
   );
   if (req.query.format === 'csv') {
-    const headers = ['token_no', 'name', 'qualification', 'field', 'batch_number', 'checked_in',
+    const headers = ['token_no', 'name', 'qualification', 'field', 'employment_status', 'work_experience', 'batch_number', 'checked_in',
       'companies_assigned', 'interviews_done', 'selections', 'no_shows'];
     return res.type('text/csv').attachment('candidate-summary.csv').send(toCsv(result.rows, headers));
   }
@@ -216,6 +220,33 @@ router.get('/rating-report', asyncHandler(async (req, res) => {
   if (req.query.format === 'csv') {
     const headers = ['company_name', 'parameter', 'avg_rating', 'ratings_count'];
     return res.type('text/csv').attachment('rating-report.csv').send(toCsv(result.rows, headers));
+  }
+  res.json(result.rows);
+}));
+
+// candidate_and_desk_improvements_plan.md §D: the seventh CSV export, seeded
+// by DeskTablet.jsx's "Close Desk" feedback form (routes/companies.js's
+// POST /companies/:id/close-desk). One row per company per fair cycle
+// (company_hr_feedback's own UNIQUE(company_id, fair_settings_id)) — not
+// day-scoped like the six reports above, since a desk closes once per cycle,
+// not per registration day.
+router.get('/company-hr-feedback-report', asyncHandler(async (req, res) => {
+  const centerId = resolveCenterFilter(req);
+  const result = await pool.query(
+    `SELECT c.company_name, to_char(fs.fair_date, 'YYYY-MM-DD') AS fair_date,
+            f.candidate_quality, f.venue_rating, f.app_performance_rating,
+            f.volunteer_satisfaction, f.future_interest, f.submitted_at
+     FROM company_hr_feedback f
+     LEFT JOIN companies c ON c.id = f.company_id
+     LEFT JOIN fair_settings fs ON fs.id = f.fair_settings_id
+     WHERE ($1::int IS NULL OR c.center_id = $1)
+     ORDER BY fs.fair_date DESC, c.company_name`,
+    [centerId || null]
+  );
+  if (req.query.format === 'csv') {
+    const headers = ['company_name', 'fair_date', 'candidate_quality', 'venue_rating',
+      'app_performance_rating', 'volunteer_satisfaction', 'future_interest', 'submitted_at'];
+    return res.type('text/csv').attachment('company-hr-feedback-report.csv').send(toCsv(result.rows, headers));
   }
   res.json(result.rows);
 }));
