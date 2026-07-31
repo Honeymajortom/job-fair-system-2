@@ -36,7 +36,11 @@ function deviceKey(req) {
 }
 
 const l1Mobile = rateLimit({ prefix: 'mobile', windowSec: 600, max: 3, key: (req) => normalizeMobile(req.body && req.body.mobile) });
-const l2Device = rateLimit({ prefix: 'device', windowSec: 600, max: 10, key: deviceKey });
+// Raised from 10/10min to 100/5min (2026-07-31): a shared kiosk/staff-assisted
+// device registering many candidates back-to-back was tripping this within
+// a few minutes during real registration — L1 (per-mobile) is still the real
+// abuse gate, this is just the backstop against one device flooding.
+const l2Device = rateLimit({ prefix: 'device', windowSec: 300, max: 100, key: deviceKey });
 const l3Ip = rateLimit({ prefix: 'ip', windowSec: 60, max: 300, key: (req) => req.ip });
 const readIpLimit = rateLimit({ prefix: 'read-ip', windowSec: 60, max: 600, key: (req) => req.ip });
 
