@@ -268,6 +268,7 @@ export default function LivePosition() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [qrDataUrl, setQrDataUrl] = useState(null);
+  const [transferDataUrl, setTransferDataUrl] = useState(null);
   // Set once, right after SelectCompanies submits, if any picked company
   // silently didn't get a booking (closed/de-rostered in the gap between
   // the picker's fetch and submit) — SelectCompanies unmounts immediately
@@ -284,6 +285,33 @@ export default function LivePosition() {
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
+
+  // Picks up a check-in QR handed off via ?qr= (see the "Continue on another
+  // device" QR below) — lets a candidate registered on a shared/staff device
+  // move their session to their own phone, which otherwise never gets the
+  // signed token DetailsForm.jsx only ever writes to the registering device's
+  // own localStorage. Stripped from the URL immediately so it doesn't linger
+  // in browser history. Must run before the transferDataUrl effect below (same
+  // [token] deps, declared first — effects run in declaration order) so that
+  // effect picks up the freshly-written value on this device's first render.
+  useEffect(() => {
+    const qrFromUrl = new URLSearchParams(window.location.search).get('qr');
+    if (qrFromUrl) {
+      localStorage.setItem(`checkin_qr_${token}`, qrFromUrl);
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+  }, [token]);
+
+  // QR/link for moving this same signed token to a different device — not a
+  // new secret exposure: it's the identical value the check-in/exit QR below
+  // already renders for Gate staff to scan, just also offered as a
+  // self-transfer. Only rendered while this device actually holds the token.
+  useEffect(() => {
+    const qr = localStorage.getItem(`checkin_qr_${token}`);
+    if (!qr) { setTransferDataUrl(null); return; }
+    const transferUrl = `${window.location.origin}/schedule/${token}?qr=${encodeURIComponent(qr)}`;
+    QRCode.toDataURL(transferUrl, { margin: 1, width: 140 }).then(setTransferDataUrl).catch(() => setTransferDataUrl(null));
+  }, [token]);
 
   useEffect(() => {
     let cancelled = false;
@@ -400,6 +428,13 @@ export default function LivePosition() {
         </div>
       </div>
       <div className="m-body">
+        {transferDataUrl && (
+          <details className="qr-wrap" style={{ marginBottom: 16 }}>
+            <summary className="save-note" style={{ cursor: 'pointer' }}>On a different phone? Tap to show a QR to scan</summary>
+            <img src={transferDataUrl} alt="Continue on another device" width={140} height={140} style={{ marginTop: 8 }} />
+            <div className="save-note">Scan this with your own phone to continue there</div>
+          </details>
+        )}
         {!data.checked_in ? (
           // Positions/ETAs aren't meaningful to act on until the candidate
           // has physically checked in at the Gate — show the check-in QR
