@@ -17,6 +17,7 @@ const { computeGateStatus } = require('../lib/gateStatus');
 const { RESUME_DIR } = require('../lib/resumeStorage');
 const { verifyQr } = require('../lib/checkinSig');
 const { emit, emitToRoom } = require('../lib/events');
+const redis = require('../lib/redisClient');
 
 const router = express.Router();
 
@@ -84,11 +85,6 @@ const selectCompaniesLimit = rateLimit({ prefix: 'select-companies', windowSec: 
 // hammering.
 const acknowledgeLimit = rateLimit({ prefix: 'acknowledge', windowSec: 600, max: 5, key: (req) => verifyQr(req.params.qr) });
 
-// Per-company interest step (shown before the overall FeedbackForm below):
-// same 5/10min-per-verified-token budget as its neighbors — a resubmit to
-// fix a misclick is normal, this is just a backstop.
-const companyInterestLimit = rateLimit({ prefix: 'company-interest', windowSec: 600, max: 5, key: (req) => verifyQr(req.params.qr) });
-
 // candidate_and_desk_improvements_plan.md §C: PDF or image (jpg/jpeg/png) —
 // mimetype + extension check, no magic-byte sniffing, same minimal-dependency
 // style as the PDF-only check this replaces. 5MB cap unchanged. Filename is
@@ -140,6 +136,22 @@ function ensureDeviceCookie(req, res, next) {
     });
   }
   next();
+}
+
+// GET /qr/schedule/:token below is redisCache(15)'d — a plain TTL, no
+// write-side invalidation. Any route here that changes what that response
+// contains has to bust it explicitly, or a poll landing inside the same 15s
+// window as the write serves the stale pre-write body: a candidate submits
+// feedback, the screen should move on to the exit QR, but the next ~5s poll
+// can hand back a cached response that still says feedback_submitted: false
+// — the screen visibly reverts mid-flow before flipping forward again once
+// the cache entry actually expires. Same reasoning applies to select-
+// companies (stale response would keep showing the picker after it was
+// already submitted). Best-effort, same fail-open convention as every other
+// cache write in this app — a missed invalidation just means the existing
+// 15s staleness window applies once more, not a broken request.
+async function invalidateSchedule(tokenNo) {
+  try { await redis.del(`cache:/api/qr/schedule/${tokenNo}`); } catch (_err) { /* best-effort */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -333,48 +345,6 @@ router.post('/qr/resume/:qr', resumeUploadLimit, asyncHandler(async (req, res) =
   res.json({ ok: true });
 }));
 
-// Public: per-company interest — LivePosition shows this first, before the
-// overall FeedbackForm below, once every one of a candidate's bookings has
-// settled. Independent of the (deliberately hidden from the candidate)
-// outcome — this is the candidate's own interest, not a result. Same
-// signed-qr write pattern as /qr/feedback/:qr and for the same reason (bare
-// token_no is guessable). Unlike that route's one-row-per-candidate upsert,
-// this is a plain UPDATE against each existing candidate_company_status row
-// (candidate_interested), so resubmitting to fix a misclick just overwrites
-// — no ON CONFLICT needed.
-router.post('/qr/company-interest/:qr', companyInterestLimit, asyncHandler(async (req, res) => {
-  const tokenNo = verifyQr(req.params.qr);
-  if (!tokenNo) return res.status(401).json({ error: 'Invalid or forged link' });
-
-  const interests = req.body.interests;
-  if (!interests || typeof interests !== 'object' || Array.isArray(interests)) {
-    return res.status(400).json({ error: 'interests is required' });
-  }
-
-  const candRes = await pool.query('SELECT id FROM candidates WHERE token_no = $1 AND deleted_at IS NULL', [tokenNo]);
-  if (!candRes.rows.length) return res.status(404).json({ error: 'Candidate not found' });
-  const candidateId = candRes.rows[0].id;
-
-  // "Real" bookings only (serial IS NOT NULL) — a Waitlisted booking never
-  // had a live interview to have an opinion about, same realSlots filter
-  // LivePosition.jsx already applies for allSettled.
-  const realRes = await pool.query(
-    `SELECT id, company_id FROM candidate_company_status
-      WHERE candidate_id = $1 AND deleted_at IS NULL AND serial IS NOT NULL`,
-    [candidateId]
-  );
-  const missing = realRes.rows.filter((r) => typeof interests[r.company_id] !== 'boolean');
-  if (missing.length) {
-    return res.status(400).json({ error: 'An answer is required for every company' });
-  }
-
-  await Promise.all(realRes.rows.map((r) =>
-    pool.query('UPDATE candidate_company_status SET candidate_interested = $1 WHERE id = $2', [interests[r.company_id], r.id])
-  ));
-
-  res.json({ ok: true });
-}));
-
 const FEEDBACK_RATING_FIELDS = ['venue_rating', 'process_rating', 'staff_rating', 'overall_rating'];
 
 // Public: post-fair feedback (star ratings + SDC interest) — LivePosition
@@ -411,6 +381,7 @@ router.post('/qr/feedback/:qr', feedbackLimit, asyncHandler(async (req, res) => 
     [cand.id, cand.mobile, ...ratings, req.body.interested_in_sdc]
   );
 
+  await invalidateSchedule(tokenNo);
   res.json({ ok: true });
 }));
 
@@ -480,6 +451,7 @@ router.post('/qr/select-companies/:qr', selectCompaniesLimit, asyncHandler(async
 
   // Same post-commit ordering as registerCandidate.js — a Redis outage must
   // never undo an already-committed booking.
+  await invalidateSchedule(tokenNo);
   for (const a of assigned) {
     try {
       await store.enqueue(a.company_id, candidate.id, a.serial);
@@ -644,15 +616,6 @@ router.get('/qr/schedule/:token', readTokenLimit, scheduleIpLimit, redisCache(15
   }));
 
   const feedbackRes = await pool.query('SELECT 1 FROM candidate_feedback WHERE candidate_id = $1', [cand.id]);
-  // Mirrors allSettled's own realSlots.length > 0 guard: true trivially if
-  // there's nothing real to have an opinion about (e.g. every booking is
-  // Waitlisted), same as feedback_submitted would never block on nothing.
-  const interestRes = await pool.query(
-    `SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE candidate_interested IS NOT NULL)::int AS answered
-       FROM candidate_company_status WHERE candidate_id = $1 AND deleted_at IS NULL AND serial IS NOT NULL`,
-    [cand.id]
-  );
-  const companyInterestSubmitted = interestRes.rows[0].total === 0 || interestRes.rows[0].total === interestRes.rows[0].answered;
   const roomsRes = await pool.query('SELECT floor_number, location FROM waiting_rooms ORDER BY floor_number');
 
   res.json({
@@ -683,7 +646,6 @@ router.get('/qr/schedule/:token', readTokenLimit, scheduleIpLimit, redisCache(15
       checked_in: !!cand.checked_in_at,
     },
     slots,
-    company_interest_submitted: companyInterestSubmitted,
     feedback_submitted: feedbackRes.rows.length > 0,
   });
 }));

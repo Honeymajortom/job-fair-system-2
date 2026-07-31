@@ -5,7 +5,6 @@ import QRCode from 'qrcode';
 import { api } from '../api';
 import RungBadge, { cardModifier } from './RungBadge';
 import FeedbackForm from './FeedbackForm';
-import CompanyInterestForm from './CompanyInterestForm';
 import SelectCompanies from './SelectCompanies';
 import SiteCredit from './SiteCredit.jsx';
 import OfflineBanner from '../common/OfflineBanner';
@@ -269,6 +268,12 @@ export default function LivePosition() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [qrDataUrl, setQrDataUrl] = useState(null);
+  // Set once, right after SelectCompanies submits, if any picked company
+  // silently didn't get a booking (closed/de-rostered in the gap between
+  // the picker's fetch and submit) — SelectCompanies unmounts immediately
+  // once data.slots is non-empty, so this has to live up here to survive
+  // that swap instead of disappearing with it.
+  const [selectionNotice, setSelectionNotice] = useState(null);
 
   useEffect(() => {
     // Once a candidate lands here, back must not be able to reopen the
@@ -380,11 +385,6 @@ export default function LivePosition() {
   // blocking the thank-you screen on a pick that was never actually live.
   const realSlots = data.slots.filter((s) => s.rung !== undefined);
   const allSettled = realSlots.length > 0 && realSlots.every((s) => s.rung === 'done');
-  // Deduped by company_id purely defensively — a candidate shouldn't have two
-  // live bookings with the same company, but CompanyInterestForm's answers
-  // object is keyed by company_id, so a duplicate would just silently share
-  // one answer rather than break anything.
-  const interestCompanies = [...new Map(realSlots.map((s) => [s.company_id, { company_id: s.company_id, company_name: s.company }])).values()];
 
   return (
     <div className="m-shell">
@@ -424,11 +424,14 @@ export default function LivePosition() {
           // a pick here.
           <SelectCompanies
             qr={localStorage.getItem(`checkin_qr_${token}`)}
-            onDone={async () => {
+            onDone={async (droppedNames) => {
               // Refresh immediately rather than waiting up to POLL_MS for the
               // next scheduled poll to pick up the new candidate_company_status
               // rows this call just created.
               try { setData(await api.qrSchedule(token)); } catch { /* next poll will pick it up */ }
+              if (droppedNames && droppedNames.length) {
+                setSelectionNotice(`${droppedNames.join(', ')} couldn't be added — ask staff for help if you wanted ${droppedNames.length === 1 ? 'it' : 'them'}.`);
+              }
             }}
           />
         ) : allSettled ? (
@@ -461,18 +464,18 @@ export default function LivePosition() {
                   </p>
                 )}
               </>
-            ) : !data.company_interest_submitted ? (
-              <CompanyInterestForm
-                token={token}
-                companies={interestCompanies}
-                onSubmitted={() => setData((d) => ({ ...d, company_interest_submitted: true }))}
-              />
             ) : (
               <FeedbackForm token={token} onSubmitted={() => setData((d) => ({ ...d, feedback_submitted: true }))} />
             )}
           </div>
         ) : (
           <>
+            {selectionNotice && (
+              <div className="error-note" style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'start' }}>
+                <span>{selectionNotice}</span>
+                <button type="button" className="rm" aria-label="Dismiss" onClick={() => setSelectionNotice(null)}>✕</button>
+              </div>
+            )}
             <WaitingDirective slots={data.slots} waitingRooms={data.waiting_rooms || []} />
             <div className="ladder">
               {data.slots.map((slot, i) => <PosCard key={`${slot.company}-${i}`} slot={slot} token={token} />)}

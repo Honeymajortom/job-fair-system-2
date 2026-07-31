@@ -37,12 +37,30 @@ export default function SelectCompanies({ qr, onDone }) {
   }
 
   async function submit() {
-    if (!selected.length || !qr) return;
+    if (!selected.length) return;
+    // A candidate who recovered their session on a different device
+    // (RecoverToken.jsx) never has this device's checkin_qr in localStorage
+    // — same gap FeedbackForm.jsx guards against. Previously this just
+    // silently returned with no feedback, leaving the candidate stuck
+    // staring at a button that does nothing.
+    if (!qr) {
+      setError('This needs the device you registered on — please ask staff for help.');
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
-      await api.selectCompanies(qr, selected);
-      onDone();
+      const res = await api.selectCompanies(qr, selected);
+      // assignCompanies() silently skips a requested company that isn't on
+      // this cycle's roster anymore (closed/removed in the gap between this
+      // screen's fetch and submit) — company_ids picked but absent from
+      // both assigned and waitlisted never got a booking row at all. Tell
+      // the candidate rather than letting them vanish with no explanation.
+      const returnedIds = new Set([...res.assigned, ...res.waitlisted].map((c) => c.company_id));
+      const droppedNames = companies
+        .filter((c) => selected.includes(c.id) && !returnedIds.has(c.id))
+        .map((c) => c.company_name);
+      await onDone(droppedNames);
     } catch (err) {
       setError(err.message);
       setSubmitting(false);
@@ -54,6 +72,9 @@ export default function SelectCompanies({ qr, onDone }) {
       <p className="desk-call-note calm" style={{ marginTop: 0 }}>
         You're checked in! Now pick up to {maxCompanies} companies to join the queue for.
       </p>
+      {!qr && (
+        <div className="error-note">This needs the device you registered on — please ask staff for help.</div>
+      )}
       {error && <div className="error-note">{error}</div>}
       {!companies && !error && <div className="save-note">Loading companies…</div>}
       {companies && companies.length === 0 && (
@@ -79,7 +100,7 @@ export default function SelectCompanies({ qr, onDone }) {
         );
       })}
       <div className="sticky-cta">
-        <button className="btn" disabled={selected.length === 0 || submitting} onClick={submit}>
+        <button className="btn" disabled={selected.length === 0 || submitting || !qr} onClick={submit}>
           {submitting ? 'Joining…' : `Join the queue · ${selected.length} of ${maxCompanies} selected`}
         </button>
       </div>

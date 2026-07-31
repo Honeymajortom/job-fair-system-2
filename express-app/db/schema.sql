@@ -523,6 +523,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_candidates_mobile
 -- Lives on this table rather than a new one since it's exactly the same
 -- shape of fact as ratings/feedback_text: one per (candidate, company)
 -- booking, sharing that row's lifecycle.
+-- Legacy/unused as of 2026-07-31: the candidate-facing step that wrote this
+-- (CompanyInterestForm.jsx, POST /qr/company-interest/:qr) was removed —
+-- nothing reads or writes this column anymore. Left in place rather than
+-- dropped, same convention as interview_slots/slot_id elsewhere in this file.
 -- ---------------------------------------------------------------------------
 ALTER TABLE candidate_company_status
   ADD COLUMN IF NOT EXISTS candidate_interested BOOLEAN;

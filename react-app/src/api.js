@@ -92,9 +92,6 @@ export const api = {
   // qr here is the same signed "{token_no}.{HMAC}" string uploadResume uses,
   // not the bare token — see routes/public.js POST /qr/feedback/:qr.
   submitFeedback: (qr, payload) => request(`/qr/feedback/${encodeURIComponent(qr)}`, { method: 'POST', body: JSON.stringify(payload) }),
-  // qr here is the same signed string too — see routes/public.js POST
-  // /qr/company-interest/:qr. Shown before submitFeedback above.
-  submitCompanyInterest: (qr, interests) => request(`/qr/company-interest/${encodeURIComponent(qr)}`, { method: 'POST', body: JSON.stringify({ interests }) }),
   getGateStatus: () => request('/gate-status'),
 
   // auth
