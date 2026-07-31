@@ -10,14 +10,6 @@ import CloseDeskFeedback from './CloseDeskFeedback';
 import OfflineBanner from '../common/OfflineBanner';
 import './Desk.css';
 
-// lib/queueDispatcher.js arms the timer at one of these two durations
-// depending on resolveSameFloor()'s companies.floor_number comparison; the
-// dispatch/occupant payload's own `sameFloor` (below) says which one applies
-// to this specific candidate, so the ring's totalMs has to follow it rather
-// than assuming same-floor always.
-const SAME_FLOOR_MS = 90 * 1000;
-const CROSS_FLOOR_MS = 180 * 1000;
-
 async function fetchCandidateDetails(token, companyId) {
   const full = await api.getCandidate(token);
   const co = full.companies.find((c) => c.company_id === companyId);
@@ -161,16 +153,28 @@ export default function DeskTablet() {
   // dispatch can't already be paused — so the defaults below correctly leave
   // pause state cleared for those, and only the reattach path (which now
   // carries real pause state through occupantPayload) can set it true.
-  async function applyIncoming({ candidateId, ccsId, token, expiresAt, sameFloor = true, interviewStartedAt = null, paused: isPaused = false, pausedRemainingMs: remainingMs = null }) {
+  // totalMs (STAFF_INCONSISTENCY_REPORT.md S12): the actual duration the
+  // backend armed this timer with (lib/queueDispatcher.js/occupantPayload's
+  // getArrivalStatus), not a locally-duplicated SAME_FLOOR_MS/CROSS_FLOOR_MS
+  // constant — those two only ever agreed with the backend's because nothing
+  // has made the duration configurable (yet); reading it off the payload
+  // instead means it can't silently drift out of sync if that ever changes.
+  async function applyIncoming({ candidateId, ccsId, token, expiresAt, totalMs = null, sameFloor = true, interviewStartedAt = null, paused: isPaused = false, pausedRemainingMs: remainingMs = null }) {
     const comingFrom = sameFloor ? 'Same floor' : 'Different floor';
     setPaused(isPaused);
     setPausedRemainingMs(remainingMs);
     setAcknowledged(false);
     try {
       const details = await fetchCandidateDetails(token, companyId);
-      setIncoming({ candidateId, ccsId, expiresAt, sameFloor, interviewStartedAt, details: { ...details, comingFrom } });
-    } catch {
-      setIncoming({ candidateId, ccsId, expiresAt, sameFloor, interviewStartedAt, details: { token, name: token, missedCalls: 0, comingFrom } });
+      setIncoming({ candidateId, ccsId, expiresAt, totalMs, sameFloor, interviewStartedAt, details: { ...details, comingFrom } });
+    } catch (err) {
+      // STAFF_INCONSISTENCY_REPORT.md S7: this used to swallow the failure
+      // completely — the card still rendered, just degraded (Name showing
+      // the raw token, every other field blank), with no signal to company_hr
+      // that anything went wrong. Every sibling failure path in this file
+      // (reopenDesk, submitCloseDesk) already surfaces a toast; this now does too.
+      showToast(`Couldn't load ${token}'s full details (${err.message}) — showing limited info`, true);
+      setIncoming({ candidateId, ccsId, expiresAt, totalMs, sameFloor, interviewStartedAt, details: { token, name: token, missedCalls: 0, comingFrom } });
     }
   }
 
@@ -185,7 +189,7 @@ export default function DeskTablet() {
   // component mounted its desk_incoming listener (rare race, cheap to cover).
   useSocketEvent('candidate_dispatched', (payload) => {
     if (payload.companyId === companyId && payload.deskId === String(deskId)) {
-      applyIncoming({ candidateId: payload.candidateId, ccsId: payload.ccsId, token: payload.token, expiresAt: payload.expiresAt, sameFloor: payload.sameFloor });
+      applyIncoming({ candidateId: payload.candidateId, ccsId: payload.ccsId, token: payload.token, expiresAt: payload.expiresAt, totalMs: payload.totalMs, sameFloor: payload.sameFloor });
     }
   });
 
@@ -388,7 +392,7 @@ export default function DeskTablet() {
           ) : (
             <CountdownRing
               expiresAt={incoming?.expiresAt}
-              totalMs={incoming?.sameFloor === false ? CROSS_FLOOR_MS : SAME_FLOOR_MS}
+              totalMs={incoming?.totalMs}
               paused={paused}
               pausedRemainingMs={pausedRemainingMs}
             />

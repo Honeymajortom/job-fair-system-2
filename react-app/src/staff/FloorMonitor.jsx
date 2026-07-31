@@ -82,10 +82,21 @@ export default function FloorMonitor() {
   // Live-ish without full local delta application (v1's FloorMonitor did
   // that; this pass just re-fetches on the events that would move a number).
   // A no-op while date is blank — load() itself guards that.
-  useSocketEvent('candidate_registered', () => load(date));
-  useSocketEvent('candidate_dispatched', () => load(date));
-  useSocketEvent('interview_processed', () => load(date));
-  useSocketEvent('no_show_marked', () => load(date));
+  // STAFF_INCONSISTENCY_REPORT.md S11: these are global Socket.IO events
+  // (lib/events.js's emit(), not a per-Center room), so a Center-pinned
+  // viewer used to re-fetch on every OTHER Center's activity too — correctly
+  // scoped once fetched, just triggered far more often than necessary.
+  // effectiveCenterId is null for admin's "All centers" view, which should
+  // keep reacting to everything; payload.centerId == null is treated as
+  // relevant too, so an event that somehow couldn't resolve a Center still
+  // triggers a refresh rather than silently being dropped.
+  function relevantToThisCenter(payload) {
+    return !effectiveCenterId || payload.centerId == null || payload.centerId === effectiveCenterId;
+  }
+  useSocketEvent('candidate_registered', (p) => { if (relevantToThisCenter(p)) load(date); });
+  useSocketEvent('candidate_dispatched', (p) => { if (relevantToThisCenter(p)) load(date); });
+  useSocketEvent('interview_processed', (p) => { if (relevantToThisCenter(p)) load(date); });
+  useSocketEvent('no_show_marked', (p) => { if (relevantToThisCenter(p)) load(date); });
 
   // now_serving/alerts are always live (no historical record to scope by
   // day, see lib/floorStats.js) — everything else respects the dropdown.

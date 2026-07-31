@@ -11,6 +11,7 @@ const { emit, emitToRoom } = require('./events');
 const { armNoShowTimer, clearNoShowTimer, getArrivalStatus, SAME_FLOOR_MS, CROSS_FLOOR_MS } = require('./noShowTimer');
 const { retunePingBuffer } = require('./bufferController');
 const { invalidateFloorStats } = require('./floorStats');
+const { resolveCompanyCenterId } = require('./centerScope');
 
 // §6.1's 90s/180s split by companies.floor_number. "Where the candidate is
 // right now" = the company of their most recently *completed* interview
@@ -157,14 +158,25 @@ async function dispatch(companyId, deskId) {
     await store.clearDeskWaiting(companyId, deskId);
     const sameFloor = await resolveSameFloor(candidateId, companyId);
     await armNoShowTimer({ candidateId, companyId, deskId, ccsId: row.ccs_id, sameFloor });
-    const expiresAt = new Date(Date.now() + (sameFloor ? SAME_FLOOR_MS : CROSS_FLOOR_MS)).toISOString();
+    // STAFF_INCONSISTENCY_REPORT.md S12: totalMs is the actual duration this
+    // dispatch armed the timer with — sent explicitly now so DeskTablet.jsx's
+    // CountdownRing reads the real value instead of duplicating SAME_FLOOR_MS/
+    // CROSS_FLOOR_MS as separate frontend constants that only agree with
+    // these because nothing has ever made them configurable (yet).
+    const totalMs = sameFloor ? SAME_FLOOR_MS : CROSS_FLOOR_MS;
+    const expiresAt = new Date(Date.now() + totalMs).toISOString();
 
     await invalidateFloorStats();
+    // STAFF_INCONSISTENCY_REPORT.md S11 — same reasoning as
+    // candidate_registered's centerId in registerCandidate.js.
+    const centerId = await resolveCompanyCenterId(companyId);
     emit('candidate_dispatched', {
       token: row.token_no,
       companyId,
+      centerId,
       deskId,
       expiresAt,
+      totalMs,
       sameFloor,
       statsDelta: { atDesk: 1, pending: -1 },
     });
@@ -179,10 +191,11 @@ async function dispatch(companyId, deskId) {
       companyId,
       deskId,
       expiresAt,
+      totalMs,
       sameFloor,
     });
     console.log(`[queue-dispatcher] dispatched ${row.token_no} -> company ${companyId} desk ${deskId}`);
-    return { candidateId, ccsId: row.ccs_id, companyId, deskId, token: row.token_no, expiresAt, sameFloor, interviewStartedAt: null };
+    return { candidateId, ccsId: row.ccs_id, companyId, deskId, token: row.token_no, expiresAt, totalMs, sameFloor, interviewStartedAt: null };
   }
 
   await store.markDeskWaiting(companyId, deskId);

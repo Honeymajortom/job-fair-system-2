@@ -12,26 +12,45 @@ const { clearNoShowTimer, pauseNoShowTimer, resumeNoShowTimer } = require('../li
 const store = require('../lib/queueStore');
 const redis = require('../lib/redisClient');
 const { computeFloorStats, invalidateFloorStats } = require('../lib/floorStats');
-const { resolveCenterFilter } = require('../lib/centerScope');
+const { invalidateReportsCache } = require('../lib/reportsCache');
+const { resolveCenterFilter, resolveCompanyCenterId } = require('../lib/centerScope');
 
 const router = express.Router();
 
 const VALID_STATUSES = ['Selected', 'Rejected', 'Shortlisted', 'Hold', 'No_Show'];
 
-// Company HR (+ Admin / Floor Manager oversight): pending queue for a desk, earliest slot first
+// Company HR (+ Admin / Floor Manager oversight): pending queue for a desk —
+// DeskTablet.jsx's "Up next" panel. STAFF_INCONSISTENCY_REPORT.md S8: this
+// used to order by interview_slots.slot_start, a legacy field nothing
+// writes to under the current dispatch model (every row's slot_id is NULL),
+// so the ORDER BY degenerated to an unspecified tiebreak that had nothing
+// to do with who's actually next. Real dispatch order lives in the Redis
+// ZSET rank (lib/queueDispatcher.js reads it via the same store); sorted
+// here by that rank instead. A Pending row Redis doesn't know about (the
+// rare best-effort-enqueue-failed edge case — see registerCandidate.js)
+// falls back to serial order at the end, so it's still visible rather than
+// silently missing from the panel.
 router.get('/queue/:companyId', authenticateJWT, requireRole('admin', 'floor_manager', 'company_hr'), requireCompanyScope((req) => req.params.companyId), asyncHandler(async (req, res) => {
-  const result = await pool.query(
-    `SELECT ccs.id AS ccs_id, ccs.status, s.slot_start,
-            cd.id AS candidate_id, cd.token_no, cd.name, cd.qualification, cd.field, cd.employment_status
-     FROM candidate_company_status ccs
-     JOIN candidates cd ON cd.id = ccs.candidate_id
-     LEFT JOIN interview_slots s ON s.id = ccs.slot_id
-     WHERE ccs.company_id = $1 AND ccs.status = 'Pending'
-       AND ccs.deleted_at IS NULL AND cd.deleted_at IS NULL
-     ORDER BY s.slot_start ASC NULLS LAST`,
-    [req.params.companyId]
-  );
-  res.json(result.rows);
+  const companyId = Number(req.params.companyId);
+  const [result, rankOrder] = await Promise.all([
+    pool.query(
+      `SELECT ccs.id AS ccs_id, ccs.status, ccs.serial,
+              cd.id AS candidate_id, cd.token_no, cd.name, cd.qualification, cd.field, cd.employment_status
+       FROM candidate_company_status ccs
+       JOIN candidates cd ON cd.id = ccs.candidate_id
+       WHERE ccs.company_id = $1 AND ccs.status = 'Pending'
+         AND ccs.deleted_at IS NULL AND cd.deleted_at IS NULL`,
+      [companyId]
+    ),
+    store.getQueueOrder(companyId),
+  ]);
+  const rank = new Map(rankOrder.map((id, i) => [id, i]));
+  const rows = result.rows.sort((a, b) => {
+    const ra = rank.has(a.candidate_id) ? rank.get(a.candidate_id) : Infinity;
+    const rb = rank.has(b.candidate_id) ? rank.get(b.candidate_id) : Infinity;
+    return ra !== rb ? ra - rb : (a.serial || 0) - (b.serial || 0);
+  });
+  res.json(rows);
 }));
 
 // Company HR (+ Admin / Floor Manager oversight): today's settled candidates
@@ -130,13 +149,17 @@ router.put('/interview-result', authenticateJWT, requireRole('admin', 'company_h
   const { old_status, old_serial, old_dispatched_at, old_interview_started_at, ...row } = result.rows[0];
 
   await invalidateFloorStats();
+  await invalidateReportsCache();
 
   const statsDelta = { completed: 1 };
   if (old_status === 'Dispatched') statsDelta.atDesk = -1;
   else if (old_status === 'Pending') statsDelta.pending = -1;
+  // STAFF_INCONSISTENCY_REPORT.md S11 — same reasoning as candidate_dispatched.
+  const centerId = await resolveCompanyCenterId(company_id);
   emit('interview_processed', {
     token,
     company_id: Number(company_id),
+    centerId,
     result: status,
     slot_id: row.slot_id,
     statsDelta,
@@ -300,11 +323,14 @@ router.post('/no-show', authenticateJWT, requireRole('admin', 'floor_manager', '
   await clearNoShowTimer(row.candidate_id, Number(company_id));
 
   await invalidateFloorStats();
+  await invalidateReportsCache();
 
   const statsDelta = { noShows: 1 };
   if (row.old_status === 'Dispatched') statsDelta.atDesk = -1;
   else statsDelta.pending = -1;
-  emit('no_show_marked', { token, company_id: Number(company_id), slot_id: row.slot_id, statsDelta });
+  // STAFF_INCONSISTENCY_REPORT.md S11 — same reasoning as candidate_dispatched.
+  const centerId = await resolveCompanyCenterId(company_id);
+  emit('no_show_marked', { token, company_id: Number(company_id), centerId, slot_id: row.slot_id, statsDelta });
 
   if (deskId) await dispatcher.dispatch(Number(company_id), deskId); // don't leave the desk idle
 

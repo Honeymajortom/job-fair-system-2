@@ -10,6 +10,7 @@ import CompanyManagement from './CompanyManagement';
 import Settings from './Settings';
 import FloorMonitor from './FloorMonitor';
 import GateCheckIn from './GateCheckIn';
+import PermissionDenied from '../common/PermissionDenied';
 import { api } from '../api';
 
 // prototype/integrity-test-report.md's NAV_LINKS pattern, carried forward:
@@ -31,11 +32,24 @@ const NAV_LINKS = [
   { to: '/staff/settings', label: 'Settings', roles: ['admin'] },
 ];
 
+// STAFF_INCONSISTENCY_REPORT.md S10: a role mismatch used to silently
+// redirect to /staff/desk with zero explanation — built for exactly this,
+// common/PermissionDenied.jsx sat unused since the 2026-07-26 "Shared UI
+// states" pass. Nav already hides tabs the role can't use, so this only
+// fires via direct URL/bookmark navigation; staying on the attempted route
+// (instead of redirecting away) keeps the Nav bar's other tabs reachable
+// without hiding *why* the one they tried didn't load.
 function Gate({ roles, children }) {
   const { user, status } = useAuth();
   if (status !== 'ready') return <div className="s-shell"><div className="s-body">Checking session…</div></div>;
   if (!user) return <Navigate to="/staff/login" replace />;
-  if (roles && !roles.includes(user.role)) return <Navigate to="/staff/desk" replace />;
+  if (roles && !roles.includes(user.role)) {
+    return (
+      <div className="s-body">
+        <PermissionDenied message={`Your role (${user.role}) doesn't have access to this page.`} />
+      </div>
+    );
+  }
   return children;
 }
 

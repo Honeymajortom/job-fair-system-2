@@ -37,6 +37,16 @@ async function topCandidates(companyId, limit = 20) {
   return ids.map(Number);
 }
 
+// Every member, full rank order — unlike topCandidates()'s bounded scan
+// (which only needs "enough to find the first eligible one"), a caller
+// ordering a full list (routes/queue.js's "Up next" panel,
+// STAFF_INCONSISTENCY_REPORT.md S8) needs everyone's real position, not a
+// truncated prefix.
+async function getQueueOrder(companyId) {
+  const ids = await redis.zrange(queueKey(companyId), 0, -1);
+  return ids.map(Number);
+}
+
 async function queueSize(companyId) {
   return redis.zcard(queueKey(companyId));
 }
@@ -132,7 +142,7 @@ async function clearDeskWaiting(companyId, deskId) {
 }
 
 module.exports = {
-  enqueue, remove, recordMiss, topCandidates, queueSize, getPosition,
+  enqueue, remove, recordMiss, topCandidates, getQueueOrder, queueSize, getPosition,
   acquireLock, releaseLock, isLocked, getLockDesk,
   updateDrainRate, getDrainRate,
   getPingBuffer, setPingBuffer, clearTunedState,

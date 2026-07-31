@@ -15,6 +15,8 @@ const store = require('../lib/queueStore');
 const dispatcher = require('../lib/queueDispatcher');
 const { emit } = require('../lib/events');
 const { invalidateFloorStats } = require('../lib/floorStats');
+const { invalidateReportsCache } = require('../lib/reportsCache');
+const { resolveCompanyCenterId } = require('../lib/centerScope');
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const connection = new IORedis(REDIS_URL, { maxRetriesPerRequest: null });
@@ -56,6 +58,10 @@ const worker = new Worker('noshow', async (job) => {
 
   await store.releaseLock(candidateId);
   await invalidateFloorStats();
+  await invalidateReportsCache();
+  // STAFF_INCONSISTENCY_REPORT.md S11 — same reasoning as the manual
+  // /no-show route's identical event.
+  const centerId = await resolveCompanyCenterId(companyId);
 
   if (status === 'No_Show') {
     // 5th miss — stop decaying the rank and drop them from the queue for
@@ -64,6 +70,7 @@ const worker = new Worker('noshow', async (job) => {
     emit('no_show_marked', {
       candidateId,
       company_id: companyId,
+      centerId,
       statsDelta: { atDesk: -1, noShows: 1 },
     });
     console.log(`[noshow-worker] candidate ${candidateId} hit ${misses} missed calls at company ${companyId} — marked No_Show, desk backfilling`);
@@ -72,6 +79,7 @@ const worker = new Worker('noshow', async (job) => {
     emit('queue_miss', {
       candidateId,
       companyId,
+      centerId,
       statsDelta: { atDesk: -1, pending: 1 },
     });
     console.log(`[noshow-worker] candidate ${candidateId} missed the call at company ${companyId} desk ${deskId} — rank decayed (${misses}/${MISS_LIMIT}), desk backfilling`);

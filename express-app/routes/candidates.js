@@ -14,6 +14,7 @@ const { assignCompanies } = require('../lib/companyAssignment');
 const { resolveCenterFilter } = require('../lib/centerScope');
 const { normalizeMobile } = require('../lib/mobile');
 const { DONE_STATUSES } = require('../lib/pingLadder');
+const { invalidateReportsCache } = require('../lib/reportsCache');
 
 const router = express.Router();
 
@@ -280,6 +281,9 @@ router.post('/candidates/:id/work-experience', authenticateJWT, requireRole('adm
     'INSERT INTO candidate_work_experience (candidate_id, company_name, years, months) VALUES ($1,$2,$3,$4) RETURNING id, company_name, years, months',
     [req.params.id, String(company_name).trim(), y, m]
   );
+  // STAFF_INCONSISTENCY_REPORT.md S9: work_experience feeds the aggregated
+  // CSV column on master-report/candidate-summary, both cached 20s.
+  await invalidateReportsCache();
   res.status(201).json(result.rows[0]);
 }));
 
@@ -289,6 +293,7 @@ router.delete('/candidates/:id/work-experience/:entryId', authenticateJWT, requi
     [req.params.entryId, req.params.id]
   );
   if (!result.rows.length) return res.status(404).json({ error: 'Work experience entry not found' });
+  await invalidateReportsCache();
   res.json({ ok: true });
 }));
 

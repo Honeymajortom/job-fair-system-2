@@ -5,6 +5,7 @@ const { authenticateJWT } = require('../middleware/auth');
 const requireRole = require('../middleware/requireRole');
 const requireCompanyScope = require('../middleware/requireCompanyScope');
 const { resolveCenterFilter } = require('../lib/centerScope');
+const { invalidateReportsCache } = require('../lib/reportsCache');
 
 const router = express.Router();
 
@@ -360,6 +361,11 @@ router.post('/companies/:id/close-desk', authenticateJWT, requireRole('admin', '
   } finally {
     client.release();
   }
+
+  // STAFF_INCONSISTENCY_REPORT.md S9: company_hr_feedback backs
+  // company-hr-feedback-report, cached 20s alongside every other report
+  // with no write-side invalidation.
+  await invalidateReportsCache();
 
   res.json({ id: Number(req.params.id), is_open });
 }));

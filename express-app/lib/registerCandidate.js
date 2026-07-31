@@ -7,6 +7,7 @@ const { normalizeMobile, isValidMobile } = require('./mobile');
 const { emit } = require('./events');
 const { DONE_STATUSES } = require('./pingLadder');
 const { invalidateFloorStats } = require('./floorStats');
+const { invalidateReportsCache } = require('./reportsCache');
 
 // candidate_and_desk_improvements_plan.md §B: 'Other' dropped (nothing has
 // ever set it), 'Experienced' added. When 'Working' or 'Experienced', the
@@ -118,7 +119,7 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
     // can key fair_batches off the real fair row instead of the bare date —
     // Phase 0, needed now that fair_date alone stopped being globally unique.
     const fairRes = await client.query(
-      `SELECT id, to_char(fair_date, 'YYYY-MM-DD') AS fair_date, fair_hours, batch_size, batch_interval_minutes, max_companies_per_candidate
+      `SELECT id, center_id, to_char(fair_date, 'YYYY-MM-DD') AS fair_date, fair_hours, batch_size, batch_interval_minutes, max_companies_per_candidate
        FROM fair_settings WHERE is_active = true AND ($1::int IS NULL OR center_id = $1) ORDER BY fair_date DESC LIMIT 1`,
       [centerId || null]
     );
@@ -238,6 +239,7 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
   }
 
   await invalidateFloorStats();
+  await invalidateReportsCache();
 
   // v3.0 §8 pattern, carried into the new model: delta payloads so clients
   // increment local counters instead of refetching.
@@ -245,6 +247,10 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
     token: tokenNo,
     name: name.trim(),
     batch_id: batch ? batch.id : null,
+    // STAFF_INCONSISTENCY_REPORT.md S11 — lets a Center-scoped client (e.g.
+    // FloorMonitor.jsx) filter out another Center's registrations instead of
+    // re-fetching on every one regardless of origin.
+    centerId: fair ? fair.center_id : (centerId || null),
     statsDelta: { registered: 1 },
   });
   if (assigned.length) {
