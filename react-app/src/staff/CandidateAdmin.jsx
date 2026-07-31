@@ -100,7 +100,14 @@ export default function CandidateAdmin() {
   }
 
   async function deleteCandidate(c) {
-    if (!window.confirm(`Delete ${c.name} (${c.token_no})? This can't be undone.`)) return;
+    // STAFF_INCONSISTENCY_REPORT.md S3: has_live_booking (GET /candidates)
+    // flags a candidate still Pending/Dispatched somewhere — worth calling
+    // out explicitly, since deleting them pulls that booking out of the live
+    // queue too.
+    const warning = c.has_live_booking
+      ? ' They still have a live booking (queued or at a desk) — deleting will remove it from the live queue.'
+      : '';
+    if (!window.confirm(`Delete ${c.name} (${c.token_no})? This can't be undone.${warning}`)) return;
     setDelBusyId(c.id);
     try {
       const result = await api.deleteCandidate(c.id);

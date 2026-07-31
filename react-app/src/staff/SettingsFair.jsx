@@ -56,14 +56,25 @@ export default function SettingsFair() {
     e.preventDefault();
     if (!fairDate) { window.alert('Pick a fair date before starting the job fair.'); return; }
     if (!selectedCenterId) { window.alert('Select a Center (Settings → Centers) before starting a job fair.'); return; }
+    // STAFF_INCONSISTENCY_REPORT.md S4: this used to skip saveCap()'s
+    // validation entirely — clearing the field made maxCompanies read as 0,
+    // which PUT /fair-settings/:id's `|| null` coercion (fair.js) silently
+    // treats as "not provided" and keeps whatever the row already had,
+    // rather than erroring. Same hard-stop style (window.alert) as the two
+    // checks above, not saveCap()'s toast — this function's own convention.
+    const n = Number(maxCompanies);
+    if (!Number.isInteger(n) || n <= 0) {
+      window.alert('Max companies per candidate must be a whole number greater than 0.');
+      return;
+    }
     setStartingFair(true);
     try {
       const activated = await api.activateFair({ fair_date: fairDate, center_id: Number(selectedCenterId) });
       // /fair-settings/activate itself only takes fair_date/fair_name/center_id
       // — max_companies_per_candidate is set as a follow-up PUT against the
       // row it just created/reactivated, same route the inline edit below uses.
-      if (Number(maxCompanies) !== 3) {
-        await api.updateFairSettings(activated.id, { max_companies_per_candidate: Number(maxCompanies) });
+      if (n !== 3) {
+        await api.updateFairSettings(activated.id, { max_companies_per_candidate: n });
       }
       showToast(`Job fair started for ${fmtDate(fairDate)}`);
       loadFairSettings();

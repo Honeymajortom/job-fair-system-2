@@ -151,10 +151,20 @@ export default function DeskTablet() {
     }
   }
 
-  async function applyIncoming({ candidateId, ccsId, token, expiresAt, sameFloor = true, interviewStartedAt = null }) {
+  // paused/pausedRemainingMs (STAFF_INCONSISTENCY_REPORT.md S2): this used to
+  // unconditionally clear pause state on every call — mount reattach, every
+  // desk_incoming/candidate_dispatched socket event, and callNext()'s
+  // response — even when the backend's queueDispatcher.js occupantPayload()
+  // (GET /queue/desk/:companyId/:deskId, the reattach fetch) reported the
+  // timer as genuinely paused. Now-fresh-dispatch payloads (desk_incoming,
+  // candidate_dispatched) never include these fields at all — a brand new
+  // dispatch can't already be paused — so the defaults below correctly leave
+  // pause state cleared for those, and only the reattach path (which now
+  // carries real pause state through occupantPayload) can set it true.
+  async function applyIncoming({ candidateId, ccsId, token, expiresAt, sameFloor = true, interviewStartedAt = null, paused: isPaused = false, pausedRemainingMs: remainingMs = null }) {
     const comingFrom = sameFloor ? 'Same floor' : 'Different floor';
-    setPaused(false);
-    setPausedRemainingMs(null);
+    setPaused(isPaused);
+    setPausedRemainingMs(remainingMs);
     setAcknowledged(false);
     try {
       const details = await fetchCandidateDetails(token, companyId);

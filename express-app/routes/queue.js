@@ -11,7 +11,7 @@ const dispatcher = require('../lib/queueDispatcher');
 const { clearNoShowTimer, pauseNoShowTimer, resumeNoShowTimer } = require('../lib/noShowTimer');
 const store = require('../lib/queueStore');
 const redis = require('../lib/redisClient');
-const { computeFloorStats } = require('../lib/floorStats');
+const { computeFloorStats, invalidateFloorStats } = require('../lib/floorStats');
 const { resolveCenterFilter } = require('../lib/centerScope');
 
 const router = express.Router();
@@ -128,6 +128,8 @@ router.put('/interview-result', authenticateJWT, requireRole('admin', 'company_h
 
   if (!result.rows.length) return res.status(404).json({ error: 'No matching assignment for this candidate and company' });
   const { old_status, old_serial, old_dispatched_at, old_interview_started_at, ...row } = result.rows[0];
+
+  await invalidateFloorStats();
 
   const statsDelta = { completed: 1 };
   if (old_status === 'Dispatched') statsDelta.atDesk = -1;
@@ -296,6 +298,8 @@ router.post('/no-show', authenticateJWT, requireRole('admin', 'floor_manager', '
   await store.releaseLock(row.candidate_id);
   await store.remove(Number(company_id), row.candidate_id);
   await clearNoShowTimer(row.candidate_id, Number(company_id));
+
+  await invalidateFloorStats();
 
   const statsDelta = { noShows: 1 };
   if (row.old_status === 'Dispatched') statsDelta.atDesk = -1;

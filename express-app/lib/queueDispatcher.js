@@ -8,8 +8,9 @@
 const pool = require('../db');
 const store = require('./queueStore');
 const { emit, emitToRoom } = require('./events');
-const { armNoShowTimer, clearNoShowTimer, SAME_FLOOR_MS, CROSS_FLOOR_MS } = require('./noShowTimer');
+const { armNoShowTimer, clearNoShowTimer, getArrivalStatus, SAME_FLOOR_MS, CROSS_FLOOR_MS } = require('./noShowTimer');
 const { retunePingBuffer } = require('./bufferController');
+const { invalidateFloorStats } = require('./floorStats');
 
 // §6.1's 90s/180s split by companies.floor_number. "Where the candidate is
 // right now" = the company of their most recently *completed* interview
@@ -77,7 +78,18 @@ async function findDeskOccupant(companyId, deskId) {
 
 async function occupantPayload(companyId, deskId, occupant) {
   const sameFloor = await resolveSameFloor(occupant.candidate_id, companyId);
-  const timerMs = sameFloor ? SAME_FLOOR_MS : CROSS_FLOOR_MS;
+  // STAFF_INCONSISTENCY_REPORT.md S2: this used to recompute the deadline as
+  // a naive dispatched_at + 90s/180s, with zero awareness of pause state —
+  // diverging from lib/pingLadder.js's candidate-facing calculation, which
+  // has always read the real armed/paused timer via getArrivalStatus(). A
+  // desk tablet reattaching (page reload, or a re-fired desk_incoming event)
+  // while genuinely paused would render a live, already-expired countdown
+  // even though no timer is actually armed server-side. Now reads the same
+  // single source of truth pingLadder.js does — returns { expiresAt, totalMs }
+  // if armed, { paused: true, pausedRemainingMs, totalMs } if paused, or
+  // neither once interview_started_at is set (confirm-arrival already
+  // cleared the timer, so there's nothing left to find).
+  const arrival = await getArrivalStatus(occupant.candidate_id, companyId);
   return {
     candidateId: occupant.candidate_id,
     ccsId: occupant.ccs_id,
@@ -85,8 +97,8 @@ async function occupantPayload(companyId, deskId, occupant) {
     deskId,
     token: occupant.token_no,
     sameFloor,
-    expiresAt: new Date(new Date(occupant.dispatched_at).getTime() + timerMs).toISOString(),
     interviewStartedAt: occupant.interview_started_at,
+    ...(arrival || {}),
   };
 }
 
@@ -147,6 +159,7 @@ async function dispatch(companyId, deskId) {
     await armNoShowTimer({ candidateId, companyId, deskId, ccsId: row.ccs_id, sameFloor });
     const expiresAt = new Date(Date.now() + (sameFloor ? SAME_FLOOR_MS : CROSS_FLOOR_MS)).toISOString();
 
+    await invalidateFloorStats();
     emit('candidate_dispatched', {
       token: row.token_no,
       companyId,

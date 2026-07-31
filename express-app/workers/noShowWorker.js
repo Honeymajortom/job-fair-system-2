@@ -14,6 +14,7 @@ const pool = require('../db');
 const store = require('../lib/queueStore');
 const dispatcher = require('../lib/queueDispatcher');
 const { emit } = require('../lib/events');
+const { invalidateFloorStats } = require('../lib/floorStats');
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const connection = new IORedis(REDIS_URL, { maxRetriesPerRequest: null });
@@ -54,6 +55,7 @@ const worker = new Worker('noshow', async (job) => {
   const { misses, status } = result.rows[0];
 
   await store.releaseLock(candidateId);
+  await invalidateFloorStats();
 
   if (status === 'No_Show') {
     // 5th miss — stop decaying the rank and drop them from the queue for

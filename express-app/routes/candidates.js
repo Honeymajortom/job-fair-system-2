@@ -60,8 +60,16 @@ router.post('/register', authenticateJWT, requireRole('admin', 'registration_sta
 router.get('/candidates', authenticateJWT, asyncHandler(async (req, res) => {
   const centerId = resolveCenterFilter(req);
   const mobile = req.query.mobile ? normalizeMobile(req.query.mobile) : null;
+  // has_live_booking (STAFF_INCONSISTENCY_REPORT.md S3): lets
+  // CandidateAdmin.jsx's delete confirmation warn when a candidate is still
+  // Pending/Dispatched somewhere, instead of every delete getting the same
+  // blanket "can't be undone" with no signal either way.
   const result = await pool.query(
-    `SELECT cd.id, cd.token_no, cd.name, cd.qualification, cd.checked_in_at, cd.batch_id, cd.registered_at
+    `SELECT cd.id, cd.token_no, cd.name, cd.qualification, cd.checked_in_at, cd.batch_id, cd.registered_at,
+            EXISTS (
+              SELECT 1 FROM candidate_company_status ccs
+              WHERE ccs.candidate_id = cd.id AND ccs.deleted_at IS NULL AND ccs.status IN ('Pending', 'Dispatched')
+            ) AS has_live_booking
      FROM candidates cd
      LEFT JOIN fair_settings fs ON fs.id = cd.fair_settings_id
      WHERE cd.deleted_at IS NULL
@@ -594,8 +602,22 @@ router.post('/candidates/exit', authenticateJWT, requireRole('admin', 'registrat
 
 // Admin / Reg Staff: delete a candidate — integrity fix #10: while a fair is
 // live (fair_settings.is_active) only soft-delete; hard delete is post-fair cleanup.
+// STAFF_INCONSISTENCY_REPORT.md S3: this used to skip the Redis cleanup
+// POST /candidates/exit above already does — a candidate deleted while still
+// Pending/Dispatched left an orphaned ZSET member (and possibly a held lock)
+// behind, confirmed during this session's own company-reassignment testing.
+// company_ids are fetched up front, before either branch runs, so they
+// survive whichever delete path actually executes.
 router.delete('/candidates/:id', authenticateJWT, requireRole('admin', 'registration_staff'), asyncHandler(async (req, res) => {
   const fairActive = await pool.query('SELECT 1 FROM fair_settings WHERE is_active = true LIMIT 1');
+  const ccsRes = await pool.query(
+    'SELECT company_id FROM candidate_company_status WHERE candidate_id = $1 AND deleted_at IS NULL',
+    [req.params.id]
+  );
+  const companyIds = ccsRes.rows.map((r) => r.company_id);
+
+  let deleted;
+  let candidateId;
 
   if (fairActive.rows.length) {
     const result = await pool.query(
@@ -607,24 +629,43 @@ router.delete('/candidates/:id', authenticateJWT, requireRole('admin', 'registra
       'UPDATE candidate_company_status SET deleted_at = now() WHERE candidate_id = $1 AND deleted_at IS NULL',
       [req.params.id]
     );
-    return res.json({ deleted: 'soft', id: result.rows[0].id });
+    deleted = 'soft';
+    candidateId = result.rows[0].id;
+  } else {
+    // No live fair — hard delete permitted (FKs are RESTRICT, so clear ccs rows first)
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM candidate_company_status WHERE candidate_id = $1', [req.params.id]);
+      const result = await client.query('DELETE FROM candidates WHERE id = $1 RETURNING id', [req.params.id]);
+      await client.query('COMMIT');
+      if (!result.rows.length) return res.status(404).json({ error: 'Candidate not found' });
+      deleted = 'hard';
+      candidateId = result.rows[0].id;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
-  // No live fair — hard delete permitted (FKs are RESTRICT, so clear ccs rows first)
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('DELETE FROM candidate_company_status WHERE candidate_id = $1', [req.params.id]);
-    const result = await client.query('DELETE FROM candidates WHERE id = $1 RETURNING id', [req.params.id]);
-    await client.query('COMMIT');
-    if (!result.rows.length) return res.status(404).json({ error: 'Candidate not found' });
-    res.json({ deleted: 'hard', id: result.rows[0].id });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
+  // Post-commit Redis cleanup — same reasoning as /candidates/exit above: a
+  // Redis outage must never undo an already-committed delete.
+  for (const companyId of companyIds) {
+    try {
+      await queueStore.remove(companyId, candidateId);
+    } catch (err) {
+      console.error(`[candidates:delete] queue remove failed for candidate ${candidateId} company ${companyId}:`, err.message);
+    }
   }
+  try {
+    await queueStore.releaseLock(candidateId);
+  } catch (err) {
+    console.error(`[candidates:delete] lock release failed for candidate ${candidateId}:`, err.message);
+  }
+
+  res.json({ deleted, id: candidateId });
 }));
 
 module.exports = router;

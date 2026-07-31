@@ -208,6 +208,11 @@ export default function CompanyManagement() {
       showToast(`${companyForm.company_name} added`);
       setCompanyForm({ ...emptyCompanyForm, center_id: effectiveCenterId || '' });
       loadDirectory();
+      // STAFF_INCONSISTENCY_REPORT.md S5: insertCompanyRow() (companies.js)
+      // auto-seeds a roster row when the company's Center has an active
+      // fair — without this, "Today's roster" and the "Add to roster"
+      // dropdown both stayed stale until the fair dropdown was reselected.
+      loadRoster(selectedFairId);
     } catch (err) {
       showToast(err.message, true);
     } finally {
@@ -274,6 +279,7 @@ export default function CompanyManagement() {
       setBulkFileName('');
       if (bulkFileInputRef.current) bulkFileInputRef.current.value = '';
       loadDirectory();
+      loadRoster(selectedFairId); // S5, same reasoning as createCompany above
     } catch (err) {
       showToast(err.message, true);
     } finally {

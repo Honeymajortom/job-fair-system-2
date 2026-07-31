@@ -274,4 +274,26 @@ async function computeFloorStats({ date, centerId } = {}) {
   };
 }
 
-module.exports = { computeFloorStats };
+// routes/queue.js's GET /floor-stats is redisCache(30)'d with no write-side
+// invalidation by default — same gap already found and fixed for the
+// candidate's schedule page (invalidateSchedule() in routes/public.js).
+// FloorMonitor.jsx polls every 20s (shorter than the 30s TTL) and also
+// listens for candidate_registered/candidate_dispatched/interview_processed/
+// no_show_marked specifically so it reacts to live events immediately — but
+// without this, most of those "immediate" refreshes were just re-requesting
+// the same stale cached body (STAFF_INCONSISTENCY_REPORT.md S1).
+// Cache keys vary along three independent dimensions — ?date=, admin's
+// optional ?center_id=, and redisCache's own role/center keySuffix — so
+// there's no single deterministic key the way invalidateSchedule() has for
+// one candidate's token. A pattern scan is the only way to catch every
+// combination; this app's Redis keyspace is small enough (single small
+// instance backing one job fair) that KEYS is fine here, unlike a large
+// production keyspace where SCAN would be required.
+async function invalidateFloorStats() {
+  try {
+    const keys = await redis.keys('cache:/api/floor-stats*');
+    if (keys.length) await redis.del(...keys);
+  } catch (_err) { /* best-effort, same convention as every other cache write in this app */ }
+}
+
+module.exports = { computeFloorStats, invalidateFloorStats };

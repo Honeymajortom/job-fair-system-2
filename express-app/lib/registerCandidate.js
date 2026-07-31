@@ -6,6 +6,7 @@ const { assignCompanies } = require('./companyAssignment');
 const { normalizeMobile, isValidMobile } = require('./mobile');
 const { emit } = require('./events');
 const { DONE_STATUSES } = require('./pingLadder');
+const { invalidateFloorStats } = require('./floorStats');
 
 // candidate_and_desk_improvements_plan.md §B: 'Other' dropped (nothing has
 // ever set it), 'Experienced' added. When 'Working' or 'Experienced', the
@@ -235,6 +236,8 @@ async function registerCandidate({ name, mobile, age, qualification, field, empl
       console.error(`[registerCandidate] queue enqueue failed for candidate ${candidateId} company ${a.company_id}:`, err.message);
     }
   }
+
+  await invalidateFloorStats();
 
   // v3.0 §8 pattern, carried into the new model: delta payloads so clients
   // increment local counters instead of refetching.

@@ -74,10 +74,31 @@ router.post('/batch/check-in', authenticateJWT, requireRole('admin', 'registrati
 
     let batchId = candidate.batch_id;
     if (!batchId) {
-      const fairRes = await client.query(
-        `SELECT id, to_char(fair_date, 'YYYY-MM-DD') AS fair_date, batch_size, batch_interval_minutes
-         FROM fair_settings WHERE is_active = true ORDER BY fair_date DESC LIMIT 1`
-      );
+      // STAFF_INCONSISTENCY_REPORT.md S6: this used to grab "whichever active
+      // fair sorts first by fair_date" with no Center filter at all — in a
+      // multi-Center install with two concurrent active fairs, a legacy
+      // (pre-2026-07-24) candidate could get silently assigned into another
+      // Center's batch. registration_staff is always pinned to one Center
+      // (req.user.center_id), so scope by that directly; admin has no fixed
+      // center, so only guess when there's nothing to disambiguate —
+      // otherwise fail clearly instead of picking one arbitrarily, same
+      // pattern POST /register already uses for the identical ambiguity.
+      const centerId = req.user.role === 'admin' ? null : req.user.center_id;
+      let fairQuery = `SELECT id, to_char(fair_date, 'YYYY-MM-DD') AS fair_date, batch_size, batch_interval_minutes
+         FROM fair_settings WHERE is_active = true`;
+      const fairParams = [];
+      if (centerId != null) {
+        fairQuery += ' AND center_id = $1';
+        fairParams.push(centerId);
+      } else {
+        const activeCount = await client.query('SELECT COUNT(*)::int AS n FROM fair_settings WHERE is_active = true');
+        if (activeCount.rows[0].n > 1) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Multiple centers have an active fair — this legacy candidate has no batch_id and no Center on file. Check in via a registration_staff account pinned to the right Center.' });
+        }
+      }
+      fairQuery += ' ORDER BY fair_date DESC LIMIT 1';
+      const fairRes = await client.query(fairQuery, fairParams);
       if (fairRes.rows.length) {
         const batch = await getOrCreateAvailableBatch(client, fairRes.rows[0]);
         batchId = batch.id;
