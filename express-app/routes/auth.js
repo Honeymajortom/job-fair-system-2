@@ -14,7 +14,13 @@ const SESSION_HOURS = 8; // v2.5: JWT HttpOnly cookie, 8h
 // Per-username and per-IP windows, same fixed-window-Redis-counter pattern as
 // the public registration limiters (fails open on Redis outage — an outage
 // must never lock staff out of the fair).
-const loginUserLimit = rateLimit({ prefix: 'login-user', windowSec: 900, max: 8, key: (req) => (req.body && req.body.username || '').toLowerCase() });
+// Raised from 8 to 20/15min (2026-07-31): a company_hr login was getting
+// 429'd from typo'd username retries (e.g. missing the @sdc.com suffix) —
+// each distinct typed string is its own bucket, so a few retries under a
+// slightly wrong username can exhaust 8 fast. Still tight enough that this
+// isn't a meaningful brute-force loosening — H1's real backstop is the
+// per-IP limit below, unchanged.
+const loginUserLimit = rateLimit({ prefix: 'login-user', windowSec: 900, max: 20, key: (req) => (req.body && req.body.username || '').toLowerCase() });
 const loginIpLimit = rateLimit({ prefix: 'login-ip', windowSec: 900, max: 30, key: (req) => req.ip });
 
 // Staff login — sets the session cookie. The token is also returned in the
